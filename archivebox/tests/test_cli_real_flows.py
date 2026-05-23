@@ -180,7 +180,7 @@ def test_cli_add_real_urls_with_options_writes_inspectable_outputs(tmp_path, pro
 
     combined_html = "\n".join(path.read_text(errors="ignore") for path in html_outputs)
     assert "Example Domain" in combined_html
-    assert "Browser-use Challenge for AI Browser Drivers" in combined_html
+    assert "Browser Agent Challenge for AI Browser Drivers" in combined_html
 
     assert processes
     assert any("wget" in (pwd or "") or "wget" in (cmd or "") for _type, _status, _exit, pwd, cmd in processes)
