@@ -313,13 +313,8 @@ RUN openssl rand -hex 16 > /etc/machine-id \
     && echo -e "\nTMP_DIR=$TMP_DIR\nLIB_DIR=$LIB_DIR\nMACHINE_ID=$(cat /etc/machine-id)\n" | tee -a /VERSION.txt
 
 # Pre-bake plugin-managed runtime dependencies using the same installer paths
-# users run later via archivebox init --install / archivebox install. Browser
-# system deps need root for Puppeteer's --install-deps; the ArchiveBox install
-# pass still runs as the archivebox user and records normal dependency state.
-RUN echo "[+] Installing root-managed browser runtime dependencies into $LIB_DIR..." \
-    && abx-dl install chrome \
-    && chown -R "$DEFAULT_PUID:$DEFAULT_PGID" "$LIB_DIR" \
-    && echo "[+] Initializing image collection and installing plugin runtime dependencies into $LIB_DIR..." \
+# users run later via archivebox init --install / archivebox install.
+RUN echo "[+] Initializing image collection and installing plugin runtime dependencies into $LIB_DIR..." \
     && gosu "$DEFAULT_PUID" archivebox init --install \
     && chown -R "$DEFAULT_PUID:$DEFAULT_PGID" "$DATA_DIR" "$LIB_DIR"
 
