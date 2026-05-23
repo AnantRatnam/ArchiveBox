@@ -305,20 +305,23 @@ ENV TMP_DIR=/tmp/archivebox \
 WORKDIR "$DATA_DIR"
 RUN openssl rand -hex 16 > /etc/machine-id \
     && mkdir -p "$DATA_DIR" \
-    && chown -R "$DEFAULT_PUID:$DEFAULT_PGID" "$DATA_DIR" \
+    && chown "$DEFAULT_PUID:$DEFAULT_PGID" "$DATA_DIR" \
     && mkdir -p "$TMP_DIR" \
     && chown -R "$DEFAULT_PUID:$DEFAULT_PGID" "$TMP_DIR" \
     && mkdir -p "$LIB_DIR" \
     && chown -R "$DEFAULT_PUID:$DEFAULT_PGID" "$LIB_DIR" \
-    && echo -e "\nTMP_DIR=$TMP_DIR\nLIB_DIR=$LIB_DIR\nMACHINE_ID=$(cat /etc/machine-id)\n" | tee -a /VERSION.txt
+    && mkdir -p "$PLAYWRIGHT_BROWSERS_PATH" \
+    && chown "$DEFAULT_PUID:$DEFAULT_PGID" "$PLAYWRIGHT_BROWSERS_PATH" \
+    && echo -e "\nTMP_DIR=$TMP_DIR\nLIB_DIR=$LIB_DIR\nPLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH\nMACHINE_ID=$(cat /etc/machine-id)\n" | tee -a /VERSION.txt
 
 # Pre-bake plugin-managed runtime dependencies using the same installer paths
 # users run later via archivebox init --install / archivebox install. Build-time
-# runs as root so plugin installers can satisfy OS-level deps, then ownership is
+# runs as root so providers can satisfy OS-level deps, then ownership is
 # returned to the runtime archivebox user.
 RUN echo "[+] Initializing image collection and installing plugin runtime dependencies into $LIB_DIR..." \
     && PUID=0 PGID=0 archivebox init --install \
-    && chown -R "$DEFAULT_PUID:$DEFAULT_PGID" "$DATA_DIR" "$LIB_DIR"
+    && (chown "$DEFAULT_PUID:$DEFAULT_PGID" "$DATA_DIR" "$DATA_DIR"/logs "$DATA_DIR"/sources "$DATA_DIR"/archive "$DATA_DIR"/archive/users "$DATA_DIR"/personas "$DATA_DIR"/index.sqlite3 "$DATA_DIR"/ArchiveBox.conf 2>/dev/null || true) \
+    && chown -R "$DEFAULT_PUID:$DEFAULT_PGID" "$LIB_DIR"
 
 # Print version for nice docker finish summary
 RUN (echo -e "\n\n[√] Finished Docker build successfully. Saving build summary in: /VERSION.txt" \

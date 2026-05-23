@@ -103,35 +103,15 @@ def check_io_encoding():
 
 
 def check_not_root():
-    from archivebox.config.permissions import IS_ROOT, IN_DOCKER
+    from archivebox.config.permissions import IS_ROOT
 
-    attempted_command = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else ""
     is_getting_help = "-h" in sys.argv or "--help" in sys.argv or "help" in sys.argv
     is_getting_version = "--version" in sys.argv or "version" in sys.argv
-    is_installing = any(arg in sys.argv for arg in ("setup", "install", "--setup", "--install"))
 
-    if IS_ROOT and not (is_getting_help or is_getting_version or is_installing):
-        print("[red][!] ArchiveBox should never be run as root![/red]", file=sys.stderr)
-        print("    For more information, see the security overview documentation:", file=sys.stderr)
+    if IS_ROOT and not (is_getting_help or is_getting_version):
+        print("[yellow][!] Running ArchiveBox as root is not recommended.[/yellow]", file=sys.stderr)
+        print("    Root-owned DATA_DIR files may be inaccessible to non-root users later.", file=sys.stderr)
         print("        https://github.com/ArchiveBox/ArchiveBox/wiki/Security-Overview#do-not-run-as-root", file=sys.stderr)
-
-        if IN_DOCKER:
-            print(
-                "[red][!] When using Docker, you must run commands with [green]docker run[/green] instead of [yellow3]docker exec[/yellow3], e.g.:",
-                file=sys.stderr,
-            )
-            print("        docker compose run archivebox {attempted_command}", file=sys.stderr)
-            print(f"        docker run -it -v $PWD/data:/data archivebox/archivebox {attempted_command}", file=sys.stderr)
-            print("        or:", file=sys.stderr)
-            print(
-                f'        docker compose exec --user=archivebox archivebox /bin/bash -c "archivebox {attempted_command}"',
-                file=sys.stderr,
-            )
-            print(
-                f'        docker exec -it --user=archivebox <container id> /bin/bash -c "archivebox {attempted_command}"',
-                file=sys.stderr,
-            )
-        raise SystemExit(2)
 
 
 def check_not_inside_source_dir():

@@ -33,36 +33,64 @@ export TMP_DIR="${TMP_DIR:-/tmp/archivebox}"
 export LIB_DIR="${LIB_DIR:-/opt/archivebox/lib}"
 export ABXPKG_LIB_DIR="${ABXPKG_LIB_DIR:-$LIB_DIR}"
 export ARCHIVEBOX_USER="${ARCHIVEBOX_USER:-archivebox}"
+export PERSONAS_DIR="${PERSONAS_DIR:-$DATA_DIR/personas}"
+export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-/browsers}"
 
 # Global default PUID and PGID if data dir is empty and no intended PUID+PGID is set manually by user
 export DEFAULT_PUID=911
 export DEFAULT_PGID=911
 
-# If user tries to set PUID and PGID to root values manually, catch and reject because root is not allowed
-if [[ "${PUID:-}" == "0" ]]; then
-    echo -e "\n[X] Error: Got PUID=$PUID and PGID=$PGID but ArchiveBox is not allowed to be run as root, please change or unset PUID & PGID and try again." > /dev/stderr
-    echo -e "    Hint: some NFS/SMB/FUSE/etc. filesystems force-remap/ignore all permissions," > /dev/stderr
-        echo -e "          leave PUID/PGID unset, disable root_squash, or use values the drive prefers (default is $DEFAULT_PUID:$DEFAULT_PGID)" > /dev/stderr
-        echo -e "    https://linux.die.net/man/8/mount.cifs#:~:text=does%20not%20provide%20unix%20ownership" > /dev/stderr
+detect_data_owner() {
+    local path uid gid
+    for path in "$DATA_DIR/ArchiveBox.conf" "$DATA_DIR/index.sqlite3" "$DATA_DIR/logs" "$DATA_DIR/archive" "$DATA_DIR"; do
+        if [[ -e "$path" ]]; then
+            uid="$(stat -c '%u' "$path" 2>/dev/null || echo "$DEFAULT_PUID")"
+            gid="$(stat -c '%g' "$path" 2>/dev/null || echo "$DEFAULT_PGID")"
+            if [[ "$uid" != "0" && "$gid" != "0" ]]; then
+                echo "$uid:$gid"
+                return
+            fi
+        fi
+    done
+    echo "$DEFAULT_PUID:$DEFAULT_PGID"
+}
+
+export DETECTED_OWNER="$(detect_data_owner)"
+export DETECTED_PUID="${DETECTED_OWNER%%:*}"
+export DETECTED_PGID="${DETECTED_OWNER##*:}"
+export PUID="${PUID:-$DETECTED_PUID}"
+export PGID="${PGID:-$DETECTED_PGID}"
+
+if [[ ! "$PUID" =~ ^[0-9]+$ || ! "$PGID" =~ ^[0-9]+$ ]]; then
+    echo -e "\n[X] Error: PUID and PGID must be numeric, got PUID=$PUID PGID=$PGID." > /dev/stderr
+    echo -e "    Example: PUID=$(id -u) PGID=$(id -g) docker compose up" > /dev/stderr
     exit 3
 fi
 
-# If data directory already exists, autodetect detect owner by looking at files within
-export DETECTED_PUID="$(stat -c '%u' "$DATA_DIR/logs/errors.log" 2>/dev/null || echo "$DEFAULT_PUID")"
-export DETECTED_PGID="$(stat -c '%g' "$DATA_DIR/logs/errors.log" 2>/dev/null || echo "$DEFAULT_PGID")"
+# If user tries to set PUID or PGID to root values manually, warn but allow it.
+if [[ "$PUID" == "0" || "$PGID" == "0" ]]; then
+    echo -e "\n[!] Warning: Got PUID=$PUID and PGID=$PGID, ArchiveBox/Chrome will run as root." > /dev/stderr
+    echo -e "    This is not recommended because root-owned DATA_DIR files may be inaccessible to non-root users later." > /dev/stderr
+    echo -e "    Default is $DEFAULT_PUID:$DEFAULT_PGID. See https://docs.linuxserver.io/general/understanding-puid-and-pgid" > /dev/stderr
+fi
 
-# If data directory exists but is owned by root, use defaults instead of root because root is not allowed
-[[ "$DETECTED_PUID" == "0" ]] && export DETECTED_PUID="$DEFAULT_PUID"
-[[ "$DETECTED_PGID" == "0" ]] && export DETECTED_PGID="$DEFAULT_PGID"
+if [[ "$(id -u)" == "0" ]]; then
+    # Set archivebox user and group ids to desired PUID/PGID.
+    groupmod -o -g "$PGID" "$ARCHIVEBOX_USER" > /dev/null 2>&1 || {
+        echo -e "\n[X] Error: Failed to set $ARCHIVEBOX_USER group to PGID=$PGID." > /dev/stderr
+        exit 3
+    }
+    usermod -o -u "$PUID" -g "$PGID" "$ARCHIVEBOX_USER" > /dev/null 2>&1 || {
+        echo -e "\n[X] Error: Failed to set $ARCHIVEBOX_USER user to PUID=$PUID PGID=$PGID." > /dev/stderr
+        exit 3
+    }
 
-# Set archivebox user and group ids to desired PUID/PGID
-usermod -o -u "${PUID:-$DETECTED_PUID}" "$ARCHIVEBOX_USER" > /dev/null 2>&1
-groupmod -o -g "${PGID:-$DETECTED_PGID}" "$ARCHIVEBOX_USER" > /dev/null 2>&1
-
-# re-set PUID and PGID to values reported by system instead of values we tried to set,
-# in case wonky filesystems or Docker setups try to play UID/GID remapping tricks on us
-export PUID="$(id -u archivebox)"
-export PGID="$(id -g archivebox)"
+    export PUID="$(id -u "$ARCHIVEBOX_USER")"
+    export PGID="$(id -g "$ARCHIVEBOX_USER")"
+else
+    export PUID="$(id -u)"
+    export PGID="$(id -g)"
+fi
 
 # Check if user attempted to run it in the root of their home folder or hard drive (common mistake)
 if [[ -d "$DATA_DIR/Documents" || -d "$DATA_DIR/.config" || -d "$DATA_DIR/usr" || -f "$DATA_DIR/.bashrc" || -f "$DATA_DIR/.zshrc" ]]; then
@@ -71,28 +99,79 @@ if [[ -d "$DATA_DIR/Documents" || -d "$DATA_DIR/.config" || -d "$DATA_DIR/usr" |
     exit 3
 fi
 
-# Check the permissions of the data dir (or create if it doesn't exist)
-if [[ -d "$DATA_DIR/archive" ]]; then
-    if touch "$DATA_DIR/archive/.permissions_test_safe_to_delete" 2>/dev/null; then
-        # It's fine, we are able to write to the data directory (as root inside the container)
-        rm -f "$DATA_DIR/archive/.permissions_test_safe_to_delete"
-        # echo "[√] Permissions are correct"
-    else
-     # the only time this fails is if the host filesystem doesn't allow us to write as root (e.g. some NFS mapall/maproot problems, connection issues, drive disappeared, etc.)
-        echo -e "\n[X] Error: archivebox user (PUID=$PUID) is not able to write to your ./data/archive dir (currently owned by $(stat -c '%u' "$DATA_DIR/archive"):$(stat -c '%g' "$DATA_DIR/archive")." > /dev/stderr
-        echo -e "    Change ./data to be owned by PUID=$PUID PGID=$PGID on the host and retry:" > /dev/stderr
-        echo -e "       \$ chown -R $PUID:$PGID ./data\n" > /dev/stderr
-        echo -e "    Configure the PUID & PGID environment variables to change the desired owner:" > /dev/stderr
-        echo -e "       https://docs.linuxserver.io/general/understanding-puid-and-pgid\n" > /dev/stderr
-        echo -e "    Hint: some NFS/SMB/FUSE/etc. filesystems force-remap/ignore all permissions," > /dev/stderr
-        echo -e "          leave PUID/PGID unset, disable root_squash, or use values the drive prefers (default is $DEFAULT_PUID:$DEFAULT_PGID)" > /dev/stderr
-        echo -e "    https://linux.die.net/man/8/mount.cifs#:~:text=does%20not%20provide%20unix%20ownership" > /dev/stderr
-        exit 3
+chown_if_needed() {
+    local path="$1"
+    [[ -e "$path" ]] || return 0
+    [[ "$(id -u)" == "0" ]] || return 0
+    [[ "$(stat -c '%u:%g' "$path" 2>/dev/null || true)" == "$PUID:$PGID" ]] && return 0
+    chown -h "$PUID:$PGID" "$path" 2>/dev/null || true
+}
+
+chmod_if_possible() {
+    local path="$1"
+    [[ -e "$path" ]] || return 0
+    chmod u+rwX,g+rwX "$path" 2>/dev/null || true
+}
+
+ensure_dir() {
+    local path="$1"
+    mkdir -p "$path" 2>/dev/null || true
+    chown_if_needed "$path"
+    chmod_if_possible "$path"
+}
+
+ensure_file_owner() {
+    local path="$1"
+    [[ -e "$path" ]] || return 0
+    chown_if_needed "$path"
+    chmod_if_possible "$path"
+}
+
+ensure_runtime_tree() {
+    local path="$1"
+    mkdir -p "$path" 2>/dev/null || true
+    [[ -e "$path" ]] || return 0
+    if [[ "$(id -u)" == "0" ]] && [[ "$(stat -c '%u:%g' "$path" 2>/dev/null || true)" != "$PUID:$PGID" ]]; then
+        chown -R "$PUID:$PGID" "$path" 2>/dev/null || true
     fi
-else
-    # create data directory (and logs, since its the first dir ArchiveBox needs to write to)
-    mkdir -p "$DATA_DIR/logs"
-fi
+    chmod_if_possible "$path"
+}
+
+run_as_archivebox() {
+    if [[ "$(id -u)" == "0" ]]; then
+        gosu "$PUID:$PGID" "$@"
+    else
+        "$@"
+    fi
+}
+
+permission_error() {
+    local path="$1"
+    echo -e "\n[X] Error: archivebox user (PUID=$PUID PGID=$PGID) cannot write to $path." > /dev/stderr
+    echo -e "    Current owner is $(stat -c '%u:%g' "$path" 2>/dev/null || echo 'unknown')." > /dev/stderr
+    echo -e "    Fix ownership on the host, or set PUID/PGID to match the mount owner:" > /dev/stderr
+    echo -e "       PUID=$PUID PGID=$PGID docker compose up" > /dev/stderr
+    echo -e "       chown -R $PUID:$PGID ./data   # only if you intentionally want to repair the full tree" > /dev/stderr
+    echo -e "    https://docs.linuxserver.io/general/understanding-puid-and-pgid" > /dev/stderr
+    exit 3
+}
+
+# Create and repair only the small set of top-level writable paths. Do not recurse
+# through /data/archive; large collections can take days to recursively chown/chmod.
+ensure_dir "$DATA_DIR"
+ensure_dir "$DATA_DIR/logs"
+ensure_dir "$DATA_DIR/sources"
+ensure_dir "$DATA_DIR/archive"
+ensure_dir "$DATA_DIR/archive/users"
+ensure_dir "$PERSONAS_DIR"
+[[ -e "$DATA_DIR/users" ]] && ensure_dir "$DATA_DIR/users"
+ensure_file_owner "$DATA_DIR/index.sqlite3"
+ensure_file_owner "$DATA_DIR/ArchiveBox.conf"
+
+run_as_archivebox touch "$DATA_DIR/logs/.permissions_test_safe_to_delete" 2>/dev/null || permission_error "$DATA_DIR/logs"
+rm -f "$DATA_DIR/logs/.permissions_test_safe_to_delete"
+run_as_archivebox touch "$DATA_DIR/archive/.permissions_test_safe_to_delete" 2>/dev/null || permission_error "$DATA_DIR/archive"
+rm -f "$DATA_DIR/archive/.permissions_test_safe_to_delete"
 
 # check if novnc x11 $DISPLAY is available
 export DISPLAY="${DISPLAY:-"novnc:0.0"}"
@@ -101,30 +180,9 @@ if ! xdpyinfo > /dev/null 2>&1; then
     unset DISPLAY
 fi
 
-# force set the ownership of the data dir contents to the archivebox user and group
-# this is needed because Docker Desktop often does not map user permissions from the host properly
-chown $PUID:$PGID "$DATA_DIR"
-if ! chown $PUID:$PGID "$DATA_DIR"/* > /dev/null 2>&1; then
-    # users may store the ./data/archive folder on a network mount that prevents chmod/chown
-    # fallback to chowning everything else in ./data and leaving ./data/archive alone
-    find "$DATA_DIR" -type d -not -path "$DATA_DIR/archive*" -exec chown $PUID:$PGID {} \; > /dev/null 2>&1
-    find "$DATA_DIR" -type f -not -path "$DATA_DIR/archive/*" -exec chown $PUID:$PGID {} \; > /dev/null 2>&1
-fi
-chmod -R a+rwX \
-    "$DATA_DIR" \
-    "$DATA_DIR"/logs \
-    "$DATA_DIR"/users \
-    "$DATA_DIR"/sources \
-    "$DATA_DIR"/archive \
-    "$DATA_DIR"/personas \
-    "$LIB_DIR" \
-    "$DATA_DIR"/index.sqlite3 \
-    "$DATA_DIR"/ArchiveBox.conf \
-    2>/dev/null || true
-
 # Active browser processes do not survive container restarts, but their lock
 # files can. Clear stale browser state before dropping privileges.
-find "$DATA_DIR/personas" -type f \( \
+find "$PERSONAS_DIR" -type f \( \
     -name "SingletonLock" \
     -o -name "SingletonSocket" \
     -o -name "SingletonCookie" \
@@ -135,28 +193,10 @@ find "$DATA_DIR/personas" -type f \( \
 find /tmp "$TMP_DIR" -maxdepth 1 -type d -name "archivebox-chrome-profile.*" -mmin +30 -exec rm -rf {} + >/dev/null 2>&1 || true
     
 
-# also chown BROWSERS_DIR because browser providers may manage files there at runtime
-export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-/browsers}"
-mkdir -p "$PLAYWRIGHT_BROWSERS_PATH/permissions_test_safe_to_delete"
-rm -Rf "$PLAYWRIGHT_BROWSERS_PATH/permissions_test_safe_to_delete"
-chown $PUID:$PGID "$PLAYWRIGHT_BROWSERS_PATH"
-if [[ -d "$PLAYWRIGHT_BROWSERS_PATH/.links" ]]; then
-    chown $PUID:$PGID "$PLAYWRIGHT_BROWSERS_PATH"/*
-    chown $PUID:$PGID "$PLAYWRIGHT_BROWSERS_PATH"/.*
-    chown -h $PUID:$PGID "$PLAYWRIGHT_BROWSERS_PATH"/.links/*
-fi
-
-# also create and chown tmp dir and lib dir (and their default equivalents inside data/)
-# mkdir -p "$DATA_DIR"/lib/bin
-# chown $PUID:$PGID "$DATA_DIR"/lib "$DATA_DIR"/lib/*
-mkdir -p "$LIB_DIR"
-chown $PUID:$PGID "$LIB_DIR" 2>/dev/null
-chown $PUID:$PGID "$LIB_DIR/*" 2>/dev/null &
-
-# mkdir -p "$DATA_DIR"/tmp/workers
-# chown $PUID:$PGID "$DATA_DIR"/tmp "$DATA_DIR"/tmp/*
-chown $PUID:$PGID "$TMP_DIR" 2>/dev/null
-chown $PUID:$PGID "$TMP_DIR/*" 2>/dev/null &
+ensure_runtime_tree "/home/$ARCHIVEBOX_USER"
+ensure_runtime_tree "$PLAYWRIGHT_BROWSERS_PATH"
+ensure_runtime_tree "$TMP_DIR"
+ensure_runtime_tree "$LIB_DIR"
 
 # (this check is written in blood in 2023, QEMU silently breaks things in ways that are not obvious)
 export IN_QEMU="$(pmap 1 | grep qemu >/dev/null && echo 'True' || echo 'False')"
@@ -233,7 +273,11 @@ if [[ "$1" == /* || "$1" == "bash" || "$1" == "sh" || "$1" == "echo" || "$1" == 
     #      "docker run archivebox /venv/bin/ipython3"
     #      "docker run archivebox /bin/bash -c '...'"
     #      "docker run archivebox cat /VERSION.txt"
-    exec gosu "$PUID" /bin/bash -c "exec $(printf ' %q' "$@")"
+    if [[ "$(id -u)" == "0" ]]; then
+        exec gosu "$PUID:$PGID" /bin/bash -c "exec $(printf ' %q' "$@")"
+    else
+        exec /bin/bash -c "exec $(printf ' %q' "$@")"
+    fi
     # printf requotes shell parameters properly https://stackoverflow.com/a/39463371/2156113
     # gosu spawns an ephemeral bash process owned by archivebox user (bash wrapper is needed to load env vars, PATH, and setup terminal TTY)
     # outermost exec hands over current process ID to inner bash process, inner exec hands over inner bash PID to user's command
@@ -243,5 +287,9 @@ else
     #      "docker run archivebox add --depth=1 https://example.com"
     #      "docker run archivebox manage createsupseruser"
     #      "docker run archivebox server 0.0.0.0:8000"
-    exec gosu "$PUID" "$ARCHIVEBOX_BIN_PATH" "$@"
+    if [[ "$(id -u)" == "0" ]]; then
+        exec gosu "$PUID:$PGID" "$ARCHIVEBOX_BIN_PATH" "$@"
+    else
+        exec "$ARCHIVEBOX_BIN_PATH" "$@"
+    fi
 fi
