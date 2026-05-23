@@ -1,6 +1,6 @@
 [project]
 name = "archivebox"
-version = "0.9.31rc2"
+version = "0.9.31rc3"
 requires-python = ">=3.13"
 description = "Self-hosted internet archiving solution."
 authors = [{name = "Nick Sweeting", email = "pyproject.toml@archivebox.io"}]
@@ -49,7 +49,7 @@ dependencies = [
     "django-object-actions>=4.3.0",
     "django-taggit==6.1.0",     # TODO: remove this in favor of KVTags only
     ### State Management
-    "python-statemachine>=2.3.6",
+    "python-statemachine[diagrams]>=2.3.6",
     ### CLI / Logging
     "click>=8.3.1",          # for: nicer CLI command + argument definitions
     "rich>=14.2.0",          # for: pretty CLI output
