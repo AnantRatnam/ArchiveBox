@@ -375,16 +375,18 @@ ENV TMP_DIR=/tmp/archivebox \
 
 WORKDIR "$DATA_DIR"
 RUN openssl rand -hex 16 > /etc/machine-id \
+    && mkdir -p "$DATA_DIR" \
+    && chown -R "$DEFAULT_PUID:$DEFAULT_PGID" "$DATA_DIR" \
     && mkdir -p "$TMP_DIR" \
     && chown -R "$DEFAULT_PUID:$DEFAULT_PGID" "$TMP_DIR" \
     && mkdir -p "$LIB_DIR" \
     && chown -R "$DEFAULT_PUID:$DEFAULT_PGID" "$LIB_DIR" \
     && echo -e "\nTMP_DIR=$TMP_DIR\nLIB_DIR=$LIB_DIR\nMACHINE_ID=$(cat /etc/machine-id)\n" | tee -a /VERSION.txt
 
-# Pre-bake plugin-managed runtime dependencies into the image using the same
-# installer path users run later via archivebox install / abx-dl install.
-RUN echo "[+] Installing plugin runtime dependencies into $LIB_DIR..." \
-    && gosu "$DEFAULT_PUID" abx-dl install
+# Pre-bake plugin-managed runtime dependencies using the same installer path
+# users run later via archivebox init --install / archivebox install.
+RUN echo "[+] Initializing image collection and installing plugin runtime dependencies into $LIB_DIR..." \
+    && gosu "$DEFAULT_PUID" archivebox init --install
 
 # Print version for nice docker finish summary
 RUN (echo -e "\n\n[√] Finished Docker build successfully. Saving build summary in: /VERSION.txt" \
@@ -392,9 +394,9 @@ RUN (echo -e "\n\n[√] Finished Docker build successfully. Saving build summary
     && echo -e "BUILD_END_TIME=$(date +"%Y-%m-%d %H:%M:%S %s")\n\n" \
     ) | tee -a /VERSION.txt
 
-# Verify ArchiveBox is installed and print version info
+# Verify ArchiveBox is installed and write full version/dependency info.
 RUN chmod +x "$CODE_DIR"/bin/*.sh \
-    && gosu "$DEFAULT_PUID" archivebox version 2>&1 | tee -a /VERSION.txt || true
+    && gosu "$DEFAULT_PUID" archivebox version 2>&1 | tee -a /VERSION.txt
 
 ####################################################
 
