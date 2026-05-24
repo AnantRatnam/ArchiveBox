@@ -361,6 +361,9 @@ class Snapshot(ModelWithOutputDir, ModelWithConfig, ModelWithNotes, ModelWithHea
         app_label = "core"
         verbose_name = "Snapshot"
         verbose_name_plural = "Snapshots"
+        indexes = [
+            models.Index(fields=["-bookmarked_at", "-created_at"], name="snapshot_public_order_idx"),
+        ]
         constraints = [
             # Allow same URL in different crawls, but not duplicates within same crawl
             models.UniqueConstraint(fields=["url", "crawl"], name="unique_url_per_crawl"),
@@ -3013,6 +3016,7 @@ class ArchiveResult(ModelWithOutputDir, ModelWithConfig, ModelWithNotes):
         verbose_name_plural = "Archive Results Log"
         indexes = [
             models.Index(fields=["snapshot", "status"], name="archiveresult_snap_status_idx"),
+            models.Index(fields=["-start_ts", "-id"], name="archiveresult_start_idx"),
         ]
 
     def __str__(self):

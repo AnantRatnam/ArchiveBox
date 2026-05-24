@@ -5,6 +5,7 @@ from urllib.parse import urlencode
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 from django.contrib.auth import get_user_model
+from django.db.models import Count
 from django.utils.html import format_html
 from django.utils.safestring import mark_safe
 
@@ -22,11 +23,14 @@ class CustomUserAdmin(UserAdmin):
     # Extend fieldsets for change form only (not user creation)
     fieldsets = [*(UserAdmin.fieldsets or ()), ("Data", {"fields": readonly_fields})]
 
+    def get_queryset(self, request):
+        return super().get_queryset(request).annotate(snapshot_count=Count("crawl__snapshot_set", distinct=True))
+
     def snapshot_rss_badge(self, obj, api_token: str = ""):
-        params = {"created_by": obj.username, "limit": 50}
+        params = {"created_by": obj.username, "limit": 100}
         if api_token:
             params["api_key"] = api_token
-        url = f"/api/v1/core/snapshots.rss?{urlencode(params)}"
+        rss_url = f"/api/v1/core/snapshots.rss?{urlencode(params)}"
         return format_html(
             (
                 '<a href="{}" title="Snapshot RSS feed for {}" '
@@ -37,9 +41,31 @@ class CustomUserAdmin(UserAdmin):
                 'background:#f97316;box-shadow:0 0 0 3px rgba(249,115,22,.18);"></span>'
                 "RSS</a>"
             ),
-            url,
+            rss_url,
             obj.username,
         )
+
+    def snapshot_count_badge(self, obj):
+        snapshots_url = f"/admin/core/snapshot/?created_by__id__exact={obj.pk}"
+        snapshot_count = getattr(obj, "snapshot_count", 0)
+        snapshot_label = "snapshot" if snapshot_count == 1 else "snapshots"
+        return format_html(
+            (
+                '<a href="{}" title="View snapshots for {}" '
+                'style="display:inline-flex;align-items:center;padding:3px 8px;border-radius:4px;'
+                "background:#f7f8fa;border:1px solid #d0d7de;color:#24292f;font-weight:600;"
+                'font-size:12px;line-height:1.2;text-decoration:none;white-space:nowrap;">'
+                "{} {}</a>"
+            ),
+            snapshots_url,
+            obj.username,
+            snapshot_count,
+            snapshot_label,
+        )
+
+    @admin.display(description="Snapshots", ordering="snapshot_count")
+    def snapshot_count_column(self, obj):
+        return self.snapshot_count_badge(obj)
 
     def get_list_display(self, request):
         from archivebox.api.auth import get_or_create_api_token
@@ -47,11 +73,11 @@ class CustomUserAdmin(UserAdmin):
         api_token = get_or_create_api_token(request.user)
         token = api_token.token if api_token else ""
 
-        @admin.display(description="Feed")
+        @admin.display(description="RSS Feed")
         def snapshot_rss_feed(obj):
             return self.snapshot_rss_badge(obj, api_token=token)
 
-        return ["username", snapshot_rss_feed, "id", "email", "is_superuser", "last_login", "date_joined"]
+        return ["username", snapshot_rss_feed, "snapshot_count_column", "id", "email", "is_superuser", "last_login", "date_joined"]
 
     @admin.display(description="Snapshots")
     def snapshot_set(self, obj):

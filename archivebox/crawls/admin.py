@@ -8,8 +8,7 @@ from django.utils.html import escape, format_html, format_html_join
 from django.utils import timezone
 from django.utils.safestring import mark_safe
 from django.contrib import admin, messages
-from django.db.models import Count, IntegerField, OuterRef, Q, Subquery, Value
-from django.db.models.functions import Coalesce
+from django.db.models import Count, Prefetch, Q
 
 
 from django_object_actions import action
@@ -19,6 +18,20 @@ from archivebox.base_models.admin import BaseModelAdmin, ConfigEditorMixin
 from archivebox.core.models import Snapshot
 from archivebox.core.widgets import TagEditorWidget
 from archivebox.crawls.models import Crawl, CrawlSchedule
+
+
+class MaxDepthListFilter(admin.SimpleListFilter):
+    title = "max depth"
+    parameter_name = "max_depth"
+
+    def lookups(self, request, model_admin):
+        return [(str(depth), str(depth)) for depth in range(5)]
+
+    def queryset(self, request, queryset):
+        value = self.value()
+        if value is not None and value.isdigit():
+            return queryset.filter(max_depth=int(value))
+        return queryset
 
 
 def render_snapshots_list(snapshots_qs, limit=20, crawl=None):
@@ -446,6 +459,7 @@ class CrawlAdminForm(forms.ModelForm):
 
 class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
     form = CrawlAdminForm
+    list_select_related = ()
     list_display = (
         "id",
         "created_at",
@@ -568,23 +582,21 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
         ),
     )
 
-    list_filter = ("max_depth", "max_urls", "schedule", "created_by", "status", "retry_at")
+    list_filter = (MaxDepthListFilter, "schedule", "created_by", "status", "retry_at")
     ordering = ["-created_at", "-retry_at"]
     list_per_page = 100
     actions = ["delete_selected_batched"]
     change_actions = ["recrawl"]
 
     def get_queryset(self, request):
-        """Optimize queries with select_related and annotations."""
-        qs = super().get_queryset(request)
-        snapshot_count = (
-            Snapshot.objects.filter(crawl_id=OuterRef("pk")).order_by().values("crawl_id").annotate(count=Count("pk")).values("count")
-        )
-        return qs.select_related("schedule", "created_by").annotate(
-            num_snapshots_cached=Coalesce(
-                Subquery(snapshot_count, output_field=IntegerField()),
-                Value(0),
-            ),
+        """Keep the changelist query page-local; counts are resolved per displayed row."""
+        return (
+            super()
+            .get_queryset(request)
+            .prefetch_related(
+                "created_by",
+                Prefetch("schedule", queryset=CrawlSchedule.objects.select_related("template")),
+            )
         )
 
     def get_fieldsets(self, request, obj=None):

@@ -10,7 +10,7 @@ from functools import reduce
 from operator import and_
 
 from django.contrib import admin
-from django.db.models import Min, Q, TextField
+from django.db.models import Min, Prefetch, Q, TextField
 from django.db.models.functions import Cast
 from django.utils.html import format_html
 from django.utils.safestring import mark_safe
@@ -388,6 +388,7 @@ class ArchiveResultInline(admin.TabularInline):
 
 
 class ArchiveResultAdmin(BaseModelAdmin):
+    list_select_related = ()
     list_display = (
         "details_link",
         "zip_link",
@@ -481,6 +482,7 @@ class ArchiveResultAdmin(BaseModelAdmin):
 
     paginator = AcceleratedPaginator
     save_on_top = True
+    show_full_result_count = False
 
     actions = ["delete_selected"]
 
@@ -520,20 +522,18 @@ class ArchiveResultAdmin(BaseModelAdmin):
         qs = (
             super()
             .get_queryset(request)
-            .select_related("snapshot", "snapshot__crawl", "snapshot__crawl__created_by", "process", "process__machine")
             .defer(
                 "config",
                 "notes",
                 "output_json",
-                "process__stdout",
-                "process__stderr",
-                "snapshot__config",
-                "snapshot__notes",
-                "snapshot__crawl__config",
-                "snapshot__crawl__notes",
-                "snapshot__crawl__urls",
             )
-            .prefetch_related("snapshot__tags")
+            .prefetch_related(
+                Prefetch(
+                    "snapshot",
+                    queryset=Snapshot.objects.defer("config", "notes").prefetch_related("crawl__created_by", "tags"),
+                ),
+                "process__machine",
+            )
         )
         if "tags_inline" in ordering_fields:
             qs = qs.annotate(snapshot_first_tag=Min("snapshot__tags__name"))

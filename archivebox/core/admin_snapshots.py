@@ -28,6 +28,7 @@ from archivebox.workers.tasks import bg_archive_snapshots, bg_add
 from archivebox.core.models import Tag, Snapshot, ArchiveResult
 from archivebox.core.admin_archiveresults import render_archiveresults_list
 from archivebox.core.widgets import TagEditorWidget, InlineTagEditorWidget
+from archivebox.crawls.models import Crawl
 
 
 # GLOBAL_CONTEXT = {'VERSION': VERSION, 'VERSIONS_AVAILABLE': [], 'CAN_UPGRADE': False}
@@ -80,7 +81,13 @@ class TagNameListFilter(admin.SimpleListFilter):
     parameter_name = "tag"
 
     def lookups(self, request, model_admin):
-        return [(str(tag.pk), tag.name) for tag in Tag.objects.order_by("name")]
+        selected = self.value()
+        tags = list(Tag.objects.order_by("name").only("id", "name")[:100])
+        if selected and selected.isdigit() and all(str(tag.pk) != selected for tag in tags):
+            selected_tag = Tag.objects.filter(pk=int(selected)).only("id", "name").first()
+            if selected_tag:
+                tags.insert(0, selected_tag)
+        return [(str(tag.pk), tag.name) for tag in tags]
 
     def queryset(self, request, queryset):
         if self.value():
@@ -141,6 +148,7 @@ class SnapshotAdminForm(forms.ModelForm):
 
 class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
     form = SnapshotAdminForm
+    list_select_related = ()
     list_display = ("created_at", "preview_icon", "title_str", "tags_inline", "status_with_progress", "files", "size_with_stats")
     sort_fields = ("title_str", "created_at", "status", "crawl")
     readonly_fields = (
@@ -332,10 +340,12 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         qs = (
             super()
             .get_queryset(request)
-            .select_related("crawl__created_by")
-            .defer("notes")
-            .prefetch_related("tags")
-            .prefetch_related(Prefetch("archiveresult_set", queryset=prefetch_qs))
+            .defer("config", "notes")
+            .prefetch_related(
+                Prefetch("crawl", queryset=Crawl.objects.select_related("created_by")),
+                "tags",
+                Prefetch("archiveresult_set", queryset=prefetch_qs),
+            )
         )
 
         if needs_size_sort:

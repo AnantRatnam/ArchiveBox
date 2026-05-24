@@ -135,6 +135,7 @@ class TagAdmin(BaseModelAdmin):
             "initial_tag_cards": build_tag_cards(
                 query=query,
                 request=request,
+                limit=150,
                 preview_limit=0,
                 sort=sort,
                 created_by=created_by,

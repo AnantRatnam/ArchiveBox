@@ -18,6 +18,7 @@ from django.utils.safestring import mark_safe
 from django.views import View
 from django.views.generic.list import ListView
 from django.views.generic import FormView
+from django.db import connection
 from django.db.models import Q, Prefetch
 from django.contrib import messages
 from django.contrib.auth.mixins import UserPassesTestMixin
@@ -900,8 +901,8 @@ class PublicIndexView(ListView):
         qs = (
             super()
             .get_queryset(**kwargs)
-            .select_related("crawl__created_by")
             .prefetch_related(
+                Prefetch("crawl", queryset=Crawl.objects.select_related("created_by")),
                 "tags",
                 Prefetch(
                     "archiveresult_set",
@@ -1346,6 +1347,18 @@ def live_progress_view(request):
         runner_worker_pid = runner_worker.get("pid") if runner_worker else None
         orchestrator_running = orchestrator_proc is not None or runner_worker_running
         orchestrator_pid = orchestrator_proc.pid if orchestrator_proc else runner_worker_pid
+
+        def sqlite_approx_count(model) -> int | None:
+            if connection.vendor != "sqlite":
+                return None
+            with connection.cursor() as cursor:
+                try:
+                    cursor.execute("SELECT stat FROM sqlite_stat1 WHERE tbl = %s", [model._meta.db_table])
+                    stats = [int(str(row[0]).split()[0]) for row in cursor.fetchall() if row and row[0]]
+                except Exception:
+                    stats = []
+            return max(stats) if stats else None
+
         # Get model counts by status
         crawls_pending = Crawl.objects.filter(status=Crawl.StatusChoices.QUEUED).count()
         crawls_started = Crawl.objects.filter(status=Crawl.StatusChoices.STARTED).count()
@@ -1361,8 +1374,24 @@ def live_progress_view(request):
 
         archiveresults_pending = ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.QUEUED).count()
         archiveresults_started = ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.STARTED).count()
-        archiveresults_succeeded = ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.SUCCEEDED).count()
         archiveresults_failed = ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.FAILED).count()
+        archiveresults_backoff = ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.BACKOFF).count()
+        archiveresults_skipped = ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.SKIPPED).count()
+        archiveresults_noresults = ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.NORESULTS).count()
+        archiveresults_total = sqlite_approx_count(ArchiveResult)
+        if archiveresults_total is not None:
+            archiveresults_succeeded = max(
+                archiveresults_total
+                - archiveresults_pending
+                - archiveresults_started
+                - archiveresults_failed
+                - archiveresults_backoff
+                - archiveresults_skipped
+                - archiveresults_noresults,
+                0,
+            )
+        else:
+            archiveresults_succeeded = ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.SUCCEEDED).count()
 
         # Build hierarchical active crawls with nested snapshots and archive results
 

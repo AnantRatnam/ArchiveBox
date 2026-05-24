@@ -1,5 +1,8 @@
 .DS_Store
 ._*
+/.heartbeat.json
+/package.json
+/package-lock.json
 *.pyc
 __pycache__/
 .mypy_cache/
@@ -26,6 +29,8 @@ abxbus/
 chrome/
 chromeprofile/
 chrome_profile/
+lib/
+out/
 users/
 archive/
 crawls/
@@ -60,3 +65,11 @@ sources/
 output/
 index.sqlite3
 index.sqlite3-wal
+queue.sqlite3
+*.sqlite*
+data.*
+.archivebox_id
+ArchiveBox.conf
+*.stdout
+*.stderr
+*.log

@@ -159,6 +159,9 @@ class Crawl(ModelWithOutputDir, ModelWithConfig, ModelWithHealthStats, ModelWith
         app_label = "crawls"
         verbose_name = "Crawl"
         verbose_name_plural = "Crawls"
+        indexes = [
+            models.Index(fields=["-created_at", "-retry_at", "-id"], name="crawl_admin_order_idx"),
+        ]
 
     def __str__(self):
         first_url = self.get_urls_list()[0] if self.get_urls_list() else ""

@@ -1,5 +1,8 @@
 .DS_Store
 ._*
+/.heartbeat.json
+/package.json
+/package-lock.json
 *.pyc
 __pycache__/
 .mypy_cache/
