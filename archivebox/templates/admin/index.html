@@ -271,12 +271,35 @@
         min-width: 0;
     }
 
+    .abx-admin-card__title-row {
+        display: flex;
+        gap: 7px;
+        align-items: baseline;
+        min-width: 0;
+    }
+
     #content .abx-admin-card__title {
         color: var(--abx-ink) !important;
         font-size: 15px;
         font-weight: 700;
         line-height: 1.25;
         text-decoration: none !important;
+    }
+
+    .abx-admin-card__count {
+        display: inline-flex;
+        flex: 0 0 auto;
+        align-items: center;
+        min-height: 16px;
+        padding: 0 5px;
+        color: var(--abx-ink-4);
+        background: rgba(28, 24, 20, .035);
+        border: 1px solid rgba(28, 24, 20, .08);
+        border-radius: 999px;
+        font-family: var(--abx-font-mono);
+        font-size: 10px;
+        font-weight: 650;
+        line-height: 1;
     }
 
     .abx-admin-card__text {

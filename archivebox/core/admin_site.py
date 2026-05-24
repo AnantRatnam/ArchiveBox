@@ -3,6 +3,7 @@ __package__ = "archivebox.core"
 from typing import TYPE_CHECKING, Any
 
 from django.contrib import admin
+from django.db import DatabaseError, connection
 from admin_data_views.admin import (
     admin_data_index_view as adv_admin_data_index_view,
     get_admin_data_urls as adv_get_admin_data_urls,
@@ -30,6 +31,51 @@ class ArchiveBoxAdmin(admin.AdminSite):
 
     def admin_data_index_view(self, request: "HttpRequest", **kwargs: Any) -> "TemplateResponse":
         return adv_admin_data_index_view(self, request, **kwargs)
+
+    def index(self, request: "HttpRequest", extra_context: dict[str, Any] | None = None) -> "TemplateResponse":
+        response = super().index(request, extra_context)
+        if connection.vendor != "sqlite":
+            return response
+
+        models_by_table: dict[str, list[dict[str, Any]]] = {}
+        for app in response.context_data.get("app_list", []):
+            for model in app.get("models", []):
+                model_class = model.get("model")
+                if not model_class or not model.get("perms", {}).get("view"):
+                    continue
+                models_by_table.setdefault(model_class._meta.db_table, []).append(model)
+
+        if not models_by_table:
+            return response
+
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT tbl, stat FROM sqlite_stat1")
+                for table, stat in cursor.fetchall():
+                    models = models_by_table.get(table)
+                    if not models:
+                        continue
+                    try:
+                        count = int(str(stat).split()[0])
+                    except (IndexError, TypeError, ValueError):
+                        continue
+                    if count >= 1_000_000_000:
+                        count_label = f"~{count / 1_000_000_000:.1f}B"
+                    elif count >= 1_000_000:
+                        count_label = f"~{count / 1_000_000:.1f}M"
+                    elif count >= 1_000:
+                        count_label = f"~{count / 1_000:.1f}K"
+                    else:
+                        count_label = f"~{count:,}"
+                    count_label = count_label.replace(".0", "")
+                    for model in models:
+                        model["object_count"] = count
+                        model["object_count_label"] = count_label
+                        model["object_count_title"] = f"Approximate count from SQLite stats: {count:,}"
+                    models_by_table.pop(table, None)
+        except DatabaseError:
+            pass
+        return response
 
     def get_admin_data_urls(self) -> list["URLResolver | URLPattern"]:
         return adv_get_admin_data_urls(self)

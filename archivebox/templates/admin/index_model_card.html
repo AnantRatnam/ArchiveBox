@@ -50,7 +50,12 @@
             </svg>
         </span>
         <span class="abx-admin-card__copy">
-            <strong class="abx-admin-card__title">{{ model.name }}</strong>
+            <span class="abx-admin-card__title-row">
+                <strong class="abx-admin-card__title">{{ model.name }}</strong>
+                {% if model.object_count_label %}
+                    <span class="abx-admin-card__count" title="{{ model.object_count_title }}">{{ model.object_count_label }}</span>
+                {% endif %}
+            </span>
             <span class="abx-admin-card__text">
                 {% if model.object_name == "Crawl" %}
                     Create and monitor URL collection jobs.

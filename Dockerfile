@@ -205,7 +205,7 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked,id=npm-$TARGETARCH$TARGE
 
 # Set up uv and main app /venv
 RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/bin sh
-ENV UV_COMPILE_BYTECODE=1 \
+ENV UV_COMPILE_BYTECODE=0 \
     UV_PYTHON_PREFERENCE=managed \
     UV_PYTHON_INSTALL_DIR=/opt/uv/python \
     UV_LINK_MODE=copy \
@@ -268,6 +268,7 @@ RUN --mount=type=bind,source=pyproject.toml,target=/app/pyproject.toml \
     && apt-get install -qq -y --no-install-recommends build-essential gcc python3-dev \
     && uv sync \
         --no-cache \
+        --no-dev \
         --inexact \
         --all-extras \
         --no-install-project \
@@ -275,6 +276,8 @@ RUN --mount=type=bind,source=pyproject.toml,target=/app/pyproject.toml \
         --no-sources \
     && apt-get purge -y python3-dev build-essential gcc \
     && apt-get autoremove -y \
+    && find /venv -type d -name __pycache__ -prune -exec rm -rf {} + \
+    && find /venv -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
     && rm -rf /var/lib/apt/lists/*
     # installs the pip packages that archivebox depends on, defined in pyproject.toml dependencies
 
@@ -289,7 +292,9 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked,id=uv-$TARGETARCH$T
         pip show archivebox \
         && which archivebox \
         && echo -e '\n\n' \
-    ) | tee -a /VERSION.txt
+    ) | tee -a /VERSION.txt \
+    && find /venv "$CODE_DIR" -type d -name __pycache__ -prune -exec rm -rf {} + \
+    && find /venv "$CODE_DIR" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
     # installs archivebox itself, and any other vendored packages in pkgs/*, defined in pyproject.toml workspaces
 
 ####################################################
@@ -319,6 +324,9 @@ RUN openssl rand -hex 16 > /etc/machine-id \
 # returned to the runtime archivebox user.
 RUN echo "[+] Initializing image collection and installing plugin runtime dependencies into $LIB_DIR..." \
     && PUID=0 PGID=0 archivebox init --install \
+    && find /venv "$CODE_DIR" "$LIB_DIR" "$DATA_DIR" -type d -name __pycache__ -prune -exec rm -rf {} + \
+    && find /venv "$CODE_DIR" "$LIB_DIR" "$DATA_DIR" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
+    && rm -rf /root/.cache /var/cache/apt/* /var/lib/apt/lists/* \
     && (chown "$DEFAULT_PUID:$DEFAULT_PGID" "$DATA_DIR" "$DATA_DIR"/logs "$DATA_DIR"/sources "$DATA_DIR"/archive "$DATA_DIR"/archive/users "$DATA_DIR"/personas "$DATA_DIR"/index.sqlite3 "$DATA_DIR"/ArchiveBox.conf 2>/dev/null || true) \
     && chown -R "$DEFAULT_PUID:$DEFAULT_PGID" "$LIB_DIR"
 
@@ -330,7 +338,10 @@ RUN (echo -e "\n\n[√] Finished Docker build successfully. Saving build summary
 
 # Verify ArchiveBox is installed and write full version/dependency info.
 RUN chmod +x "$CODE_DIR"/bin/*.sh \
-    && gosu "$ARCHIVEBOX_USER" archivebox version 2>&1 | tee -a /VERSION.txt
+    && gosu "$ARCHIVEBOX_USER" archivebox version 2>&1 | tee -a /VERSION.txt \
+    && find /venv "$CODE_DIR" "$LIB_DIR" "$DATA_DIR" -type d -name __pycache__ -prune -exec rm -rf {} + \
+    && find /venv "$CODE_DIR" "$LIB_DIR" "$DATA_DIR" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
+    && rm -rf /root/.cache /var/cache/apt/* /var/lib/apt/lists/*
 
 ####################################################
 
