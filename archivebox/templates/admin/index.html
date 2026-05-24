@@ -9,7 +9,7 @@
         width: auto !important;
         max-width: none !important;
         margin: 0 !important;
-        padding: 24px !important;
+        padding: 14px 22px 22px !important;
     }
 
     body.dashboard.abx-admin-dashboard-page #content-main {
@@ -37,24 +37,20 @@
         --abx-font-serif: "Source Serif 4", "Source Serif Pro", "Iowan Old Style", "Charter", Georgia, serif;
         --abx-font-sans: "Inter Tight", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
         --abx-font-mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
-        max-width: 1220px;
+        max-width: 1240px;
         margin: 0 auto;
         color: var(--abx-ink);
         font-family: var(--abx-font-sans);
     }
 
     .abx-admin-hero {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) auto;
-        gap: 24px;
-        align-items: end;
-        margin: 0 0 26px;
-        padding: 18px 0 22px;
+        margin: 0 0 16px;
+        padding: 8px 0 12px;
         border-bottom: 1px solid var(--abx-paper-3);
     }
 
     .abx-admin-kicker {
-        margin: 0 0 6px;
+        margin: 0;
         color: var(--abx-ink-3);
         font-family: var(--abx-font-mono);
         font-size: 11px;
@@ -67,19 +63,19 @@
     .abx-admin-section h2 {
         margin: 0;
         color: var(--abx-ink);
-        font-family: var(--abx-font-serif);
+        font-family: var(--abx-font-sans);
         font-weight: 600;
         letter-spacing: 0;
     }
 
     .abx-admin-hero h1 {
-        font-size: clamp(30px, 3vw, 44px);
-        line-height: 1.05;
+        font-size: 24px;
+        line-height: 1.2;
     }
 
-    .abx-admin-hero p:last-child,
     .abx-admin-section__intro {
-        margin: 8px 0 0;
+        display: none;
+        margin: 0;
         max-width: 68ch;
         color: var(--abx-ink-3);
         font-size: 14px;
@@ -89,13 +85,13 @@
     .abx-admin-layout {
         display: grid;
         grid-template-columns: minmax(0, 1fr) minmax(240px, 300px);
-        gap: 28px;
+        gap: 20px;
         align-items: start;
     }
 
     .abx-admin-sections {
         display: grid;
-        gap: 34px;
+        gap: 24px;
     }
 
     .abx-admin-section {
@@ -107,44 +103,49 @@
         justify-content: space-between;
         gap: 18px;
         align-items: end;
-        margin-bottom: 14px;
+        margin-bottom: 8px;
     }
 
     .abx-admin-section h2 {
-        font-size: 22px;
+        color: var(--abx-ink-2);
+        font-family: var(--abx-font-mono);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: .08em;
         line-height: 1.2;
+        text-transform: uppercase;
     }
 
     .abx-admin-flow {
         display: grid;
-        gap: 10px;
-        margin-bottom: 14px;
+        gap: 8px;
+        margin-bottom: 8px;
     }
 
     .abx-admin-flow__row,
     .abx-admin-card-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-        gap: 10px;
+        gap: 8px;
     }
 
     .abx-admin-flow__row--child {
-        padding-left: 18px;
+        padding-left: 14px;
         border-left: 2px solid var(--abx-paper-3);
     }
 
     .abx-admin-flow__row--grandchild {
-        padding-left: 36px;
+        padding-left: 28px;
         border-left: 2px solid var(--abx-paper-3);
     }
 
     .abx-admin-card {
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto;
-        gap: 14px;
+        gap: 10px;
         align-items: center;
-        min-height: 86px;
-        padding: 14px;
+        min-height: 66px;
+        padding: 10px 12px;
         background: var(--abx-vellum);
         border: 1px solid var(--abx-paper-3);
         border-radius: 6px;
@@ -156,18 +157,48 @@
         box-shadow: 0 2px 4px rgba(28, 24, 20, .06), 0 8px 18px rgba(28, 24, 20, .07);
     }
 
+    .abx-admin-card--crawl,
+    .abx-admin-card--crawlschedule {
+        background: #fff8f8;
+        border-color: #d8b7b7;
+        box-shadow: inset 3px 0 0 var(--abx-oxblood), 0 1px 0 rgba(28, 24, 20, .04), 0 1px 2px rgba(28, 24, 20, .06);
+    }
+
+    .abx-admin-card--crawl:hover,
+    .abx-admin-card--crawlschedule:hover {
+        border-color: #c99696;
+        box-shadow: inset 3px 0 0 var(--abx-oxblood), 0 2px 4px rgba(28, 24, 20, .06), 0 8px 18px rgba(28, 24, 20, .07);
+    }
+
+    .abx-admin-card--snapshot {
+        background: #f4f8fb;
+        border-color: #b9cad6;
+        box-shadow: inset 3px 0 0 var(--abx-slate), 0 1px 0 rgba(28, 24, 20, .04), 0 1px 2px rgba(28, 24, 20, .06);
+    }
+
+    .abx-admin-card--snapshot:hover {
+        border-color: #9db4c2;
+        box-shadow: inset 3px 0 0 var(--abx-slate), 0 2px 4px rgba(28, 24, 20, .06), 0 8px 18px rgba(28, 24, 20, .07);
+    }
+
+    .abx-admin-card--archiveresult {
+        background: #f8faf9;
+        border-color: #c8d3d7;
+        box-shadow: inset 3px 0 0 #7b8b92, 0 1px 0 rgba(28, 24, 20, .04), 0 1px 2px rgba(28, 24, 20, .06);
+    }
+
     .abx-admin-card__main {
         display: flex;
-        gap: 12px;
+        gap: 10px;
         align-items: flex-start;
         min-width: 0;
     }
 
     .abx-admin-card__icon {
         display: inline-flex;
-        width: 34px;
-        height: 34px;
-        flex: 0 0 34px;
+        width: 30px;
+        height: 30px;
+        flex: 0 0 30px;
         align-items: center;
         justify-content: center;
         color: var(--abx-oxblood);
@@ -195,9 +226,23 @@
         border-color: rgba(90, 107, 60, .16);
     }
 
+    .abx-admin-card--crawl .abx-admin-card__icon,
+    .abx-admin-card--crawlschedule .abx-admin-card__icon {
+        color: #7f1d1d;
+        background: #f2d7d7;
+        border-color: #d9a6a6;
+    }
+
+    .abx-admin-card--snapshot .abx-admin-card__icon,
+    .abx-admin-card--archiveresult .abx-admin-card__icon {
+        color: var(--abx-slate);
+        background: #dfe8ee;
+        border-color: #b9cad6;
+    }
+
     .abx-admin-card svg {
-        width: 19px;
-        height: 19px;
+        width: 17px;
+        height: 17px;
         fill: none;
         stroke: currentColor;
         stroke-width: 1.8;
@@ -211,17 +256,19 @@
         min-width: 0;
     }
 
-    .abx-admin-card__title {
-        color: var(--abx-ink);
+    #content .abx-admin-card__title,
+    #content .abx-admin-card__title:link,
+    #content .abx-admin-card__title:visited {
+        color: var(--abx-ink) !important;
         font-size: 15px;
         font-weight: 700;
         line-height: 1.25;
-        text-decoration: none;
+        text-decoration: none !important;
     }
 
-    .abx-admin-card__title:hover {
-        color: var(--abx-oxblood);
-        text-decoration: underline;
+    #content .abx-admin-card__title:hover {
+        color: var(--abx-oxblood) !important;
+        text-decoration: underline !important;
         text-underline-offset: 3px;
     }
 
@@ -238,58 +285,62 @@
         justify-content: flex-end;
     }
 
-    .abx-admin-action {
+    #content .abx-admin-action,
+    #content .abx-admin-action:link,
+    #content .abx-admin-action:visited {
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        min-height: 28px;
-        padding: 0 10px;
-        color: var(--abx-ink-2);
-        background: var(--abx-paper);
-        border: 1px solid var(--abx-paper-3);
+        min-height: 26px;
+        padding: 0 9px;
+        color: var(--abx-ink-2) !important;
+        background: var(--abx-paper) !important;
+        border: 1px solid var(--abx-paper-3) !important;
         border-radius: 4px;
         font-size: 12px;
         font-weight: 650;
         line-height: 1;
-        text-decoration: none;
+        text-decoration: none !important;
         white-space: nowrap;
     }
 
-    .abx-admin-action:hover {
-        color: var(--abx-ink);
-        background: var(--abx-paper-2);
-        border-color: var(--abx-rule-strong);
+    #content .abx-admin-action:hover {
+        color: var(--abx-ink) !important;
+        background: var(--abx-paper-2) !important;
+        border-color: var(--abx-rule-strong) !important;
     }
 
-    .abx-admin-action--add {
-        color: #fff;
-        background: var(--abx-oxblood);
-        border-color: var(--abx-oxblood);
+    #content .abx-admin-action--add,
+    #content .abx-admin-action--add:link,
+    #content .abx-admin-action--add:visited {
+        color: #fff !important;
+        background: var(--abx-oxblood) !important;
+        border-color: var(--abx-oxblood) !important;
     }
 
-    .abx-admin-action--add:hover {
-        color: #fff;
-        background: #6e1f1f;
-        border-color: #6e1f1f;
+    #content .abx-admin-action--add:hover {
+        color: #fff !important;
+        background: #6e1f1f !important;
+        border-color: #6e1f1f !important;
     }
 
     .abx-admin-aside {
         display: grid;
-        gap: 14px;
+        gap: 10px;
         position: sticky;
-        top: 18px;
+        top: 12px;
     }
 
     .abx-admin-panel {
         background: var(--abx-vellum);
         border: 1px solid var(--abx-paper-3);
         border-radius: 6px;
-        padding: 14px;
+        padding: 12px;
         box-shadow: 0 1px 0 rgba(28, 24, 20, .04), 0 1px 2px rgba(28, 24, 20, .06);
     }
 
     .abx-admin-panel h2 {
-        margin: 0 0 10px;
+        margin: 0 0 8px;
         color: var(--abx-ink);
         font-size: 14px;
         font-weight: 700;
@@ -318,15 +369,17 @@
         border-bottom: 0;
     }
 
-    .abx-admin-recent a {
-        color: var(--abx-ink);
+    #content .abx-admin-recent a,
+    #content .abx-admin-recent a:link,
+    #content .abx-admin-recent a:visited {
+        color: var(--abx-ink) !important;
         font-weight: 650;
-        text-decoration: none;
+        text-decoration: none !important;
     }
 
-    .abx-admin-recent a:hover {
-        color: var(--abx-oxblood);
-        text-decoration: underline;
+    #content .abx-admin-recent a:hover {
+        color: var(--abx-oxblood) !important;
+        text-decoration: underline !important;
         text-underline-offset: 3px;
     }
 
@@ -392,11 +445,7 @@
 {% else %}
     <div class="abx-admin-dashboard">
         <header class="abx-admin-hero">
-            <div>
-                <p class="abx-admin-kicker">{% translate "ArchiveBox Admin" %}</p>
-                <h1>{{ title|default:_("Admin Views") }}</h1>
-                <p>{% translate "Run crawls, review archived pages, and inspect the environment from one compact control surface." %}</p>
-            </div>
+            <h1>{{ title|default:_("Admin Views") }}</h1>
         </header>
 
         {% if app_list %}
@@ -404,11 +453,7 @@
                 <main class="abx-admin-sections" id="content-main">
                     <section class="abx-admin-section" aria-labelledby="abx-admin-main-title">
                         <div class="abx-admin-section__head">
-                            <div>
-                                <p class="abx-admin-kicker">{% translate "Main" %}</p>
-                                <h2 id="abx-admin-main-title">{% translate "Daily Operations" %}</h2>
-                                <p class="abx-admin-section__intro">{% translate "The models used most often while collecting, organizing, and reviewing archived sites." %}</p>
-                            </div>
+                            <h2 id="abx-admin-main-title">{% translate "Main" %}</h2>
                         </div>
 
                         <div class="abx-admin-flow">
@@ -468,11 +513,7 @@
 
                     <section class="abx-admin-section" aria-labelledby="abx-admin-environment-title">
                         <div class="abx-admin-section__head">
-                            <div>
-                                <p class="abx-admin-kicker">{% translate "Environment" %}</p>
-                                <h2 id="abx-admin-environment-title">{% translate "Configuration and Dependencies" %}</h2>
-                                <p class="abx-admin-section__intro">{% translate "Read-only runtime views for settings, plugins, workers, logs, and installed tools." %}</p>
-                            </div>
+                            <h2 id="abx-admin-environment-title">{% translate "Environment" %}</h2>
                         </div>
                         <div class="abx-admin-card-grid">
                             {% for app in app_list %}
@@ -509,11 +550,7 @@
 
                     <section class="abx-admin-section" aria-labelledby="abx-admin-machine-title">
                         <div class="abx-admin-section__head">
-                            <div>
-                                <p class="abx-admin-kicker">{% translate "Machine" %}</p>
-                                <h2 id="abx-admin-machine-title">{% translate "Host State" %}</h2>
-                                <p class="abx-admin-section__intro">{% translate "Lower-level records for the current machine, interfaces, binaries, and process history." %}</p>
-                            </div>
+                            <h2 id="abx-admin-machine-title">{% translate "Machine" %}</h2>
                         </div>
                         <div class="abx-admin-card-grid">
                             {% for app in app_list %}
@@ -549,11 +586,7 @@
 
                     <section class="abx-admin-section" aria-labelledby="abx-admin-advanced-title">
                         <div class="abx-admin-section__head">
-                            <div>
-                                <p class="abx-admin-kicker">{% translate "Advanced" %}</p>
-                                <h2 id="abx-admin-advanced-title">{% translate "Automation" %}</h2>
-                                <p class="abx-admin-section__intro">{% translate "API and integration objects that are useful for automation but less common during daily archiving." %}</p>
-                            </div>
+                            <h2 id="abx-admin-advanced-title">{% translate "Advanced" %}</h2>
                         </div>
                         <div class="abx-admin-card-grid">
                             {% for app in app_list %}
@@ -569,7 +602,6 @@
 
                 <aside class="abx-admin-aside">
                     <section class="abx-admin-panel" aria-labelledby="abx-admin-recent-title">
-                        <p class="abx-admin-kicker">{% translate "Recent" %}</p>
                         <h2 id="abx-admin-recent-title">{% translate "Recent Actions" %}</h2>
                         {% get_admin_log 8 as admin_log for_user user %}
                         {% if not admin_log %}
