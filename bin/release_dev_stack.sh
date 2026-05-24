@@ -190,32 +190,20 @@ release_python_repo() {
     wait_for_pypi "$package" "$version"
 }
 
-if [[ -n "${ABXPKG_VERSION:-}" ]]; then
-    ABXPKG_VERSION="$ABXPKG_VERSION"
-elif [[ "${SKIP_ABXPKG:-0}" == "1" ]]; then
-    ABXPKG_VERSION="$(current_version "$(repo_dir abxpkg)")"
-else
-    ABXPKG_VERSION="$(next_patch_version "$(current_version "$(repo_dir abxpkg)")")"
-fi
-ABX_SHARED_VERSION="${ABX_SHARED_VERSION:-$(next_patch_version "$(current_version "$(repo_dir abx-plugins)")" "$(current_version "$(repo_dir abx-dl)")")}"
+ABXPKG_VERSION="$(next_patch_version "$(current_version "$(repo_dir abxpkg)")")"
+ABX_SHARED_VERSION="$(next_patch_version "$(current_version "$(repo_dir abx-plugins)")" "$(current_version "$(repo_dir abx-dl)")")"
 
-if [[ "${SKIP_ABXPKG:-0}" != "1" ]]; then
-    bump_patch_to "$(repo_dir abxpkg)" "$ABXPKG_VERSION"
-    release_python_repo abxpkg main abxpkg "$ABXPKG_VERSION"
-fi
+bump_patch_to "$(repo_dir abxpkg)" "$ABXPKG_VERSION"
+release_python_repo abxpkg main abxpkg "$ABXPKG_VERSION"
 
-if [[ "${SKIP_ABX_PLUGINS:-0}" != "1" ]]; then
-    bump_patch_to "$(repo_dir abx-plugins)" "$ABX_SHARED_VERSION"
-    set_dependency_version "$(repo_dir abx-plugins)" abxpkg "$ABXPKG_VERSION"
-    release_python_repo abx-plugins main abx-plugins "$ABX_SHARED_VERSION"
-fi
+bump_patch_to "$(repo_dir abx-plugins)" "$ABX_SHARED_VERSION"
+set_dependency_version "$(repo_dir abx-plugins)" abxpkg "$ABXPKG_VERSION"
+release_python_repo abx-plugins main abx-plugins "$ABX_SHARED_VERSION"
 
-if [[ "${SKIP_ABX_DL:-0}" != "1" ]]; then
-    bump_patch_to "$(repo_dir abx-dl)" "$ABX_SHARED_VERSION"
-    set_dependency_version "$(repo_dir abx-dl)" abxpkg "$ABXPKG_VERSION"
-    set_dependency_version "$(repo_dir abx-dl)" abx-plugins "$ABX_SHARED_VERSION"
-    release_python_repo abx-dl main abx-dl "$ABX_SHARED_VERSION"
-fi
+bump_patch_to "$(repo_dir abx-dl)" "$ABX_SHARED_VERSION"
+set_dependency_version "$(repo_dir abx-dl)" abxpkg "$ABXPKG_VERSION"
+set_dependency_version "$(repo_dir abx-dl)" abx-plugins "$ABX_SHARED_VERSION"
+release_python_repo abx-dl main abx-dl "$ABX_SHARED_VERSION"
 
 ARCHIVEBOX_VERSION="$(bump_archivebox_rc)"
 set_dependency_version "$ARCHIVEBOX_REPO" abxpkg "$ABXPKG_VERSION"
