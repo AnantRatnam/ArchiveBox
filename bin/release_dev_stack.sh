@@ -136,7 +136,7 @@ commit_push_publish() {
 
     (
         cd "$repo"
-        git add -A
+        git add -A -- . ':!dist' ':!dist/**'
         if ! git diff --cached --quiet; then
             git commit -m "release: ${package} ${version}"
         else
