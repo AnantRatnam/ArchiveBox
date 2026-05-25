@@ -408,6 +408,7 @@
         class="tag-admin-shell"
         data-search-url="{{ tag_search_api_url }}"
         data-create-url="{{ tag_create_api_url }}"
+        data-initial-has-snapshots="{{ initial_has_snapshots }}"
     >
         <section class="tag-admin-toolbar">
             <div class="tag-admin-panel tag-admin-panel--search">
@@ -561,6 +562,7 @@ document.addEventListener('DOMContentLoaded', function () {
             sort: typeof next.sort === 'string' ? next.sort : (sortSelect?.value || 'created_desc'),
             created_by: typeof next.created_by === 'string' ? next.created_by : (createdBySelect?.value || ''),
             year: typeof next.year === 'string' ? next.year : (yearSelect?.value || ''),
+            has_snapshots: typeof next.has_snapshots === 'string' ? next.has_snapshots : (shell.dataset.initialHasSnapshots || 'yes'),
         };
     }
 
@@ -597,6 +599,12 @@ document.addEventListener('DOMContentLoaded', function () {
             url.searchParams.delete('year');
         }
 
+        if (state.has_snapshots && state.has_snapshots !== 'yes') {
+            url.searchParams.set('has_snapshots', state.has_snapshots);
+        } else {
+            url.searchParams.delete('has_snapshots');
+        }
+
         window.history.replaceState({}, '', url.toString());
     }
 
@@ -607,7 +615,9 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function renderCards(nextCards, state) {
-        cards = Array.isArray(nextCards) ? nextCards : [];
+        cards = Array.isArray(nextCards) ? nextCards.filter(function (card) {
+            return Number(card && card.num_snapshots || 0) > 0;
+        }) : [];
         setMeta(state || getCurrentState(), cards.length);
 
         if (!cards.length) {
@@ -625,9 +635,7 @@ document.addEventListener('DOMContentLoaded', function () {
                             '<span>' + escapeHtml(snapshot.title) + '</span>' +
                         '</a>';
                 }).join('')
-                : snapshotCount > 0
-                    ? '<a class="tag-card__empty tag-snapshot-badge" href="' + escapeHtml(card.filter_url) + '">' + escapeHtml(snapshotCount) + ' snapshot' + (snapshotCount === 1 ? '' : 's') + ' attached</a>'
-                    : '<div class="tag-card__empty">No snapshots attached yet.</div>';
+                : '<a class="tag-card__empty tag-snapshot-badge" href="' + escapeHtml(card.filter_url) + '">' + escapeHtml(snapshotCount) + ' snapshot' + (snapshotCount === 1 ? '' : 's') + ' tagged</a>';
 
             return '' +
                 '<article class="tag-card" data-id="' + escapeHtml(card.id) + '" data-slug="' + escapeHtml(card.slug) + '" data-filter-url="' + escapeHtml(card.filter_url) + '" data-rename-url="' + escapeHtml(card.rename_url) + '" data-delete-url="' + escapeHtml(card.delete_url) + '" data-export-urls-url="' + escapeHtml(card.export_urls_url) + '" data-export-jsonl-url="' + escapeHtml(card.export_jsonl_url) + '">' +
@@ -661,6 +669,7 @@ document.addEventListener('DOMContentLoaded', function () {
         if (state.sort) params.set('sort', state.sort);
         if (state.created_by) params.set('created_by', state.created_by);
         if (state.year) params.set('year', state.year);
+        if (state.has_snapshots) params.set('has_snapshots', state.has_snapshots);
         const url = withApiKey(searchUrl + '?' + params.toString());
         const response = await fetch(url, {
             headers: buildHeaders(false),
@@ -678,6 +687,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 sort: payload.sort || state.sort,
                 created_by: payload.created_by || '',
                 year: payload.year || '',
+                has_snapshots: payload.has_snapshots || state.has_snapshots,
             },
         };
     }
