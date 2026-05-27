@@ -1431,13 +1431,11 @@ class Process(models.Model):
 
         Returns count of processes cleaned up.
         """
-        machine = machine or Machine.current()
         cleaned = 0
 
-        stale = cls.objects.filter(
-            machine=machine,
-            status=cls.StatusChoices.RUNNING,
-        )
+        stale = cls.objects.filter(status=cls.StatusChoices.RUNNING)
+        if machine is not None:
+            stale = stale.filter(machine=machine)
 
         for proc in stale:
             if proc.poll() is not None:

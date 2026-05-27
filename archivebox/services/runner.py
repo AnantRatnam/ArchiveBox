@@ -109,20 +109,21 @@ async def _emit_machine_config(
 ) -> None:
     user_config = _normalize_runtime_config(config)
     derived_machine_config = _normalize_runtime_config(derived_config)
-    emitter = parent_event.emit if parent_event is not None else bus.emit
-    await emitter(
-        MachineEvent(
-            config=user_config,
-            config_type="user",
-        ),
-    ).now()
+    user_event = MachineEvent(
+        config=user_config,
+        config_type="user",
+    )
+    if parent_event is not None:
+        user_event.event_parent_id = parent_event.event_id
+    await bus.emit(user_event).now()
     if derived_machine_config:
-        await emitter(
-            MachineEvent(
-                config=derived_machine_config,
-                config_type="derived",
-            ),
-        ).now()
+        derived_event = MachineEvent(
+            config=derived_machine_config,
+            config_type="derived",
+        )
+        if parent_event is not None:
+            derived_event.event_parent_id = parent_event.event_id
+        await bus.emit(derived_event).now()
 
 
 async def _run_event_now(event, timeout: float | None = None):
@@ -326,15 +327,15 @@ class CrawlRunner:
                 self._live_stream = None
             await sync_to_async(self.finalize_run_state, thread_sensitive=True)()
 
-    async def enqueue_snapshot(self, snapshot_id: str) -> None:
+    async def enqueue_snapshot(self, snapshot_id: str, crawl_start_event: CrawlStartEvent | None = None) -> None:
         if await self.crawl_is_cancelled():
             return
         task = self.snapshot_tasks.get(snapshot_id)
         if task is not None and not task.done():
             return
-        current_event = get_current_event()
+        current_event = crawl_start_event or get_current_event()
         if isinstance(current_event, CrawlStartEvent):
-            task = asyncio.create_task(self.run_snapshot(snapshot_id))
+            task = asyncio.create_task(self.run_snapshot(snapshot_id, current_event), context=_runner_task_context())
         elif in_handler_context():
             return
         else:
@@ -817,9 +818,9 @@ class CrawlRunner:
             if completed_process.status == "failed":
                 raise RuntimeError(f"Crawl setup hook {plugin.name}:{hook.name} failed")
 
-    async def run_snapshot(self, snapshot_id: str) -> None:
+    async def run_snapshot(self, snapshot_id: str, crawl_start_event: CrawlStartEvent | None = None) -> None:
         async with self.snapshot_semaphore:
-            crawl_start_event = get_current_event()
+            crawl_start_event = crawl_start_event or get_current_event()
             if not isinstance(crawl_start_event, CrawlStartEvent):
                 raise RuntimeError("Snapshot events must be emitted from a CrawlStartEvent handler")
             snapshot = await sync_to_async(self.load_snapshot_payload, thread_sensitive=True)(snapshot_id)
@@ -861,7 +862,8 @@ class CrawlRunner:
                     event_timeout=snapshot_phase_timeout,
                     event_handler_slow_timeout=slow_warning_timeout(snapshot_phase_timeout),
                 )
-                emitted_snapshot_event = crawl_start_event.emit(snapshot_event)
+                snapshot_event.event_parent_id = crawl_start_event.event_id
+                emitted_snapshot_event = self.bus.emit(snapshot_event)
                 await _run_event_now(emitted_snapshot_event, snapshot_phase_timeout)
                 completed_snapshot = await self.bus.find(
                     SnapshotCompletedEvent,
@@ -1199,9 +1201,19 @@ def recover_orphaned_snapshots() -> int:
 def run_pending_crawls(*, daemon: bool = False, crawl_id: str | None = None) -> int:
     from archivebox.crawls.models import Crawl, CrawlSchedule
     from archivebox.core.models import Snapshot
-    from archivebox.machine.models import Binary
+    from archivebox.machine.models import Binary, Process
 
+    last_recovery_at = 0.0
     while True:
+        if daemon:
+            now_monotonic = time.monotonic()
+            if now_monotonic - last_recovery_at >= 30.0:
+                Process.cleanup_stale_running()
+                Process.cleanup_orphaned_workers()
+                recover_orphaned_snapshots()
+                recover_orphaned_crawls()
+                last_recovery_at = now_monotonic
+
         if daemon and crawl_id is None:
             now = timezone.now()
             for schedule in CrawlSchedule.objects.filter(is_enabled=True).select_related("template", "template__created_by"):
