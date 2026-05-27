@@ -1523,13 +1523,13 @@ def live_progress_view(request):
             if status == Crawl.StatusChoices.SEALED:
                 status_qs = status_qs.filter(modified_at__gte=recently_cancelled_after)
             active_crawl_candidates.extend(
-                status_qs.values(*active_crawl_fields).order_by("-modified_at")[:10],
+                status_qs.values(*active_crawl_fields).order_by("-modified_at"),
             )
         active_crawls_list = sorted(
             {str(crawl["id"]): crawl for crawl in active_crawl_candidates}.values(),
             key=lambda crawl: crawl["modified_at"],
             reverse=True,
-        )[:10]
+        )
         persona_details_by_id: dict[str, dict[str, str]] = {}
         persona_details_by_name: dict[str, dict[str, str]] = {}
         persona_ids = {crawl["persona_id"] for crawl in active_crawls_list if crawl["persona_id"]}
@@ -1573,36 +1573,12 @@ def live_progress_view(request):
             ):
                 crawl_output_sizes_by_crawl[str(row["snapshot__crawl_id"])] = int(row["total_size"] or 0)
 
-        if machine_id is not None:
-            running_processes = Process.objects.filter(
-                machine_id=machine_id,
-                status=Process.StatusChoices.RUNNING,
-                process_type__in=[
-                    Process.TypeChoices.HOOK,
-                    Process.TypeChoices.BINARY,
-                ],
-            ).values("id", "process_type", "status", "pwd", "cmd", "pid", "exit_code", "started_at", "modified_at")
-            recent_processes = (
-                Process.objects.filter(
-                    machine_id=machine_id,
-                    process_type__in=[
-                        Process.TypeChoices.HOOK,
-                        Process.TypeChoices.BINARY,
-                    ],
-                    modified_at__gte=now - timedelta(minutes=10),
-                )
-                .values("id", "process_type", "status", "pwd", "cmd", "pid", "exit_code", "started_at", "modified_at")
-                .order_by("-modified_at")
-            )
-        else:
-            running_processes = Process.objects.none()
-            recent_processes = Process.objects.none()
         crawl_process_pids: dict[str, int] = {}
         snapshot_process_pids: dict[str, int] = {}
         process_records_by_crawl: dict[str, list[tuple[dict[str, object], object | None]]] = {}
         process_records_by_snapshot: dict[str, list[tuple[dict[str, object], object | None]]] = {}
         seen_process_records: set[str] = set()
-        active_snapshot_statuses = {Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED}
+        active_snapshot_statuses = {Snapshot.StatusChoices.STARTED}
         recently_cancelled_snapshots_q = Q(
             status=Snapshot.StatusChoices.SEALED,
             downloaded_at__isnull=True,
@@ -1624,17 +1600,33 @@ def live_progress_view(request):
                 "fs_version",
                 "status",
             )
-            .order_by("crawl_id", "status", "modified_at")[:100],
+            .order_by("crawl_id", "status", "modified_at"),
         )
         snapshots_by_id = {str(snapshot["id"]): snapshot for snapshot in snapshots}
         displayed_snapshots_by_crawl: dict[str, list[Snapshot]] = {str(crawl_id): [] for crawl_id in active_crawl_ids}
         for snapshot in snapshots:
             crawl_snapshots = displayed_snapshots_by_crawl.setdefault(str(snapshot["crawl_id"]), [])
-            if len(crawl_snapshots) < 5:
-                crawl_snapshots.append(snapshot)
+            crawl_snapshots.append(snapshot)
         displayed_snapshot_ids = [
             snapshot["id"] for crawl_snapshots in displayed_snapshots_by_crawl.values() for snapshot in crawl_snapshots
         ]
+        process_value_fields = ("id", "process_type", "status", "pwd", "cmd", "pid", "exit_code", "started_at", "modified_at")
+        if active_crawl_ids or displayed_snapshot_ids:
+            process_scope = Process.objects.filter(
+                machine_id=machine_id,
+                process_type__in=[
+                    Process.TypeChoices.HOOK,
+                    Process.TypeChoices.BINARY,
+                ],
+            )
+            running_processes = process_scope.filter(status=Process.StatusChoices.RUNNING).values(*process_value_fields)
+            recent_processes = (
+                process_scope.filter(modified_at__gte=now - timedelta(minutes=10)).values(*process_value_fields).order_by("-modified_at")
+            )
+        else:
+            running_processes = Process.objects.none()
+            recent_processes = Process.objects.none()
+
         archiveresults_by_snapshot: dict[str, list[ArchiveResult]] = {str(snapshot_id): [] for snapshot_id in displayed_snapshot_ids}
         if displayed_snapshot_ids:
             displayed_archiveresults = (

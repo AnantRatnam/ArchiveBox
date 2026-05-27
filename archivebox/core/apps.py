@@ -45,8 +45,6 @@ class CoreConfig(AppConfig):
             return False
 
         if _should_prepare_runtime():
-            from archivebox.machine.models import Process, Machine
+            from archivebox.machine.models import Machine
 
-            Process.cleanup_stale_running()
-            Process.cleanup_orphaned_workers()
             Machine.current()

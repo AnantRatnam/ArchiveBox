@@ -165,7 +165,7 @@ def test_sonic_daemon_event_handler_requires_running_supervised_worker(monkeypat
     asyncio.run(run_test())
 
 
-def test_stop_existing_background_runner_cleans_up_and_stops_orchestrators():
+def test_stop_existing_background_runner_stops_orchestrators_without_row_healing():
     from archivebox.cli.archivebox_server import stop_existing_background_runner
 
     runner_a = Mock()
@@ -195,7 +195,8 @@ def test_stop_existing_background_runner_cleans_up_and_stops_orchestrators():
     )
 
     assert stopped == 2
-    assert process_model.cleanup_stale_running.call_count == 2
+    process_model.cleanup_stale_running.assert_not_called()
+    process_model.cleanup_orphaned_workers.assert_not_called()
     stop_worker.assert_any_call(supervisor, "worker_runner")
     stop_worker.assert_any_call(supervisor, "worker_runner_watch")
     runner_a.kill_tree.assert_called_once_with(graceful_timeout=2.0)

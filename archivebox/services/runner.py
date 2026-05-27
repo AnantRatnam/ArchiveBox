@@ -146,14 +146,13 @@ def ensure_background_runner(*, allow_under_pytest: bool = False) -> bool:
     if runner_worker and runner_worker.get("statename") in ("STARTING", "RUNNING"):
         return False
 
-    Process.cleanup_stale_running()
-    Process.cleanup_orphaned_workers()
     machine = Machine.current()
-    if Process.objects.filter(
+    running_orchestrators = Process.objects.filter(
         machine=machine,
         status=Process.StatusChoices.RUNNING,
         process_type=Process.TypeChoices.ORCHESTRATOR,
-    ).exists():
+    )
+    if any(proc.is_running for proc in running_orchestrators):
         return False
 
     log_path = CONSTANTS.LOGS_DIR / "errors.log"
@@ -1233,6 +1232,22 @@ def recover_orphaned_snapshots() -> int:
     return recovered
 
 
+def cleanup_orchestrator_state(*, recover: bool = True, include_chrome: bool = False) -> dict[str, int]:
+    from archivebox.machine.models import Process
+
+    cleaned = {
+        "stale_processes": Process.cleanup_stale_running(),
+        "orphaned_processes": Process.cleanup_orphaned_workers(),
+        "orphaned_chrome": Process.cleanup_orphaned_chrome() if include_chrome else 0,
+        "orphaned_snapshots": 0,
+        "orphaned_crawls": 0,
+    }
+    if recover:
+        cleaned["orphaned_snapshots"] = recover_orphaned_snapshots()
+        cleaned["orphaned_crawls"] = recover_orphaned_crawls()
+    return cleaned
+
+
 def run_pending_crawls(*, daemon: bool = False, crawl_id: str | None = None) -> int:
     from archivebox.crawls.models import Crawl, CrawlSchedule
     from archivebox.core.models import ArchiveResult, Snapshot
@@ -1244,10 +1259,7 @@ def run_pending_crawls(*, daemon: bool = False, crawl_id: str | None = None) -> 
         now_monotonic = time.monotonic()
         if daemon:
             if now_monotonic - last_recovery_at >= 30.0:
-                Process.cleanup_stale_running()
-                Process.cleanup_orphaned_workers()
-                recover_orphaned_snapshots()
-                recover_orphaned_crawls()
+                cleanup_orchestrator_state()
                 last_recovery_at = now_monotonic
         if now_monotonic - last_retention_at >= (60.0 if daemon else 1.0):
             for model in (ArchiveResult, Snapshot, Crawl, Process):

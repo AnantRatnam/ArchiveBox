@@ -14,7 +14,6 @@ import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import patch
 from django.test import override_settings
 from django.test.client import RequestFactory
 from django.urls import reverse
@@ -1291,7 +1290,7 @@ class TestLiveProgressView:
         assert payload["active_crawls"] == []
         assert payload["total_workers"] == 0
 
-    def test_live_progress_cleans_stale_running_processes(self, client, admin_user, db):
+    def test_live_progress_does_not_clean_stale_running_processes(self, client, admin_user, db):
         from datetime import timedelta
         import archivebox.machine.models as machine_models
         from archivebox.machine.models import Machine, Process
@@ -1313,8 +1312,8 @@ class TestLiveProgressView:
 
         assert response.status_code == 200
         proc.refresh_from_db()
-        assert proc.status == Process.StatusChoices.EXITED
-        assert proc.ended_at is not None
+        assert proc.status == Process.StatusChoices.RUNNING
+        assert proc.ended_at is None
         assert response.json()["total_workers"] == 0
 
     def test_live_progress_routes_crawl_process_rows_to_crawl_setup(self, client, admin_user, snapshot, db):
@@ -1336,11 +1335,7 @@ class TestLiveProgressView:
         )
 
         client.login(username="testadmin", password="testpassword")
-        with (
-            patch.object(Process, "cleanup_stale_running", return_value=0),
-            patch.object(Process, "cleanup_orphaned_workers", return_value=0),
-        ):
-            response = client.get(reverse("live_progress"), HTTP_HOST=ADMIN_HOST)
+        response = client.get(reverse("live_progress"), HTTP_HOST=ADMIN_HOST)
 
         assert response.status_code == 200
         payload = response.json()
@@ -1371,11 +1366,7 @@ class TestLiveProgressView:
         )
 
         client.login(username="testadmin", password="testpassword")
-        with (
-            patch.object(Process, "cleanup_stale_running", return_value=0),
-            patch.object(Process, "cleanup_orphaned_workers", return_value=0),
-        ):
-            response = client.get(reverse("live_progress"), HTTP_HOST=ADMIN_HOST)
+        response = client.get(reverse("live_progress"), HTTP_HOST=ADMIN_HOST)
 
         assert response.status_code == 200
         payload = response.json()
@@ -1410,11 +1401,7 @@ class TestLiveProgressView:
         )
 
         client.login(username="testadmin", password="testpassword")
-        with (
-            patch.object(Process, "cleanup_stale_running", return_value=0),
-            patch.object(Process, "cleanup_orphaned_workers", return_value=0),
-        ):
-            response = client.get(reverse("live_progress"), HTTP_HOST=ADMIN_HOST)
+        response = client.get(reverse("live_progress"), HTTP_HOST=ADMIN_HOST)
 
         assert response.status_code == 200
         payload = response.json()

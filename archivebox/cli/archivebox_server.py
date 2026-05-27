@@ -15,9 +15,6 @@ from archivebox.config.common import get_config
 
 def stop_existing_background_runner(*, machine, process_model, supervisor=None, stop_worker_fn=None, log=print) -> int:
     """Stop any existing orchestrator process so the server can take ownership."""
-    process_model.cleanup_stale_running(machine=machine)
-    process_model.cleanup_orphaned_workers()
-
     running_runners = list(
         process_model.objects.filter(
             machine=machine,
@@ -47,7 +44,6 @@ def stop_existing_background_runner(*, machine, process_model, supervisor=None, 
             except Exception:
                 pass
 
-    process_model.cleanup_stale_running(machine=machine)
     return len(running_runners)
 
 

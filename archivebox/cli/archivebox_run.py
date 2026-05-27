@@ -255,13 +255,9 @@ def run_runner(daemon: bool = False, crawl_id: str | None = None) -> int:
     """
     from django.utils import timezone
     from archivebox.machine.models import Machine, Process
-    from archivebox.services.runner import recover_orphaned_crawls, recover_orphaned_snapshots, run_pending_crawls
+    from archivebox.services.runner import cleanup_orchestrator_state, run_pending_crawls
 
-    Process.cleanup_stale_running()
-    Process.cleanup_orphaned_workers()
-    Process.cleanup_orphaned_chrome()
-    recover_orphaned_snapshots()
-    recover_orphaned_crawls()
+    cleanup_orchestrator_state(include_chrome=True)
     Machine.current()
     current = Process.current()
     if current.process_type != Process.TypeChoices.ORCHESTRATOR:

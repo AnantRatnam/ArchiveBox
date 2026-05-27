@@ -71,8 +71,6 @@ class Command(BaseCommand):
         start_worker(get_supervisor(), RUNNER_WORKER, lazy=True)
 
         def restart_runner() -> None:
-            Process.cleanup_stale_running()
-            Process.cleanup_orphaned_workers()
             machine = Machine.current()
 
             running = Process.objects.filter(
