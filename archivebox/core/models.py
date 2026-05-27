@@ -1248,6 +1248,8 @@ class Snapshot(ModelWithOutputDir, ModelWithConfig, ModelWithNotes, ModelWithHea
                 existing_result.save(update_fields=[*update_fields, "modified_at"])
             return
 
+        # Machine.current() can probe the host and sanitize config. Do that before
+        # atomic() so the transaction below only covers the two related row writes.
         machine = Machine.current() if cmd or pwd else None
         with transaction.atomic():
             if machine is not None:

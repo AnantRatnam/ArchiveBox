@@ -709,6 +709,11 @@ class Crawl(ModelWithOutputDir, ModelWithConfig, ModelWithHealthStats, ModelWith
                 # Note: created_by removed in 0.9.0 - Snapshot inherits from Crawl
             }
             try:
+                # Intentionally avoid get_or_create/update_or_create here:
+                # Django wraps those helpers in atomic(), and Snapshot.save() schedules
+                # filesystem/crawl maintenance callbacks. Keeping this as explicit
+                # read-then-save lets SQLite commit each write immediately unless the
+                # caller deliberately wrapped us in transaction.atomic().
                 if snapshot_id:
                     snapshot = Snapshot.objects.filter(id=snapshot_id).first()
                     if snapshot:
@@ -745,7 +750,9 @@ class Crawl(ModelWithOutputDir, ModelWithConfig, ModelWithHealthStats, ModelWith
             if tags:
                 snapshot.save_tags(tags.split(","))
 
-            # Ensure crawl -> snapshot symlink exists for both new and existing snapshots
+            # Symlink creation touches the filesystem and can be slow on remote disks.
+            # Defer it until after any active DB transaction commits so SQLite does
+            # not hold a write lock while mkdir/symlink work runs.
             transaction.on_commit(lambda snapshot=snapshot: snapshot.ensure_crawl_symlink())
 
         return created_snapshots
@@ -890,6 +897,8 @@ class Crawl(ModelWithOutputDir, ModelWithConfig, ModelWithHealthStats, ModelWith
             tags = str(deduped_records[snapshot.url].get("tags") or "").strip()
             if tags:
                 tag_names_by_url[snapshot.url] = {tag.strip() for tag in re.split(config.TAG_SEPARATOR_PATTERN, tags) if tag.strip()}
+            # Same transaction rule as create_snapshots_from_urls(): bulk_create()
+            # only writes DB rows; symlink creation waits until after commit.
             transaction.on_commit(lambda snapshot=snapshot: snapshot.ensure_crawl_symlink())
 
         tag_names = {tag for tags in tag_names_by_url.values() for tag in tags}
