@@ -18,7 +18,7 @@ from django.utils.safestring import mark_safe
 from django.views import View
 from django.views.generic.list import ListView
 from django.views.generic import FormView
-from django.db.models import Count, Q, Prefetch
+from django.db.models import Count, Q, Prefetch, Sum
 from django.contrib import messages
 from django.contrib.auth.mixins import UserPassesTestMixin
 from django.views.decorators.csrf import csrf_exempt
@@ -1573,6 +1573,14 @@ def live_progress_view(request):
                     .annotate(count=Count("id"))
                 ):
                     cancelled_snapshot_counts_by_crawl[str(row["crawl_id"])] = row["count"]
+        crawl_output_sizes_by_crawl: dict[str, int] = {str(crawl_id): 0 for crawl_id in active_crawl_ids}
+        if active_crawl_ids:
+            for row in (
+                archiveresult_scope.filter(snapshot__crawl_id__in=active_crawl_ids)
+                .values("snapshot__crawl_id")
+                .annotate(total_size=Sum("output_size"))
+            ):
+                crawl_output_sizes_by_crawl[str(row["snapshot__crawl_id"])] = int(row["total_size"] or 0)
 
         if machine_id is not None:
             running_processes = Process.objects.filter(
@@ -1943,6 +1951,8 @@ def live_progress_view(request):
             crawl_tags = [tag.strip() for tag in (crawl.tags_str or "").replace("\n", ",").split(",") if tag.strip()]
             persona_name = persona_names_by_id.get(str(crawl.persona_id)) if crawl.persona_id else None
             persona_name = persona_name or str((crawl.config or {}).get("DEFAULT_PERSONA") or "Default")
+            crawl_output_size = crawl_output_sizes_by_crawl.get(str(crawl.id), 0)
+            avg_snapshot_size = int(crawl_output_size / total_snapshots) if total_snapshots else 0
 
             # Check if retry_at is in the future (would prevent worker from claiming)
             retry_at_future = crawl.retry_at > now if crawl.retry_at else False
@@ -1974,6 +1984,10 @@ def live_progress_view(request):
                     "max_snapshot_size": crawl.snapshot_max_size,
                     "max_crawl_size_display": printable_filesize(crawl.crawl_max_size) if crawl.crawl_max_size else "unlimited",
                     "max_snapshot_size_display": printable_filesize(crawl.snapshot_max_size) if crawl.snapshot_max_size else "unlimited",
+                    "crawl_output_size": crawl_output_size,
+                    "avg_snapshot_size": avg_snapshot_size,
+                    "crawl_output_size_display": printable_filesize(crawl_output_size) if crawl_output_size else "0 B",
+                    "avg_snapshot_size_display": printable_filesize(avg_snapshot_size) if avg_snapshot_size else "0 B",
                     "tags": crawl_tags,
                     "urls_count": urls_count,
                     "total_snapshots": total_snapshots,

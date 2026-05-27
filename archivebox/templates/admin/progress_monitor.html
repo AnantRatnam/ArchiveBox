@@ -998,20 +998,18 @@
             `;
         }
 
-        // Show snapshot info or URL count if no snapshots yet
-        const maxUrlsText = (crawl.max_urls || 0) > 0 ? `${crawl.max_urls} max URLs` : 'all URLs';
-        const crawlSizeText = crawl.max_crawl_size_display || 'unlimited';
-        const snapshotSizeText = crawl.max_snapshot_size_display || 'unlimited';
-        const itemCountText = (crawl.total_snapshots || 0) > 0
-            ? `${crawl.total_snapshots} snapshot${(crawl.total_snapshots || 0) === 1 ? '' : 's'}`
-            : ((crawl.urls_count || 0) > 0 ? `${crawl.urls_count} URL${(crawl.urls_count || 0) === 1 ? '' : 's'}` : 'no URLs');
+        // Show crawl-scale limits and approximate output sizes from DB metadata.
+        const currentUrlCount = Math.max(crawl.total_snapshots || 0, crawl.urls_count || 0);
+        const maxUrlsText = (crawl.max_urls || 0) > 0 ? crawl.max_urls : 'unlimited';
+        const urlLimitText = `${currentUrlCount} / ${maxUrlsText}`;
+        const crawlSizeLimitText = `${crawl.crawl_output_size_display || '0 B'} / ${crawl.max_crawl_size_display || 'unlimited'}`;
+        const snapshotSizeLimitText = `${crawl.avg_snapshot_size_display || '0 B'} / ${crawl.max_snapshot_size_display || 'unlimited'}`;
         const crawlBadges = [
             `<span class="crawl-badge persona"><strong>persona</strong>${escapeHtml(crawl.persona || 'Default')}</span>`,
             `<span class="crawl-badge limit"><strong>depth</strong>${crawl.max_depth || 0}</span>`,
-            `<span class="crawl-badge limit"><strong>urls</strong>${escapeHtml(maxUrlsText)}</span>`,
-            `<span class="crawl-badge size"><strong>crawl</strong>${escapeHtml(crawlSizeText)}</span>`,
-            `<span class="crawl-badge size"><strong>snapshot</strong>${escapeHtml(snapshotSizeText)}</span>`,
-            `<span class="crawl-badge count"><strong>items</strong>${escapeHtml(itemCountText)}</span>`,
+            `<span class="crawl-badge limit"><strong>urls</strong>${escapeHtml(urlLimitText)}</span>`,
+            `<span class="crawl-badge size"><strong>crawl size</strong>${escapeHtml(crawlSizeLimitText)}</span>`,
+            `<span class="crawl-badge size"><strong>avg snap</strong>${escapeHtml(snapshotSizeLimitText)}</span>`,
             ...(crawl.tags || []).map(tag => `<span class="crawl-badge tag">#${escapeHtml(tag)}</span>`),
         ].join('');
         const statsHtml = [
