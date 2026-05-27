@@ -96,6 +96,69 @@ def test_archiveresult_admin_links_plugin_and_process():
     assert f"/admin/machine/process/{process.id}/change" in process_html
 
 
+def test_deleting_binary_and_process_records_preserves_results():
+    from archivebox.core.admin_archiveresults import ArchiveResultAdmin, build_abx_dl_replay_command, render_archiveresults_list
+    from archivebox.core.models import ArchiveResult
+    from archivebox.machine.admin import ProcessAdmin
+    from archivebox.machine.models import Binary, Process
+
+    snapshot = _create_snapshot()
+    machine = _create_machine()
+    binary = Binary.objects.create(
+        machine=machine,
+        name="wget",
+        abspath="/usr/bin/wget",
+        version="1.21.2",
+        binprovider="env",
+        binproviders="env",
+        status=Binary.StatusChoices.INSTALLED,
+    )
+    process = Process.objects.create(
+        machine=machine,
+        binary=binary,
+        process_type=Process.TypeChoices.HOOK,
+        pwd=str(snapshot.output_dir / "wget"),
+        cmd=["/tmp/on_Snapshot__06_wget.finite.bg.py", "--url=https://example.com"],
+        status=Process.StatusChoices.EXITED,
+    )
+    result = ArchiveResult.objects.create(
+        snapshot=snapshot,
+        plugin="wget",
+        hook_name="on_Snapshot__06_wget.finite.bg.py",
+        process=process,
+        status=ArchiveResult.StatusChoices.SUCCEEDED,
+    )
+
+    binary.delete()
+    process.refresh_from_db()
+    assert process.binary_id is None
+    assert process.cmd_version == ""
+    assert process.bin_abspath == ""
+    assert "binary_id" not in process.to_json()
+    assert ProcessAdmin(Process, AdminSite()).binary_link(process) == "-"
+
+    process.delete()
+    result.refresh_from_db()
+    assert result.process_id is None
+    assert ArchiveResult.objects.filter(id=result.id).exists()
+    assert result.pwd == str(result.output_dir)
+    assert result.cmd == []
+    assert result.cmd_version == ""
+    assert result.binary is None
+    assert result.iface is None
+    assert result.machine is None
+    assert result.timeout == 120
+    result_json = result.to_json()
+    assert result_json["pwd"] == str(result.output_dir)
+    assert "process_id" not in result_json
+
+    admin = ArchiveResultAdmin(ArchiveResult, AdminSite())
+    assert admin.process_link(result) == "-"
+    assert admin.machine_link(result) == "-"
+    assert "cd " in build_abx_dl_replay_command(result)
+    assert "wget" in render_archiveresults_list(ArchiveResult.objects.filter(id=result.id))
+
+
 def test_snapshot_admin_zip_links():
     from archivebox.core.admin_snapshots import SnapshotAdmin
     from archivebox.core.models import Snapshot

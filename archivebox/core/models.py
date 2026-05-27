@@ -1341,15 +1341,16 @@ class Snapshot(ModelWithOutputDir, ModelWithConfig, ModelWithNotes, ModelWithHea
             # Write ArchiveResult records with their associated Binary and Process
             # Use select_related to optimize queries
             for ar in self.archiveresult_set.select_related("process__binary").order_by("start_ts"):
+                process = ar.process_record
                 # Write Binary record if not already written
-                if ar.process and ar.process.binary and ar.process.binary_id not in binaries_seen:
-                    binaries_seen.add(ar.process.binary_id)
-                    f.write(json.dumps(ar.process.binary.to_json()) + "\n")
+                if process and process.binary and process.binary_id not in binaries_seen:
+                    binaries_seen.add(process.binary_id)
+                    f.write(json.dumps(process.binary.to_json()) + "\n")
 
                 # Write Process record if not already written
-                if ar.process and ar.process_id not in processes_seen:
-                    processes_seen.add(ar.process_id)
-                    f.write(json.dumps(ar.process.to_json()) + "\n")
+                if process and process.id not in processes_seen:
+                    processes_seen.add(process.id)
+                    f.write(json.dumps(process.to_json()) + "\n")
 
                 # Write ArchiveResult record
                 f.write(json.dumps(ar.to_json()) + "\n")
@@ -3065,7 +3066,7 @@ class ArchiveResult(ModelWithOutputDir, ModelWithConfig, ModelWithNotes):
     # Added POST-v0.9.0, will be added in a separate migration
     process = models.OneToOneField(
         "machine.Process",
-        on_delete=models.PROTECT,
+        on_delete=models.SET_NULL,
         null=True,
         blank=True,
         related_name="archiveresult",
@@ -3137,12 +3138,15 @@ class ArchiveResult(ModelWithOutputDir, ModelWithConfig, ModelWithNotes):
             record["output_size"] = self.output_size
         if self.output_mimetypes:
             record["output_mimetypes"] = self.output_mimetypes
+        if self.pwd:
+            record["pwd"] = self.pwd
         if self.cmd:
             record["cmd"] = self.cmd
         if self.cmd_version:
             record["cmd_version"] = self.cmd_version
-        if self.process_id:
-            record["process_id"] = str(self.process_id)
+        process = self.process_record
+        if process:
+            record["process_id"] = str(process.id)
         return record
 
     @staticmethod
@@ -3608,39 +3612,55 @@ class ArchiveResult(ModelWithOutputDir, ModelWithConfig, ModelWithNotes):
 
     # Uncommented after migration 3 completed - properties now active
     @property
+    def process_record(self):
+        if not self.process_id:
+            return None
+        try:
+            return self.process
+        except ObjectDoesNotExist:
+            return None
+
+    @property
     def pwd(self) -> str:
-        """Working directory (from Process)."""
-        return self.process.pwd if self.process_id else ""
+        """Working directory, derived from the snapshot/plugin path if the Process row is gone."""
+        process = self.process_record
+        return process.pwd if process and process.pwd else str(self.output_dir)
 
     @property
     def cmd(self) -> list:
         """Command array (from Process)."""
-        return self.process.cmd if self.process_id else []
+        process = self.process_record
+        return process.cmd if process else []
 
     @property
     def cmd_version(self) -> str:
         """Command version (from Process.binary)."""
-        return self.process.cmd_version if self.process_id else ""
+        process = self.process_record
+        return process.cmd_version if process else ""
 
     @property
     def binary(self):
         """Binary FK (from Process)."""
-        return self.process.binary if self.process_id else None
+        process = self.process_record
+        return process.binary if process else None
 
     @property
     def iface(self):
         """Network interface FK (from Process)."""
-        return self.process.iface if self.process_id else None
+        process = self.process_record
+        return process.iface if process else None
 
     @property
     def machine(self):
         """Machine FK (from Process)."""
-        return self.process.machine if self.process_id else None
+        process = self.process_record
+        return process.machine if process else None
 
     @property
     def timeout(self) -> int:
         """Timeout in seconds (from Process)."""
-        return self.process.timeout if self.process_id else 120
+        process = self.process_record
+        return process.timeout if process else 120
 
     def save_search_index(self):
         pass
@@ -3676,8 +3696,9 @@ class ArchiveResult(ModelWithOutputDir, ModelWithConfig, ModelWithNotes):
         # Read and parse JSONL output from stdout.log
         stdout_file = plugin_dir / "stdout.log"
         records = []
-        if self.process_id and self.process:
-            records = extract_records_from_process(self.process)
+        process = self.process_record
+        if process:
+            records = extract_records_from_process(process)
 
         if not records:
             stdout = stdout_file.read_text() if stdout_file.exists() else ""
@@ -3703,9 +3724,9 @@ class ArchiveResult(ModelWithOutputDir, ModelWithConfig, ModelWithNotes):
 
             # Update cmd fields
             if hook_data.get("cmd"):
-                if self.process_id:
-                    self.process.cmd = hook_data["cmd"]
-                    self.process.save()
+                if process:
+                    process.cmd = hook_data["cmd"]
+                    process.save()
                 self._set_binary_from_cmd(hook_data["cmd"])
             # Note: cmd_version is derived from binary.version, not stored on Process
         else:
@@ -3718,7 +3739,7 @@ class ArchiveResult(ModelWithOutputDir, ModelWithConfig, ModelWithNotes):
             except Exception:
                 pass
 
-            if is_background or (self.process_id and self.process and self.process.exit_code == 0):
+            if is_background or (process and process.exit_code == 0):
                 self.status = self.StatusChoices.SKIPPED
                 self.output_str = "Hook did not output ArchiveResult record"
             else:
@@ -3822,9 +3843,10 @@ class ArchiveResult(ModelWithOutputDir, ModelWithConfig, ModelWithNotes):
         ).first()
 
         if binary:
-            if self.process_id:
-                self.process.binary = binary
-                self.process.save()
+            process = self.process_record
+            if process:
+                process.binary = binary
+                process.save()
             return
 
         # Fallback: match by binary name
@@ -3835,9 +3857,10 @@ class ArchiveResult(ModelWithOutputDir, ModelWithConfig, ModelWithNotes):
         ).first()
 
         if binary:
-            if self.process_id:
-                self.process.binary = binary
-                self.process.save()
+            process = self.process_record
+            if process:
+                process.binary = binary
+                process.save()
 
     def _url_passes_filters(self, url: str) -> bool:
         """Check if URL passes URL_ALLOWLIST and URL_DENYLIST config filters.

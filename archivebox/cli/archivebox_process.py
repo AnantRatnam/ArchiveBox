@@ -54,7 +54,7 @@ def list_processes(
 
     is_tty = sys.stdout.isatty()
 
-    queryset = Process.objects.all().select_related("binary", "machine").order_by("-start_ts")
+    queryset = Process.objects.all().select_related("binary", "machine").order_by("-started_at", "-created_at")
 
     # Apply filters
     filter_kwargs = {}

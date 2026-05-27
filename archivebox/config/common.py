@@ -483,15 +483,16 @@ def get_config(
 
     Priority (highest to lowest):
     1. Explicit overrides
-    2. Per-snapshot config and output path
-    3. Per-crawl config and output path
-    4. Per-user config
-    5. Per-persona derived config
-    6. Current machine derived config
-    7. Environment variables
-    8. Config file (ArchiveBox.conf)
-    9. Plugin schema defaults
-    10. Core config defaults
+    2. Per-ArchiveResult config
+    3. Per-snapshot config and output path
+    4. Per-crawl config and output path
+    5. Per-user config
+    6. Per-persona derived config
+    7. Current machine derived config
+    8. Environment variables
+    9. Config file (ArchiveBox.conf)
+    10. Plugin schema defaults
+    11. Core config defaults
     """
     if snapshot is None and archiveresult is not None:
         snapshot = archiveresult.snapshot
@@ -558,6 +559,9 @@ def get_config(
 
     if snapshot is not None:
         scope_overrides["SNAP_DIR"] = snapshot.output_dir
+
+    if archiveresult is not None and archiveresult.config:
+        scope_overrides.update(archiveresult.config)
 
     if overrides:
         scope_overrides.update(overrides)

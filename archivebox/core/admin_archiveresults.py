@@ -34,7 +34,7 @@ from archivebox.core.models import ArchiveResult, Snapshot
 
 
 def _get_replay_source_url(result: ArchiveResult) -> str:
-    process = getattr(result, "process", None)
+    process = result.process_record
     return str(getattr(process, "url", None) or result.snapshot.url or "")
 
 
@@ -134,20 +134,21 @@ def render_archiveresults_list(archiveresults_qs, limit=50, config=None):
         # Format timestamp
         end_time = result.end_ts.strftime("%Y-%m-%d %H:%M:%S") if result.end_ts else "-"
 
+        process = result.process_record
         process_display = "-"
-        if result.process_id and result.process:
+        if process:
             process_display = f'''
-                <a href="{reverse("admin:machine_process_change", args=[result.process_id])}"
+                <a href="{reverse("admin:machine_process_change", args=[process.id])}"
                    style="color: #2563eb; text-decoration: none; font-family: ui-monospace, monospace; font-size: 12px;"
-                   title="View process">{result.process.pid or "-"}</a>
+                   title="View process">{process.pid or "-"}</a>
             '''
 
         machine_display = "-"
-        if result.process_id and result.process and result.process.machine_id:
+        if process and process.machine_id:
             machine_display = f'''
-                <a href="{reverse("admin:machine_machine_change", args=[result.process.machine_id])}"
+                <a href="{reverse("admin:machine_machine_change", args=[process.machine_id])}"
                    style="color: #2563eb; text-decoration: none; font-size: 12px;"
-                   title="View machine">{result.process.machine.hostname}</a>
+                   title="View machine">{process.machine.hostname}</a>
             '''
 
         # Truncate output for display
@@ -660,20 +661,22 @@ class ArchiveResultAdmin(BaseModelAdmin):
 
     @admin.display(description="Process", ordering="process__pid")
     def process_link(self, result):
-        if not result.process_id:
+        process = result.process_record
+        if not process:
             return "-"
-        process_label = result.process.pid if result.process and result.process.pid else "-"
+        process_label = process.pid or "-"
         return format_html(
             '<a href="{}"><code>{}</code></a>',
-            reverse("admin:machine_process_change", args=[result.process_id]),
+            reverse("admin:machine_process_change", args=[process.id]),
             process_label,
         )
 
     @admin.display(description="Machine", ordering="process__machine__hostname")
     def machine_link(self, result):
-        if not result.process_id or not result.process or not result.process.machine_id:
+        process = result.process_record
+        if not process or not process.machine_id:
             return "-"
-        machine = result.process.machine
+        machine = process.machine
         return format_html(
             '<a href="{}"><code>{}</code> {}</a>',
             reverse("admin:machine_machine_change", args=[machine.id]),

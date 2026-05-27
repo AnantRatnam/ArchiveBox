@@ -917,13 +917,13 @@ class PublicIndexView(ListView):
     def get_paginate_by(self, queryset):
         runtime_config = getattr(self, "runtime_config", None)
         if runtime_config is None:
-            self.runtime_config = runtime_config = get_config()
+            self.runtime_config = runtime_config = _get_request_config(self.request, resolve_plugins=True)
         return runtime_config.SNAPSHOTS_PER_PAGE
 
     def get_context_data(self, **kwargs):
         runtime_config = getattr(self, "runtime_config", None)
         if runtime_config is None:
-            self.runtime_config = runtime_config = get_config()
+            self.runtime_config = runtime_config = _get_request_config(self.request, resolve_plugins=True)
         context = {
             **super().get_context_data(**kwargs),
             "VERSION": VERSION,
@@ -990,7 +990,7 @@ class PublicIndexView(ListView):
     def get(self, *args, **kwargs):
         if self.request.user.is_authenticated:
             return redirect("/admin/core/snapshot/")
-        if get_config().PUBLIC_INDEX:
+        if _get_request_config(self.request).PUBLIC_INDEX:
             response = super().get(*args, **kwargs)
             return response
         else:
@@ -1012,7 +1012,7 @@ class AddView(UserPassesTestMixin, FormView):
         return super().get_initial()
 
     def test_func(self):
-        return get_config().PUBLIC_ADD_VIEW or self.request.user.is_authenticated
+        return _get_request_config(self.request).PUBLIC_ADD_VIEW or self.request.user.is_authenticated
 
     def _can_override_crawl_config(self) -> bool:
         user = self.request.user
@@ -1032,7 +1032,8 @@ class AddView(UserPassesTestMixin, FormView):
     def get_context_data(self, **kwargs):
         from archivebox.personas.models import Persona
 
-        required_search_plugin = f"search_backend_{get_config().SEARCH_BACKEND_ENGINE}".strip()
+        request_config = _get_request_config(self.request, resolve_plugins=True)
+        required_search_plugin = f"search_backend_{request_config.SEARCH_BACKEND_ENGINE}".strip()
         plugin_configs = discover_plugin_configs()
         sensitive_keys = {
             str(config_key)
@@ -1062,7 +1063,7 @@ class AddView(UserPassesTestMixin, FormView):
             # We can't just call request.build_absolute_uri in the template, because it would include query parameters
             "absolute_add_path": self.request.build_absolute_uri(self.request.path),
             "VERSION": VERSION,
-            "FOOTER_INFO": get_config().FOOTER_INFO,
+            "FOOTER_INFO": request_config.FOOTER_INFO,
             "required_search_plugin": required_search_plugin,
             "plugin_dependency_map_json": json.dumps(plugin_dependency_map, sort_keys=True),
             "persona_config_map_json": json.dumps(persona_config_map, sort_keys=True, default=str),
@@ -1820,6 +1821,7 @@ def live_progress_view(request):
 
                 for ar in sorted(snapshot_results, key=plugin_sort_key):
                     status = ar.status
+                    process = ar.process_record
                     progress_value = 0
                     if status in (
                         ArchiveResult.StatusChoices.SUCCEEDED,
@@ -1829,8 +1831,8 @@ def live_progress_view(request):
                     ):
                         progress_value = 100
                     elif status == ArchiveResult.StatusChoices.STARTED:
-                        started_at = ar.start_ts or (ar.process.started_at if ar.process_id and ar.process else None)
-                        timeout = ar.process.timeout if ar.process_id and ar.process else 120
+                        started_at = ar.start_ts or (process.started_at if process else None)
+                        timeout = process.timeout if process else 120
                         if started_at and timeout:
                             elapsed = max(0.0, (now - started_at).total_seconds())
                             progress_value = int(min(99, max(1, (elapsed / float(timeout)) * 100)))
@@ -1849,21 +1851,21 @@ def live_progress_view(request):
                         "hook_name": hook_name,
                         "phase": phase,
                         "status": status,
-                        "process_id": str(ar.process_id) if ar.process_id else None,
+                        "process_id": str(process.id) if process else None,
                         "admin_url": f"/admin/core/archiveresult/{ar.id}/change/",
                     }
                     output_path = archiveresult_output_path(ar)
                     if output_path:
                         plugin_payload["output_path"] = output_path
                         plugin_payload["output_url"] = snapshot_view_url(snapshot, output_path)
-                    if status == ArchiveResult.StatusChoices.STARTED and ar.process_id and ar.process:
-                        plugin_payload["pid"] = ar.process.pid
+                    if status == ArchiveResult.StatusChoices.STARTED and process:
+                        plugin_payload["pid"] = process.pid
                     if status == ArchiveResult.StatusChoices.STARTED:
                         plugin_payload["progress"] = progress_value
-                        plugin_payload["timeout"] = ar.process.timeout if ar.process_id and ar.process else 120
+                        plugin_payload["timeout"] = process.timeout if process else 120
                     plugin_payload["source"] = "archiveresult"
                     all_plugins.append(plugin_payload)
-                    seen_plugin_keys.add(str(ar.process_id) if ar.process_id else f"{ar.plugin}:{hook_name}")
+                    seen_plugin_keys.add(str(process.id) if process else f"{ar.plugin}:{hook_name}")
 
                 for proc_payload, proc_started_at in process_records_by_snapshot.get(str(snapshot["id"]), []):
                     if not is_current_run_timestamp(proc_started_at, snapshot_run_started_at):
@@ -2158,15 +2160,7 @@ def live_config_list_view(request: HttpRequest, **kwargs) -> TableContext:
 
     assert getattr(request.user, "is_superuser", False), "Must be a superuser to view configuration settings."
 
-    # Get merged config that includes Machine.config overrides
-    try:
-        from archivebox.machine.models import Machine
-
-        Machine.current()
-        merged_config = get_config()
-    except Exception:
-        # Fallback if Machine model not available
-        merged_config = get_config()
+    merged_config = get_config()
 
     rows = {
         "Section": [],
@@ -2231,7 +2225,6 @@ def live_config_value_view(request: HttpRequest, key: str, **kwargs) -> ItemCont
 
     assert getattr(request.user, "is_superuser", False), "Must be a superuser to view configuration settings."
 
-    # Get merged config
     merged_config = get_config()
 
     # Determine all sources for this config value
