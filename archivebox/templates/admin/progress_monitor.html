@@ -205,6 +205,12 @@
     #progress-monitor a.crawl-header-link:visited {
         color: inherit;
     }
+    #progress-monitor a.crawl-header-link:link,
+    #progress-monitor a.crawl-header-link:visited,
+    #progress-monitor a.crawl-header-link:hover,
+    #progress-monitor a.crawl-header-link:active {
+        text-decoration: none !important;
+    }
     #progress-monitor .crawl-info {
         flex: 1;
         min-width: 0;
@@ -215,11 +221,6 @@
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-    }
-    #progress-monitor .crawl-source {
-        color: #58a6ff;
-        font-weight: 500;
-        margin-left: 5px;
     }
     #progress-monitor .crawl-badges {
         display: flex;
@@ -271,6 +272,12 @@
         color: #a5d6ff;
         background: rgba(31, 111, 235, 0.16);
         border-color: rgba(31, 111, 235, 0.28);
+    }
+    #progress-monitor .crawl-badge.source {
+        max-width: 340px;
+        color: #58a6ff;
+        background: rgba(88, 166, 255, 0.10);
+        border-color: rgba(88, 166, 255, 0.20);
     }
     #progress-monitor .crawl-stats {
         display: flex;
@@ -1007,6 +1014,7 @@
             ? `${crawl.total_snapshots} snapshot${(crawl.total_snapshots || 0) === 1 ? '' : 's'}`
             : ((crawl.urls_count || 0) > 0 ? `${crawl.urls_count} URL${(crawl.urls_count || 0) === 1 ? '' : 's'}` : 'no URLs');
         const crawlBadges = [
+            sourceShort ? `<span class="crawl-badge source"><strong>source</strong>${escapeHtml(sourceShort)}</span>` : '',
             `<span class="crawl-badge persona"><strong>persona</strong>${escapeHtml(crawl.persona || 'Default')}</span>`,
             `<span class="crawl-badge limit"><strong>depth</strong>${crawl.max_depth || 0}</span>`,
             `<span class="crawl-badge limit"><strong>urls</strong>${escapeHtml(maxUrlsText)}</span>`,
@@ -1027,7 +1035,7 @@
                 <div class="crawl-header">
                     <a class="crawl-header-link" href="${adminUrl}">
                         <div class="crawl-info">
-                            <div class="crawl-label">Crawl #${escapeHtml(crawlShortId)} ${escapeHtml(startedDate)} started by ${escapeHtml(crawl.created_by || 'unknown')}${sourceShort ? `<span class="crawl-source">${escapeHtml(sourceShort)}</span>` : ''}</div>
+                            <div class="crawl-label">Crawl #${escapeHtml(crawlShortId)} ${escapeHtml(startedDate)} started by ${escapeHtml(crawl.created_by || 'unknown')}</div>
                             <div class="crawl-badges">${crawlBadges}</div>
                         </div>
                         <div class="crawl-stats">
