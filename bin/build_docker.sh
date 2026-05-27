@@ -96,6 +96,7 @@ check_platforms || (recreate_builder && check_platforms) || exit 1
 
 
 echo "[+] Building archivebox:$VERSION docker image..."
+mkdir -p "$HOME/.cache/docker/archivebox"
 # docker builder prune
 # docker build . --no-cache -t archivebox-dev \
 # replace --load with --push to deploy
@@ -104,4 +105,8 @@ if [[ "$SELECTED_PLATFORMS" == *,* ]]; then
     echo "[X] --load only supports a single platform. Use bin/release_docker.sh or set DOCKER_PLATFORMS to one platform." >&2
     exit 1
 fi
-docker buildx build --platform "$SELECTED_PLATFORMS" --load . ${FULL_TAG_NAMES[@]}
+docker buildx build \
+    --platform "$SELECTED_PLATFORMS" \
+    --cache-from type=local,src="$HOME/.cache/docker/archivebox" \
+    --cache-to type=local,compression=zstd,mode=min,oci-mediatypes=true,dest="$HOME/.cache/docker/archivebox" \
+    --load . ${FULL_TAG_NAMES[@]}

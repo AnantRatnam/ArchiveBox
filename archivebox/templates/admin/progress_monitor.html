@@ -903,7 +903,7 @@
                 id: snapshot[0],
                 url: snapshot[1],
                 title: snapshot[2],
-                status: snapshot[3],
+                status: snapshot[3] || 'queued',
             };
         }
         const statusIcon = snapshot.status === 'started' ? '▤' : '▢';
@@ -1080,7 +1080,7 @@
             `;
         }
 
-        // Show crawl-scale limits and approximate output sizes from DB metadata.
+        // Show crawl-scale limits and sealed output sizes from DB metadata.
         const currentUrlCount = Math.max(crawl.total_snapshots || 0, crawl.urls_count || 0);
         const maxUrlsText = (crawl.max_urls || 0) > 0 ? crawl.max_urls : 'unlimited';
         const urlLimitText = `${currentUrlCount} / ${maxUrlsText}`;
@@ -1088,7 +1088,7 @@
         const snapshotSizeLimitText = `${crawl.avg_snapshot_size_display || '0 B'} / ${crawl.max_snapshot_size_display || 'unlimited'}`;
         const crawlBadges = [
             crawlBadge('persona', 'Persona Config', crawl.persona || 'Default', crawl.persona_admin_url, 'Edit persona config'),
-            crawlBadge('limit', 'depth', crawl.max_depth || 0, null, ''),
+            crawlBadge('limit', 'depth', crawl.max_depth || 0, adminFieldUrl('max_depth'), 'Edit crawl depth'),
             crawlBadge('limit', 'urls', urlLimitText, adminFieldUrl('max_urls'), 'Edit max URLs'),
             crawlBadge('size', 'crawl size', crawlSizeLimitText, adminFieldUrl('crawl_max_size'), 'Edit max crawl size'),
             crawlBadge('size', 'avg snap', snapshotSizeLimitText, adminFieldUrl('snapshot_max_size'), 'Edit max snapshot size'),

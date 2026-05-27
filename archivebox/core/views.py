@@ -18,11 +18,12 @@ from django.utils.safestring import mark_safe
 from django.views import View
 from django.views.generic.list import ListView
 from django.views.generic import FormView
-from django.db.models import CharField, Count, Q, Prefetch
+from django.db.models import CharField, Count, Q, Prefetch, Sum
 from django.db.models.functions import Cast
 from django.contrib import messages
 from django.contrib.auth.mixins import UserPassesTestMixin
 from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.gzip import gzip_page
 from django.utils.decorators import method_decorator
 
 from admin_data_views.typing import TableContext, ItemContext, SectionData
@@ -1294,6 +1295,7 @@ class HealthCheckView(View):
         return HttpResponse("OK", content_type="text/plain", status=200)
 
 
+@gzip_page
 def live_progress_view(request):
     """Simple JSON endpoint for live progress status - used by admin progress monitor."""
     try:
@@ -1436,6 +1438,10 @@ def live_progress_view(request):
                 config=request_config,
             )
 
+        def snapshot_display_url(url: str) -> str:
+            url = str(url or "")
+            return url if len(url) <= 96 else f"{url[:93]}..."
+
         machine_id = Machine.current().id
         orchestrator_proc = (
             Process.objects.filter(
@@ -1555,6 +1561,27 @@ def live_progress_view(request):
         snapshot_counts_by_crawl: dict[str, dict[str, int]] = {str(crawl_id): {} for crawl_id in active_crawl_ids}
         cancelled_snapshot_counts_by_crawl: dict[str, int] = {str(crawl_id): 0 for crawl_id in active_crawl_ids}
         crawl_output_sizes_by_crawl: dict[str, int] = {str(crawl_id): 0 for crawl_id in active_crawl_ids}
+        active_snapshot_scope = snapshot_scope.filter(crawl_id__in=active_crawl_ids)
+        if active_crawl_ids:
+            for row in active_snapshot_scope.values("crawl_id", "status").annotate(count=Count("id")):
+                snapshot_counts_by_crawl.setdefault(str(row["crawl_id"]), {})[row["status"]] = row["count"]
+
+            for row in (
+                active_snapshot_scope.filter(status=Snapshot.StatusChoices.SEALED, downloaded_at__isnull=True)
+                .values("crawl_id")
+                .annotate(count=Count("id"))
+            ):
+                cancelled_snapshot_counts_by_crawl[str(row["crawl_id"])] = row["count"]
+
+            for row in (
+                archiveresult_scope.filter(
+                    snapshot__crawl_id__in=active_crawl_ids,
+                    snapshot__status=Snapshot.StatusChoices.SEALED,
+                )
+                .values("snapshot__crawl_id")
+                .annotate(size=Sum("output_size"))
+            ):
+                crawl_output_sizes_by_crawl[str(row["snapshot__crawl_id"])] = int(row["size"] or 0)
 
         crawl_process_pids: dict[str, int] = {}
         snapshot_process_pids: dict[str, int] = {}
@@ -1568,7 +1595,6 @@ def live_progress_view(request):
             modified_at__gte=recently_cancelled_after,
         )
         crawls_by_id = {str(crawl["id"]): crawl for crawl in active_crawls_list}
-        active_snapshot_scope = snapshot_scope.filter(crawl_id__in=active_crawl_ids)
         snapshots = list(
             active_snapshot_scope.filter(status=Snapshot.StatusChoices.QUEUED)
             .annotate(id_str=Cast("id", CharField()), crawl_id_str=Cast("crawl_id", CharField()))
@@ -1616,12 +1642,6 @@ def live_progress_view(request):
         snapshots_by_id = {str(snapshot["id"]): snapshot for snapshot in snapshots}
         displayed_snapshots_by_crawl: dict[str, list[Snapshot]] = {str(crawl_id): [] for crawl_id in active_crawl_ids}
         for snapshot in snapshots:
-            crawl_snapshot_counts = snapshot_counts_by_crawl.setdefault(str(snapshot["crawl_id"]), {})
-            crawl_snapshot_counts[snapshot["status"]] = crawl_snapshot_counts.get(snapshot["status"], 0) + 1
-            if snapshot["status"] == Snapshot.StatusChoices.SEALED and not snapshot.get("downloaded_at"):
-                cancelled_snapshot_counts_by_crawl[str(snapshot["crawl_id"])] = (
-                    cancelled_snapshot_counts_by_crawl.get(str(snapshot["crawl_id"]), 0) + 1
-                )
             crawl_snapshots = displayed_snapshots_by_crawl.setdefault(str(snapshot["crawl_id"]), [])
             crawl_snapshots.append(snapshot)
         displayed_snapshot_ids = [
@@ -1933,19 +1953,18 @@ def live_progress_view(request):
                     worker_state = "stalled" if orchestrator_running else "crashed"
 
                 if snapshot["status"] == Snapshot.StatusChoices.QUEUED and not snapshot_process_pids.get(str(snapshot["id"])):
-                    active_snapshots_for_crawl.append(
-                        [
-                            str(snapshot["id"]),
-                            snapshot["url"],
-                            snapshot_title,
-                            snapshot["status"],
-                        ],
-                    )
+                    compact_snapshot = [
+                        str(snapshot["id"]),
+                        snapshot_display_url(snapshot["url"]),
+                    ]
+                    if snapshot_title:
+                        compact_snapshot.append(snapshot_title)
+                    active_snapshots_for_crawl.append(compact_snapshot)
                     continue
 
                 snapshot_payload = {
                     "id": str(snapshot["id"]),
-                    "url": snapshot["url"],
+                    "url": snapshot_display_url(snapshot["url"]),
                     "title": snapshot_title,
                     "status": snapshot["status"],
                     "worker_state": worker_state,
@@ -1985,7 +2004,7 @@ def live_progress_view(request):
             persona_name = persona_details["name"] if persona_details else str((crawl["config"] or {}).get("DEFAULT_PERSONA") or "Default")
             persona_details = persona_details or persona_details_by_name.get(persona_name)
             crawl_output_size = crawl_output_sizes_by_crawl.get(crawl_id, 0)
-            avg_snapshot_size = int(crawl_output_size / total_snapshots) if total_snapshots else 0
+            avg_snapshot_size = int(crawl_output_size / completed_snapshots) if completed_snapshots else 0
 
             # Check if retry_at is in the future (would prevent worker from claiming)
             retry_at_future = crawl["retry_at"] > now if crawl["retry_at"] else False

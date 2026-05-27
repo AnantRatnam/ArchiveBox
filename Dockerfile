@@ -251,6 +251,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$T
 # installed into LIB_DIR below by archivebox init --install and resolved from
 # LIB_DIR by ArchiveBox/abxpkg, not by mutating the container PATH.
 ENV PERSONAS_DIR=/data/personas \
+    CHROME_EXTENSIONS_DIR=/opt/archivebox/lib/chrome_extensions \
     CHROME_USER_DATA_DIR=/data/personas/Default/chrome_profile \
     CHROME_HEADLESS=true \
     CHROME_SANDBOX=false \
@@ -309,17 +310,28 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$T
     --mount=type=cache,target=/root/.npm,sharing=locked,id=npm-$TARGETARCH$TARGETVARIANT \
     --mount=type=cache,target=/root/.cache/puppeteer,sharing=locked,id=puppeteer-$TARGETARCH$TARGETVARIANT \
     --mount=type=cache,target=/root/.cache/ms-playwright,sharing=locked,id=browsers-$TARGETARCH$TARGETVARIANT \
+    --mount=type=cache,target=/opt/archivebox/lib,sharing=locked,id=archivebox-lib-$TARGETARCH$TARGETVARIANT \
     echo "[+] Installing plugin runtime dependencies into $LIB_DIR..." \
+    && export PERSONAS_DIR="$LIB_DIR/personas" \
+    && export CHROME_EXTENSIONS_DIR="$LIB_DIR/chrome_extensions" \
+    && export CHROME_USER_DATA_DIR="$LIB_DIR/chrome_profile" \
+    && mkdir -p "$LIB_DIR" "$LIB_DIR/chrome_extensions" \
     && apt-get update -qq \
     && if [ "$TARGETARCH" = "arm64" ]; then \
         abxpkg install --binproviders=npm --overrides='{"npm":{"install_args":["playwright@next"]}}' playwright; \
         abxpkg install --no-cache --binproviders=playwright --bin-dir="$LIB_DIR/env/bin" chromium; \
     fi \
     && PUID=0 PGID=0 abx-dl plugins --install \
-    && find "$LIB_DIR" "$DATA_DIR"/personas -type d -name __pycache__ -prune -exec rm -rf {} + \
-    && find "$LIB_DIR" "$DATA_DIR"/personas -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
+    && find "$LIB_DIR" -type d -name __pycache__ -prune -exec rm -rf {} + \
+    && find "$LIB_DIR" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
+    && rm -rf "$LIB_DIR/personas" "$LIB_DIR/chrome_profile" /opt/archivebox/lib-layer \
+    && mkdir -p /opt/archivebox/lib-layer \
+    && cp -a "$LIB_DIR"/. /opt/archivebox/lib-layer/ \
     && rm -rf /var/lib/apt/lists/* \
-    && (chown -R "$DEFAULT_PUID:$DEFAULT_PGID" "$DATA_DIR"/personas 2>/dev/null || true) \
+    && chown -R "$DEFAULT_PUID:$DEFAULT_PGID" /opt/archivebox/lib-layer
+
+RUN rm -rf "$LIB_DIR" \
+    && mv /opt/archivebox/lib-layer "$LIB_DIR" \
     && chown -R "$DEFAULT_PUID:$DEFAULT_PGID" "$LIB_DIR"
 
 # Install ArchiveBox Python package from the checked-out source.
