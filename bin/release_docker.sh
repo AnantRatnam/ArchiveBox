@@ -41,6 +41,43 @@ for TAG_NAME in "${TAG_NAMES[@]}"; do
 done
 echo "${FULL_TAG_NAMES[@]}"
 
+function check_platforms() {
+    INSTALLED_PLATFORMS="$(docker buildx inspect | grep 'Platforms:' )"
+
+    for REQUIRED_PLATFORM in ${SELECTED_PLATFORMS//,/$IFS}; do
+        echo "[+] Checking for: $REQUIRED_PLATFORM..."
+        if ! (echo "$INSTALLED_PLATFORMS" | grep -q "$REQUIRED_PLATFORM"); then
+            return 1
+        fi
+    done
+    echo
+    return 0
+}
+
+function remove_builder() {
+    docker buildx stop xbuilder || true
+    docker buildx rm xbuilder || true
+}
+
+function create_builder() {
+    docker buildx use xbuilder && return 0
+    echo "[+] Creating new xbuilder for: $SELECTED_PLATFORMS"
+    echo
+    docker pull 'moby/buildkit:buildx-stable-1'
+    docker buildx create --name xbuilder --driver docker-container --bootstrap --use --platform "$SELECTED_PLATFORMS" || true
+    docker buildx inspect --bootstrap || true
+}
+
+function recreate_builder() {
+    docker run --privileged --rm 'tonistiigi/binfmt' --install all
+
+    remove_builder
+    create_builder
+}
+
+docker buildx use xbuilder >/dev/null 2>&1 || create_builder
+check_platforms || (recreate_builder && check_platforms) || exit 1
+
 # echo "[*] Logging in to Docker Hub & Github Container Registry"
 # docker login --username=nikisweeting
 # docker login ghcr.io --username=pirate
