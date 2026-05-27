@@ -6,11 +6,12 @@ name: Release
 #   3. Build Docker images (in parallel with deb/brew)
 #
 # Individual workflows also run on push for CI (see their own triggers).
-# This workflow ensures the correct ordering during a release.
+# Manual fallback for the hosted release pipeline. The normal prerelease loop
+# is run by bin/release.sh locally so published GitHub releases do not launch a
+# duplicate release job.
 
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
 
 permissions:
   contents: write
