@@ -2373,18 +2373,31 @@ class Process(models.Model):
         if not chrome_utils.exists():
             return 0
 
+        config = get_config()
+        crawl_roots = [
+            crawls_dir
+            for user_dir in config.USERS_DIR.iterdir()
+            if user_dir.is_dir()
+            for crawls_dir in [user_dir / "crawls"]
+            if crawls_dir.is_dir()
+        ]
+        if not crawl_roots:
+            return 0
+
+        killed = 0
         try:
-            result = subprocess.run(
-                ["node", str(chrome_utils), "killZombieChrome", str(get_config().DATA_DIR)],
-                capture_output=True,
-                timeout=30,
-                text=True,
-            )
-            if result.returncode == 0:
-                killed = int(result.stdout.strip())
-                if killed > 0:
-                    print(f"[yellow]🧹 Cleaned up {killed} orphaned Chrome processes[/yellow]")
-                return killed
+            for crawl_root in crawl_roots:
+                result = subprocess.run(
+                    ["node", str(chrome_utils), "killZombieChrome", str(crawl_root)],
+                    capture_output=True,
+                    timeout=30,
+                    text=True,
+                )
+                if result.returncode == 0:
+                    killed += int(result.stdout.strip())
+            if killed > 0:
+                print(f"[yellow]🧹 Cleaned up {killed} orphaned Chrome processes[/yellow]")
+            return killed
         except (subprocess.TimeoutExpired, ValueError, FileNotFoundError) as e:
             print(f"[red]Failed to cleanup orphaned Chrome: {e}[/red]")
 
