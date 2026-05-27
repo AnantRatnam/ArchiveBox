@@ -2537,7 +2537,7 @@ class Snapshot(ModelWithOutputDir, ModelWithConfig, ModelWithNotes, ModelWithHea
             lower = (path or "").lower()
             return lower.endswith(text_exts)
 
-        hashes_index = self.hashes_index
+        hashes_index = self.hashes_index if include_filesystem_fallback else {}
         for result in self.archiveresult_set.all().order_by("start_ts"):
             output_file_map = result.output_file_map()
             embed_path = result.embed_path_db(output_file_map=output_file_map)
@@ -2615,6 +2615,8 @@ class Snapshot(ModelWithOutputDir, ModelWithConfig, ModelWithNotes, ModelWithHea
                 seen.add(root)
 
         if not include_filesystem_fallback or hashes_index:
+            return outputs
+        if not snap_dir.is_dir():
             return outputs
 
         embeddable_exts = {
@@ -2829,7 +2831,8 @@ class Snapshot(ModelWithOutputDir, ModelWithConfig, ModelWithNotes, ModelWithHea
         outputs: list[dict] | None = None,
         hidden_card_plugins: set[str] | None = None,
     ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
-        outputs = outputs or self.discover_outputs(include_filesystem_fallback=True)
+        if outputs is None:
+            outputs = self.discover_outputs(include_filesystem_fallback=True)
         hidden_card_plugins = hidden_card_plugins or set()
         accounted_entries: set[str] = set()
         for output in outputs:

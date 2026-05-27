@@ -18,8 +18,7 @@ from django.utils.safestring import mark_safe
 from django.views import View
 from django.views.generic.list import ListView
 from django.views.generic import FormView
-from django.db import connection
-from django.db.models import Q, Prefetch
+from django.db.models import Count, Q, Prefetch
 from django.contrib import messages
 from django.contrib.auth.mixins import UserPassesTestMixin
 from django.views.decorators.csrf import csrf_exempt
@@ -174,7 +173,7 @@ class SnapshotView(View):
         hidden_card_plugins = {"archivedotorg", "favicon", "title"}
         outputs = [
             out
-            for out in snapshot.discover_outputs(include_filesystem_fallback=True)
+            for out in snapshot.discover_outputs(include_filesystem_fallback=False)
             if (out.get("size") or 0) > 0 and out.get("name") not in hidden_card_plugins
         ]
         archiveresults = {out["name"]: out for out in outputs}
@@ -1319,6 +1318,19 @@ def live_progress_view(request):
         from archivebox.crawls.models import Crawl
         from archivebox.core.models import Snapshot, ArchiveResult
         from archivebox.machine.models import Process, Machine
+        from archivebox.machine.detect import get_host_guid
+
+        if not request.user.is_authenticated or not request.user.is_active or not request.user.is_staff:
+            return JsonResponse({"error": "Permission denied"}, status=403)
+
+        now = timezone.now()
+        crawl_scope = Crawl.objects.all()
+        snapshot_scope = Snapshot.objects.all()
+        archiveresult_scope = ArchiveResult.objects.all()
+        if not request.user.is_superuser:
+            crawl_scope = crawl_scope.filter(created_by=request.user)
+            snapshot_scope = snapshot_scope.filter(crawl__created_by=request.user)
+            archiveresult_scope = archiveresult_scope.filter(snapshot__crawl__created_by=request.user)
 
         def is_current_run_timestamp(event_ts, run_started_at) -> bool:
             if run_started_at is None:
@@ -1376,9 +1388,18 @@ def live_progress_view(request):
 
             return hook_details(Path(hook_path).name, plugin=Path(hook_path).parent.name or "setup")
 
-        machine = Machine.current()
-        Process.cleanup_stale_running(machine=machine)
-        Process.cleanup_orphaned_workers()
+        def snapshot_output_url(snapshot, output_path: str) -> str:
+            return build_snapshot_url(str(snapshot.id), output_path, request=request, config=getattr(request, "archivebox_config", None))
+
+        def snapshot_view_url(snapshot, output_path: str = "") -> str:
+            anchor = f"#{output_path}" if output_path else ""
+            return build_web_url(
+                f"/{snapshot.archive_path_from_db}/index.html{anchor}",
+                request=request,
+                config=getattr(request, "archivebox_config", None),
+            )
+
+        machine = Machine.objects.filter(guid=get_host_guid()).first()
         orchestrator_proc = (
             Process.objects.filter(
                 machine=machine,
@@ -1387,6 +1408,8 @@ def live_progress_view(request):
             )
             .order_by("-started_at")
             .first()
+            if machine is not None
+            else None
         )
         runner_worker = None
         try:
@@ -1402,85 +1425,110 @@ def live_progress_view(request):
         orchestrator_running = orchestrator_proc is not None or runner_worker_running
         orchestrator_pid = orchestrator_proc.pid if orchestrator_proc else runner_worker_pid
 
-        def sqlite_approx_count(model) -> int | None:
-            if connection.vendor != "sqlite":
-                return None
-            with connection.cursor() as cursor:
-                try:
-                    cursor.execute("SELECT stat FROM sqlite_stat1 WHERE tbl = %s", [model._meta.db_table])
-                    stats = [int(str(row[0]).split()[0]) for row in cursor.fetchall() if row and row[0]]
-                except Exception:
-                    stats = []
-            return max(stats) if stats else None
+        def count_statuses(queryset, statuses) -> dict[str, int]:
+            return {status: queryset.filter(status=status).count() for status in statuses}
 
         # Get model counts by status
-        crawls_pending = Crawl.objects.filter(status=Crawl.StatusChoices.QUEUED).count()
-        crawls_started = Crawl.objects.filter(status=Crawl.StatusChoices.STARTED).count()
+        crawl_status_counts = count_statuses(crawl_scope, (Crawl.StatusChoices.QUEUED, Crawl.StatusChoices.STARTED))
+        crawls_pending = crawl_status_counts.get(Crawl.StatusChoices.QUEUED, 0)
+        crawls_started = crawl_status_counts.get(Crawl.StatusChoices.STARTED, 0)
 
         # Get recent crawls (last 24 hours)
         from datetime import timedelta
 
-        one_day_ago = timezone.now() - timedelta(days=1)
-        crawls_recent = Crawl.objects.filter(created_at__gte=one_day_ago).count()
+        one_day_ago = now - timedelta(days=1)
+        recently_cancelled_after = now - timedelta(minutes=10)
+        crawls_recent = crawl_scope.filter(created_at__gte=one_day_ago).count()
 
-        snapshots_pending = Snapshot.objects.filter(status=Snapshot.StatusChoices.QUEUED).count()
-        snapshots_started = Snapshot.objects.filter(status=Snapshot.StatusChoices.STARTED).count()
+        snapshot_status_counts = count_statuses(snapshot_scope, (Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED))
+        snapshots_pending = snapshot_status_counts.get(Snapshot.StatusChoices.QUEUED, 0)
+        snapshots_started = snapshot_status_counts.get(Snapshot.StatusChoices.STARTED, 0)
 
-        archiveresults_pending = ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.QUEUED).count()
-        archiveresults_started = ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.STARTED).count()
-        archiveresults_failed = ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.FAILED).count()
-        archiveresults_backoff = ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.BACKOFF).count()
-        archiveresults_skipped = ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.SKIPPED).count()
-        archiveresults_noresults = ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.NORESULTS).count()
-        archiveresults_total = sqlite_approx_count(ArchiveResult)
-        if archiveresults_total is not None:
-            archiveresults_succeeded = max(
-                archiveresults_total
-                - archiveresults_pending
-                - archiveresults_started
-                - archiveresults_failed
-                - archiveresults_backoff
-                - archiveresults_skipped
-                - archiveresults_noresults,
-                0,
-            )
-        else:
-            archiveresults_succeeded = ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.SUCCEEDED).count()
+        archiveresult_status_counts = count_statuses(
+            archiveresult_scope,
+            (
+                ArchiveResult.StatusChoices.QUEUED,
+                ArchiveResult.StatusChoices.STARTED,
+                ArchiveResult.StatusChoices.SUCCEEDED,
+                ArchiveResult.StatusChoices.FAILED,
+            ),
+        )
+        archiveresults_pending = archiveresult_status_counts.get(ArchiveResult.StatusChoices.QUEUED, 0)
+        archiveresults_started = archiveresult_status_counts.get(ArchiveResult.StatusChoices.STARTED, 0)
+        archiveresults_succeeded = archiveresult_status_counts.get(ArchiveResult.StatusChoices.SUCCEEDED, 0)
+        archiveresults_failed = archiveresult_status_counts.get(ArchiveResult.StatusChoices.FAILED, 0)
 
         # Build hierarchical active crawls with nested snapshots and archive results
 
         active_crawls_qs = (
-            Crawl.objects.filter(status__in=[Crawl.StatusChoices.QUEUED, Crawl.StatusChoices.STARTED])
-            .prefetch_related("snapshot_set")
+            crawl_scope.filter(
+                Q(status__in=[Crawl.StatusChoices.QUEUED, Crawl.StatusChoices.STARTED])
+                | Q(status=Crawl.StatusChoices.SEALED, modified_at__gte=recently_cancelled_after),
+            )
+            .select_related("created_by")
             .distinct()
             .order_by("-modified_at")[:10]
         )
+        active_crawls_list = list(active_crawls_qs)
+        active_crawl_ids = [crawl.id for crawl in active_crawls_list]
+        snapshot_counts_by_crawl: dict[str, dict[str, int]] = {str(crawl_id): {} for crawl_id in active_crawl_ids}
+        cancelled_snapshot_counts_by_crawl: dict[str, int] = {str(crawl_id): 0 for crawl_id in active_crawl_ids}
+        if active_crawl_ids:
+            for row in snapshot_scope.filter(crawl_id__in=active_crawl_ids).values("crawl_id", "status").annotate(count=Count("id")):
+                snapshot_counts_by_crawl.setdefault(str(row["crawl_id"]), {})[row["status"]] = row["count"]
+            for row in (
+                snapshot_scope.filter(
+                    crawl_id__in=active_crawl_ids,
+                    status=Snapshot.StatusChoices.SEALED,
+                    downloaded_at__isnull=True,
+                    modified_at__gte=recently_cancelled_after,
+                )
+                .values("crawl_id")
+                .annotate(count=Count("id"))
+            ):
+                cancelled_snapshot_counts_by_crawl[str(row["crawl_id"])] = row["count"]
 
-        running_processes = Process.objects.filter(
-            machine=machine,
-            status=Process.StatusChoices.RUNNING,
-            process_type__in=[
-                Process.TypeChoices.HOOK,
-                Process.TypeChoices.BINARY,
-            ],
-        )
-        recent_processes = Process.objects.filter(
-            machine=machine,
-            process_type__in=[
-                Process.TypeChoices.HOOK,
-                Process.TypeChoices.BINARY,
-            ],
-            modified_at__gte=timezone.now() - timedelta(minutes=10),
-        ).order_by("-modified_at")
+        if machine is not None:
+            running_processes = Process.objects.filter(
+                machine=machine,
+                status=Process.StatusChoices.RUNNING,
+                process_type__in=[
+                    Process.TypeChoices.HOOK,
+                    Process.TypeChoices.BINARY,
+                ],
+            ).only("id", "machine_id", "process_type", "status", "pwd", "cmd", "pid", "exit_code", "started_at", "modified_at")
+            recent_processes = (
+                Process.objects.filter(
+                    machine=machine,
+                    process_type__in=[
+                        Process.TypeChoices.HOOK,
+                        Process.TypeChoices.BINARY,
+                    ],
+                    modified_at__gte=now - timedelta(minutes=10),
+                )
+                .only("id", "machine_id", "process_type", "status", "pwd", "cmd", "pid", "exit_code", "started_at", "modified_at")
+                .order_by("-modified_at")
+            )
+        else:
+            running_processes = Process.objects.none()
+            recent_processes = Process.objects.none()
         crawl_process_pids: dict[str, int] = {}
         snapshot_process_pids: dict[str, int] = {}
         process_records_by_crawl: dict[str, list[tuple[dict[str, object], object | None]]] = {}
         process_records_by_snapshot: dict[str, list[tuple[dict[str, object], object | None]]] = {}
         seen_process_records: set[str] = set()
         active_snapshot_statuses = {Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED}
-        snapshots = [
-            snapshot for crawl in active_crawls_qs for snapshot in crawl.snapshot_set.all() if snapshot.status in active_snapshot_statuses
-        ]
+        recently_cancelled_snapshots_q = Q(
+            status=Snapshot.StatusChoices.SEALED,
+            downloaded_at__isnull=True,
+            modified_at__gte=recently_cancelled_after,
+        )
+        crawls_by_id = {str(crawl.id): crawl for crawl in active_crawls_list}
+        snapshots = list(
+            snapshot_scope.filter(Q(status__in=active_snapshot_statuses) | recently_cancelled_snapshots_q, crawl_id__in=active_crawl_ids)
+            .select_related("crawl")
+            .order_by("crawl_id", "status", "modified_at")[:100],
+        )
         snapshots_by_id = {str(snapshot.id): snapshot for snapshot in snapshots}
 
         def find_snapshot_for_process(proc_pwd: Path) -> Snapshot | None:
@@ -1490,14 +1538,29 @@ def live_progress_view(request):
                     return snapshot
             return None
 
+        def find_crawl_for_process(proc_pwd: Path) -> Crawl | None:
+            for path_part in reversed(proc_pwd.parts):
+                crawl = crawls_by_id.get(path_part)
+                if crawl:
+                    return crawl
+            return None
+
+        running_worker_ids: set[str] = set()
         for proc in running_processes:
             if not proc.pwd:
                 continue
-            matched_snapshot = find_snapshot_for_process(Path(proc.pwd))
+            proc_pwd = Path(proc.pwd)
+            matched_snapshot = find_snapshot_for_process(proc_pwd)
+            matched_crawl = matched_snapshot.crawl if matched_snapshot is not None else find_crawl_for_process(proc_pwd)
             if matched_snapshot is None:
-                continue
-            crawl_id = str(matched_snapshot.crawl_id)
-            snapshot_id = str(matched_snapshot.id)
+                if matched_crawl is None:
+                    continue
+                crawl_id = str(matched_crawl.id)
+                snapshot_id = ""
+            else:
+                crawl_id = str(matched_snapshot.crawl_id)
+                snapshot_id = str(matched_snapshot.id)
+            running_worker_ids.add(str(proc.id))
             _plugin, _label, phase, _hook_name = process_label(proc.cmd)
             if crawl_id and proc.pid:
                 crawl_process_pids.setdefault(crawl_id, proc.pid)
@@ -1507,11 +1570,13 @@ def live_progress_view(request):
         for proc in recent_processes:
             if not proc.pwd:
                 continue
-            matched_snapshot = find_snapshot_for_process(Path(proc.pwd))
-            if matched_snapshot is None:
+            proc_pwd = Path(proc.pwd)
+            matched_snapshot = find_snapshot_for_process(proc_pwd)
+            matched_crawl = matched_snapshot.crawl if matched_snapshot is not None else find_crawl_for_process(proc_pwd)
+            if matched_snapshot is None and matched_crawl is None:
                 continue
-            crawl_id = str(matched_snapshot.crawl_id)
-            snapshot_id = str(matched_snapshot.id)
+            crawl_id = str(matched_snapshot.crawl_id if matched_snapshot is not None else matched_crawl.id)
+            snapshot_id = str(matched_snapshot.id) if matched_snapshot is not None else ""
 
             plugin, label, phase, hook_name = process_label(proc.cmd)
 
@@ -1545,19 +1610,21 @@ def live_progress_view(request):
                 process_records_by_crawl.setdefault(crawl_id, []).append((payload, proc_started_at))
 
         active_crawls = []
-        total_workers = 0
-        for crawl in active_crawls_qs:
-            # Get ALL snapshots for this crawl to count status (already prefetched)
-            all_crawl_snapshots = list(crawl.snapshot_set.all())
-
-            # Count snapshots by status from ALL snapshots
-            total_snapshots = len(all_crawl_snapshots)
-            completed_snapshots = sum(1 for s in all_crawl_snapshots if s.status == Snapshot.StatusChoices.SEALED)
-            started_snapshots = sum(1 for s in all_crawl_snapshots if s.status == Snapshot.StatusChoices.STARTED)
-            pending_snapshots = sum(1 for s in all_crawl_snapshots if s.status == Snapshot.StatusChoices.QUEUED)
+        total_workers = len(running_worker_ids)
+        for crawl in active_crawls_list:
+            crawl_snapshot_counts = snapshot_counts_by_crawl.get(str(crawl.id), {})
+            total_snapshots = sum(crawl_snapshot_counts.values())
+            completed_snapshots = crawl_snapshot_counts.get(Snapshot.StatusChoices.SEALED, 0)
+            started_snapshots = crawl_snapshot_counts.get(Snapshot.StatusChoices.STARTED, 0)
+            pending_snapshots = crawl_snapshot_counts.get(Snapshot.StatusChoices.QUEUED, 0)
+            cancelled_snapshots = cancelled_snapshot_counts_by_crawl.get(str(crawl.id), 0)
 
             # Get only ACTIVE snapshots to display (limit to 5 most recent)
-            active_crawl_snapshots = [s for s in all_crawl_snapshots if s.status in active_snapshot_statuses][:5]
+            active_crawl_snapshots = list(
+                snapshot_scope.filter(Q(status__in=active_snapshot_statuses) | recently_cancelled_snapshots_q, crawl=crawl)
+                .select_related("crawl")
+                .order_by("status", "modified_at")[:5],
+            )
 
             # Count URLs in the crawl (for when snapshots haven't been created yet)
             urls_count = 0
@@ -1572,7 +1639,6 @@ def live_progress_view(request):
                 for payload, proc_started_at in process_records_by_crawl.get(str(crawl.id), [])
                 if is_current_run_timestamp(proc_started_at, crawl_run_started_at)
             ]
-            total_workers += sum(1 for item in crawl_setup_plugins if item.get("source") == "process" and item.get("status") == "started")
             crawl_setup_total = len(crawl_setup_plugins)
             crawl_setup_completed = sum(1 for item in crawl_setup_plugins if item.get("status") == "succeeded")
             crawl_setup_failed = sum(1 for item in crawl_setup_plugins if item.get("status") == "failed")
@@ -1591,10 +1657,31 @@ def live_progress_view(request):
                     if archiveresult_matches_current_run(ar, snapshot_run_started_at)
                 ]
 
-                now = timezone.now()
                 plugin_progress_values: list[int] = []
                 all_plugins: list[dict[str, object]] = []
                 seen_plugin_keys: set[str] = set()
+                snapshot_title = snapshot._normalize_title_candidate(snapshot.title, snapshot_url=snapshot.url)
+                snapshot_favicon_url = ""
+                snapshot_preview_url = ""
+                snapshot_preview_link = snapshot_view_url(snapshot)
+                snapshot_fallback_urls: list[str] = []
+                result_by_plugin = {result.plugin: result for result in snapshot_results}
+                title_result = result_by_plugin.get("title")
+                if not snapshot_title and title_result is not None:
+                    snapshot_title = snapshot._normalize_title_candidate(title_result.output_str, snapshot_url=snapshot.url)
+                favicon_result = result_by_plugin.get("favicon")
+                if favicon_result is not None and favicon_result.status == ArchiveResult.StatusChoices.SUCCEEDED:
+                    favicon_path = favicon_result.embed_path_db() or "favicon/favicon.ico"
+                    snapshot_favicon_url = snapshot_output_url(snapshot, favicon_path)
+                screenshot_result = result_by_plugin.get("screenshot")
+                if screenshot_result is not None and screenshot_result.status == ArchiveResult.StatusChoices.SUCCEEDED:
+                    screenshot_path = screenshot_result.embed_path_db() or "screenshot/screenshot.png"
+                    snapshot_preview_url = snapshot_output_url(snapshot, screenshot_path)
+                    snapshot_preview_link = snapshot_view_url(snapshot, screenshot_path)
+                    if snapshot_favicon_url:
+                        snapshot_fallback_urls.append(snapshot_favicon_url)
+                elif snapshot_favicon_url:
+                    snapshot_preview_url = snapshot_favicon_url
 
                 def plugin_sort_key(ar):
                     status_order = {
@@ -1618,7 +1705,7 @@ def live_progress_view(request):
                         progress_value = 100
                     elif status == ArchiveResult.StatusChoices.STARTED:
                         started_at = ar.start_ts or (ar.process.started_at if ar.process_id and ar.process else None)
-                        timeout = ar.timeout or 120
+                        timeout = ar.process.timeout if ar.process_id and ar.process else 120
                         if started_at and timeout:
                             elapsed = max(0.0, (now - started_at).total_seconds())
                             progress_value = int(min(99, max(1, (elapsed / float(timeout)) * 100)))
@@ -1638,12 +1725,17 @@ def live_progress_view(request):
                         "phase": phase,
                         "status": status,
                         "process_id": str(ar.process_id) if ar.process_id else None,
+                        "admin_url": f"/admin/core/archiveresult/{ar.id}/change/",
                     }
+                    output_path = ar.embed_path_db()
+                    if output_path:
+                        plugin_payload["output_path"] = output_path
+                        plugin_payload["output_url"] = snapshot_view_url(snapshot, output_path)
                     if status == ArchiveResult.StatusChoices.STARTED and ar.process_id and ar.process:
                         plugin_payload["pid"] = ar.process.pid
                     if status == ArchiveResult.StatusChoices.STARTED:
                         plugin_payload["progress"] = progress_value
-                        plugin_payload["timeout"] = ar.timeout or 120
+                        plugin_payload["timeout"] = ar.process.timeout if ar.process_id and ar.process else 120
                     plugin_payload["source"] = "archiveresult"
                     all_plugins.append(plugin_payload)
                     seen_plugin_keys.add(str(ar.process_id) if ar.process_id else f"{ar.plugin}:{hook_name}")
@@ -1662,7 +1754,6 @@ def live_progress_view(request):
                         plugin_progress_values.append(100)
                     elif proc_status == "started":
                         plugin_progress_values.append(1)
-                        total_workers += 1
                     else:
                         plugin_progress_values.append(0)
 
@@ -1672,11 +1763,30 @@ def live_progress_view(request):
                 pending_plugins = sum(1 for item in all_plugins if item.get("status") == "queued")
 
                 snapshot_progress = int(sum(plugin_progress_values) / len(plugin_progress_values)) if plugin_progress_values else 0
+                worker_state = "running" if snapshot_process_pids.get(str(snapshot.id)) else "waiting"
+                if snapshot.status == Snapshot.StatusChoices.SEALED and not snapshot.downloaded_at:
+                    worker_state = "cancelled"
+                if (
+                    snapshot.status == Snapshot.StatusChoices.STARTED
+                    and worker_state == "waiting"
+                    and not all_plugins
+                    and snapshot.modified_at
+                    and (now - snapshot.modified_at).total_seconds() > 30
+                ):
+                    worker_state = "stalled" if orchestrator_running else "crashed"
 
                 active_snapshots_for_crawl.append(
                     {
                         "id": str(snapshot.id),
                         "url": snapshot.url[:80],
+                        "full_url": snapshot.url,
+                        "title": snapshot_title,
+                        "admin_url": f"/admin/core/snapshot/{snapshot.id}/change/",
+                        "view_url": snapshot_view_url(snapshot),
+                        "favicon_url": snapshot_favicon_url,
+                        "preview_url": snapshot_preview_url,
+                        "preview_link": snapshot_preview_link,
+                        "preview_fallbacks": snapshot_fallback_urls,
                         "status": snapshot.status,
                         "started": (snapshot.downloaded_at or snapshot.created_at).isoformat()
                         if (snapshot.downloaded_at or snapshot.created_at)
@@ -1688,6 +1798,7 @@ def live_progress_view(request):
                         "pending_plugins": pending_plugins,
                         "all_plugins": all_plugins,
                         "worker_pid": snapshot_process_pids.get(str(snapshot.id)),
+                        "worker_state": worker_state,
                     },
                 )
 
@@ -1696,8 +1807,19 @@ def live_progress_view(request):
             urls_preview = crawl.urls[:60] if crawl.urls else None
 
             # Check if retry_at is in the future (would prevent worker from claiming)
-            retry_at_future = crawl.retry_at > timezone.now() if crawl.retry_at else False
-            seconds_until_retry = int((crawl.retry_at - timezone.now()).total_seconds()) if crawl.retry_at and retry_at_future else 0
+            retry_at_future = crawl.retry_at > now if crawl.retry_at else False
+            seconds_until_retry = int((crawl.retry_at - now).total_seconds()) if crawl.retry_at and retry_at_future else 0
+            crawl_worker_state = (
+                "running"
+                if crawl_process_pids.get(str(crawl.id)) or any(snapshot.get("worker_pid") for snapshot in active_snapshots_for_crawl)
+                else "waiting"
+            )
+            if crawl.status == Crawl.StatusChoices.SEALED and cancelled_snapshots:
+                crawl_worker_state = "cancelled"
+            elif (
+                crawl.status == Crawl.StatusChoices.STARTED and crawl_worker_state == "waiting" and (started_snapshots or pending_snapshots)
+            ):
+                crawl_worker_state = "stalled" if orchestrator_running else "crashed"
 
             active_crawls.append(
                 {
@@ -1713,6 +1835,7 @@ def live_progress_view(request):
                     "started_snapshots": started_snapshots,
                     "failed_snapshots": 0,
                     "pending_snapshots": pending_snapshots,
+                    "cancelled_snapshots": cancelled_snapshots,
                     "setup_plugins": crawl_setup_plugins,
                     "setup_total_plugins": crawl_setup_total,
                     "setup_completed_plugins": crawl_setup_completed,
@@ -1724,6 +1847,7 @@ def live_progress_view(request):
                     "retry_at_future": retry_at_future,
                     "seconds_until_retry": seconds_until_retry,
                     "worker_pid": crawl_process_pids.get(str(crawl.id)),
+                    "worker_state": crawl_worker_state,
                 },
             )
 

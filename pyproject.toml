@@ -1,6 +1,6 @@
 [project]
 name = "archivebox"
-version = "0.9.32rc1"
+version = "0.9.32rc4"
 requires-python = ">=3.13"
 description = "Self-hosted internet archiving solution."
 authors = [{name = "Nick Sweeting", email = "pyproject.toml@archivebox.io"}]
@@ -78,10 +78,10 @@ dependencies = [
     "w3lib>=2.2.1",          # used for parsing content-type encoding from http response headers & html tags
     ### Extractor dependencies (optional binaries detected at runtime via shutil.which)
     ### Binary/Package Management
-    "abxbus>=2.5.4",          # EventBus API
-    "abxpkg>=1.11.1",         # for: detecting, versioning, and installing binaries via apt/brew/pip/npm
-    "abx-plugins>=1.11.1",   # shared ArchiveBox plugin package with Chrome/Puppeteer dependency wiring
-    "abx-dl>=1.11.1",        # shared ArchiveBox downloader package with blocking install preflight
+    "abxbus==2.5.7",          # EventBus API
+    "abxpkg>=1.11.8",         # for: detecting, versioning, and installing binaries via apt/brew/pip/npm
+    "abx-plugins>=1.11.9",   # shared ArchiveBox plugin package with Chrome/Puppeteer dependency wiring
+    "abx-dl>=1.11.9",        # shared ArchiveBox downloader package with blocking install preflight
     ### UUID7 backport for Python <3.14
     "uuid7>=0.1.0; python_version < '3.14'",  # provides the uuid_extensions module on Python 3.13
 ]
@@ -167,7 +167,12 @@ build-backend = "pdm.backend"
 includes = ["archivebox/"]
 source-includes = []
 excludes = [
-    "**/.DS_Store",
+    "archivebox/**/.DS_Store",
+    "archivebox/**/__pycache__",
+    "archivebox/**/*.pyc",
+    "archivebox/**/*.pyo",
+    "archivebox/**/*.sqlite3",
+    "archivebox/**/*.sqlite3-*",
     "archivebox/tests/",
     "archivebox/tests/**",
     "tests/",

@@ -1,6 +1,7 @@
 __package__ = "archivebox.crawls"
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+from collections.abc import Iterable, Mapping
 from io import StringIO
 import uuid
 import json
@@ -410,7 +411,9 @@ class Crawl(ModelWithOutputDir, ModelWithConfig, ModelWithHealthStats, ModelWith
     def url_passes_filters(self, url: str, *, snapshot=None, use_effective_config: bool = True) -> bool:
         denylist = self.get_url_denylist(use_effective_config=use_effective_config, snapshot=snapshot)
         allowlist = self.get_url_allowlist(use_effective_config=use_effective_config, snapshot=snapshot)
+        return self.url_passes_compiled_filters(url, allowlist=allowlist, denylist=denylist)
 
+    def url_passes_compiled_filters(self, url: str, *, allowlist: list[str], denylist: list[str]) -> bool:
         for pattern in denylist:
             if self._pattern_matches_url(url, pattern):
                 return False
@@ -748,56 +751,158 @@ class Crawl(ModelWithOutputDir, ModelWithConfig, ModelWithHealthStats, ModelWith
         created_by_id: int | None = None,
     ):
         """Create one child snapshot if it passes crawl filters and limits."""
-        from archivebox.core.models import Snapshot
+        snapshots = self.create_discovered_snapshots(
+            parent_snapshot,
+            [{"url": url, "title": title, "tags": tags}],
+            depth=depth,
+            created_by_id=created_by_id,
+        )
+        return snapshots[0] if snapshots else None
+
+    def create_discovered_snapshots(
+        self,
+        parent_snapshot,
+        records: Iterable[Mapping[str, Any]],
+        *,
+        depth: int,
+        created_by_id: int | None = None,
+    ) -> list["Snapshot"]:
+        """Create child snapshots from discovered URL records after filtering and deduping once."""
+        from archivebox.core.models import Snapshot, SnapshotTag, Tag
+        from archivebox.config.common import get_config
         from archivebox.misc.util import fix_url_from_markdown, sanitize_extracted_url
+        from archivebox.core.host_utils import get_admin_host, get_api_host, get_listen_host, get_public_host, get_web_host, split_host_port
 
         if self.status == self.StatusChoices.SEALED:
-            return None
+            return []
 
-        url = sanitize_extracted_url(fix_url_from_markdown(str(url or "").strip()))
-        if not url:
-            return None
-        try:
-            validate_url_length(url)
-        except ValueError as err:
-            print(f"[yellow][!] Skipping over-long discovered snapshot URL: {url[:120]}... ({err})[/yellow]")
-            return None
         if depth > self.max_depth:
-            return None
-        if not self.url_passes_filters(url, snapshot=parent_snapshot):
-            return None
-        if self.snapshot_set.filter(url=url).exists():
-            return None
-        if not self.has_remaining_snapshot_capacity():
-            return None
+            return []
+
+        config = get_config(crawl=self, snapshot=parent_snapshot)
+        allowlist = self.split_filter_patterns(config.get("URL_ALLOWLIST", ""))
+        denylist = self.split_filter_patterns(config.get("URL_DENYLIST", ""))
+        protected_subdomains = {"admin", "web", "api", "public"}
+        protected_hosts = set()
+        protected_roots = set()
+        for host_value in (
+            get_listen_host(config=config),
+            get_admin_host(config=config),
+            get_web_host(config=config),
+            get_api_host(config=config),
+            get_public_host(config=config),
+        ):
+            if not host_value:
+                continue
+            protected_host = split_host_port(host_value)[0].strip(".")
+            if not protected_host:
+                continue
+            protected_hosts.add(protected_host)
+            host_parts = protected_host.split(".", 1)
+            if len(host_parts) == 2 and (host_parts[0] in protected_subdomains or host_parts[0].startswith("snap-")):
+                protected_roots.add(host_parts[1])
+            else:
+                protected_roots.add(protected_host)
+        uses_subdomain_routing = bool(config.get("USES_SUBDOMAIN_ROUTING", False))
+
+        deduped_records: dict[str, Mapping[str, Any]] = {}
+        for record in records:
+            url = sanitize_extracted_url(fix_url_from_markdown(str(record.get("url") or "").strip()))
+            if not url or url in deduped_records:
+                continue
+            try:
+                validate_url_length(url)
+            except ValueError as err:
+                print(f"[yellow][!] Skipping over-long discovered snapshot URL: {url[:120]}... ({err})[/yellow]")
+                continue
+            parsed = urlparse(url)
+            host = (parsed.hostname or "").lower().strip(".")
+            is_internal_url = False
+            if parsed.scheme in ("http", "https") and host:
+                if host in protected_hosts:
+                    is_internal_url = True
+                elif uses_subdomain_routing:
+                    for protected_root in protected_roots:
+                        if not protected_root or not host.endswith(f".{protected_root}"):
+                            continue
+                        subdomain = host[: -(len(protected_root) + 1)]
+                        if subdomain in protected_subdomains or subdomain.startswith("snap-"):
+                            is_internal_url = True
+                            break
+            if is_internal_url:
+                print(f"[yellow][!] Skipping internal ArchiveBox discovered snapshot URL: {url}[/yellow]")
+                continue
+            if self.url_passes_compiled_filters(url, allowlist=allowlist, denylist=denylist):
+                deduped_records[url] = record
+
+        if not deduped_records:
+            return []
+
+        existing_urls = set(self.snapshot_set.filter(url__in=deduped_records.keys()).values_list("url", flat=True))
+        urls = [url for url in deduped_records.keys() if url not in existing_urls]
+        remaining = self.remaining_snapshot_capacity()
+        if remaining is not None:
+            urls = urls[:remaining]
+        if not urls:
+            return []
+
+        now = timezone.now()
+        snapshots = [
+            Snapshot(
+                url=url,
+                timestamp=str((now + timedelta(microseconds=index)).timestamp()),
+                title=str(deduped_records[url].get("title") or "").strip()[:512] or None,
+                crawl=self,
+                parent_snapshot=parent_snapshot,
+                depth=depth,
+                status=Snapshot.StatusChoices.QUEUED,
+                retry_at=now,
+                bookmarked_at=now,
+                created_at=now,
+            )
+            for index, url in enumerate(urls)
+        ]
 
         try:
-            snapshot = Snapshot.from_json(
-                {
-                    "url": url,
-                    "depth": depth,
-                    "title": title,
-                    "tags": tags,
-                    "parent_snapshot_id": str(parent_snapshot.id),
-                    "crawl_id": str(self.id),
-                },
-                overrides={
-                    "crawl": self,
-                    "snapshot": parent_snapshot,
-                    "created_by_id": created_by_id or self.created_by_id,
-                },
-                queue_for_extraction=False,
-            )
+            created_snapshots = list(Snapshot.objects.bulk_create(snapshots))
         except ValidationError as err:
-            print(f"[yellow][!] Skipping blocked discovered snapshot URL: {url} ({err})[/yellow]")
-            return None
-        if snapshot is None or snapshot.status == Snapshot.StatusChoices.SEALED:
-            return None
+            print(f"[yellow][!] Skipping blocked discovered snapshots: {err}[/yellow]")
+            return []
 
-        snapshot.status = Snapshot.StatusChoices.QUEUED
-        snapshot.retry_at = timezone.now()
-        snapshot.save(update_fields=["status", "retry_at", "modified_at"])
-        return snapshot
+        crawl_urls = {url for _raw_line, url in self._iter_url_lines() if url}
+        new_url_lines = [snapshot.url for snapshot in created_snapshots if snapshot.url not in crawl_urls]
+        if new_url_lines:
+            self.urls = (self.urls.rstrip() + "\n" + "\n".join(new_url_lines)).lstrip("\n")
+            self.save(update_fields=["urls", "modified_at"])
+
+        tag_names_by_url: dict[str, set[str]] = {}
+        for snapshot in created_snapshots:
+            tags = str(deduped_records[snapshot.url].get("tags") or "").strip()
+            if tags:
+                tag_names_by_url[snapshot.url] = {tag.strip() for tag in re.split(config.TAG_SEPARATOR_PATTERN, tags) if tag.strip()}
+            try:
+                snapshot.ensure_crawl_symlink()
+            except Exception:
+                pass
+
+        tag_names = {tag for tags in tag_names_by_url.values() for tag in tags}
+        if tag_names:
+            tags_by_name = {tag.name: tag for tag in Tag.objects.filter(name__in=tag_names)}
+            missing_tags = [Tag(name=name) for name in sorted(tag_names - tags_by_name.keys())]
+            if missing_tags:
+                Tag.objects.bulk_create(missing_tags, ignore_conflicts=True)
+                tags_by_name = {tag.name: tag for tag in Tag.objects.filter(name__in=tag_names)}
+            SnapshotTag.objects.bulk_create(
+                [
+                    SnapshotTag(snapshot=snapshot, tag=tags_by_name[tag_name])
+                    for snapshot in created_snapshots
+                    for tag_name in tag_names_by_url.get(snapshot.url, set())
+                    if tag_name in tags_by_name
+                ],
+                ignore_conflicts=True,
+            )
+
+        return created_snapshots
 
     def install_declared_binaries(self, binary_names: set[str], machine=None) -> None:
         """

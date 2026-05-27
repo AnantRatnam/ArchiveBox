@@ -244,7 +244,7 @@ def process_stdin_records() -> int:
     return 0
 
 
-def run_runner(daemon: bool = False) -> int:
+def run_runner(daemon: bool = False, crawl_id: str | None = None) -> int:
     """
     Run the background runner loop.
 
@@ -269,7 +269,7 @@ def run_runner(daemon: bool = False) -> int:
         current.save(update_fields=["process_type", "modified_at"])
 
     try:
-        run_pending_crawls(daemon=daemon)
+        run_pending_crawls(daemon=daemon, crawl_id=crawl_id)
         return 0
     except KeyboardInterrupt:
         return 0
@@ -319,19 +319,7 @@ def main(daemon: bool, crawl_id: str, snapshot_id: str, binary_id: str):
             sys.exit(1)
 
     if crawl_id:
-        try:
-            from archivebox.services.runner import run_crawl
-
-            run_crawl(crawl_id)
-            sys.exit(0)
-        except KeyboardInterrupt:
-            sys.exit(0)
-        except Exception as e:
-            rprint(f"[red]Runner error: {type(e).__name__}: {e}[/red]", file=sys.stderr)
-            import traceback
-
-            traceback.print_exc()
-            sys.exit(1)
+        sys.exit(run_runner(daemon=False, crawl_id=crawl_id))
 
     if daemon:
         sys.exit(run_runner(daemon=True))

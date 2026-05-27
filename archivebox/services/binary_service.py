@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from asgiref.sync import sync_to_async
 
 from abx_dl.events import BinaryRequestEvent, BinaryEvent
@@ -20,6 +22,7 @@ class BinaryService(BaseService):
 
         machine = await sync_to_async(Machine.current, thread_sensitive=True)()
         existing = await Binary.objects.filter(machine=machine, name=event.name).afirst()
+        cache_invalidated = False
         if existing and existing.status == Binary.StatusChoices.INSTALLED:
             changed = False
             if event.binproviders and existing.binproviders != event.binproviders:
@@ -29,7 +32,10 @@ class BinaryService(BaseService):
                 existing.overrides = event.overrides
                 changed = True
             if changed:
-                await existing.asave(update_fields=["binproviders", "overrides", "modified_at"])
+                existing.status = Binary.StatusChoices.QUEUED
+                existing.retry_at = None
+                cache_invalidated = True
+                await existing.asave(update_fields=["binproviders", "overrides", "status", "retry_at", "modified_at"])
         elif existing is None:
             await Binary.objects.acreate(
                 machine=machine,
@@ -39,19 +45,50 @@ class BinaryService(BaseService):
                 status=Binary.StatusChoices.QUEUED,
             )
 
-        installed = (
-            await Binary.objects.filter(machine=machine, name=event.name, status=Binary.StatusChoices.INSTALLED)
-            .exclude(abspath="")
-            .exclude(abspath__isnull=True)
-            .order_by("-modified_at")
-            .afirst()
-        )
+        installed = None
+        if not cache_invalidated:
+            installed = (
+                await Binary.objects.filter(machine=machine, name=event.name, status=Binary.StatusChoices.INSTALLED)
+                .exclude(abspath="")
+                .exclude(abspath__isnull=True)
+                .order_by("-modified_at")
+                .afirst()
+            )
+            if installed is not None and not await sync_to_async(Path(installed.abspath).expanduser().exists, thread_sensitive=True)():
+                installed.status = Binary.StatusChoices.QUEUED
+                installed.retry_at = None
+                await installed.asave(update_fields=["status", "retry_at", "modified_at"])
+                installed = None
+            if installed is not None and event.overrides and installed.overrides != event.overrides:
+                installed.status = Binary.StatusChoices.QUEUED
+                installed.retry_at = None
+                await installed.asave(update_fields=["status", "retry_at", "modified_at"])
+                installed = None
         cached = None
         if installed is not None:
+            from archivebox.config.common import get_config
             from abxpkg import BinProvider, PROVIDER_CLASS_BY_NAME
 
             binary_env: dict[str, str] = {}
+            installed_path = Path(installed.abspath).expanduser().resolve(strict=False)
+            active_lib_dir = (
+                Path(str((await sync_to_async(get_config, thread_sensitive=True)()).get("LIB_DIR", "")))
+                .expanduser()
+                .resolve(
+                    strict=False,
+                )
+            )
             provider_name = (installed.binprovider or installed.binproviders.split(",", 1)[0]).strip()
+            if active_lib_dir and provider_name in {"npm", "pip", "puppeteer", "uv", "deno", "gem", "cargo", "goget", "nix", "bash"}:
+                try:
+                    installed_path.relative_to(active_lib_dir)
+                except ValueError:
+                    installed.status = Binary.StatusChoices.QUEUED
+                    installed.retry_at = None
+                    await installed.asave(update_fields=["status", "retry_at", "modified_at"])
+                    installed = None
+            if installed is None:
+                return None
             provider_class = PROVIDER_CLASS_BY_NAME.get(provider_name)
             if provider_class is not None:
                 provider = provider_class()

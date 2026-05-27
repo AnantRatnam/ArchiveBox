@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 from benedict import benedict
 
-from .permissions import SudoPermission, IS_ROOT, ARCHIVEBOX_USER
+from .permissions import SudoPermission, IS_ROOT, ARCHIVEBOX_USER, ARCHIVEBOX_GROUP
 
 if TYPE_CHECKING:
     from archivebox.config.common import ArchiveBoxConfig
@@ -158,11 +158,23 @@ def assert_dir_can_contain_unix_sockets(dir_path: Path) -> bool:
 
 
 def create_and_chown_dir(dir_path: Path) -> None:
+    """Create a required runtime dir and fix only that dir's ownership when needed."""
+    dir_existed = dir_path.exists()
+    dir_path.mkdir(parents=True, exist_ok=True)
+
+    try:
+        stat = dir_path.stat()
+    except OSError:
+        return
+
+    if dir_existed and stat.st_uid == ARCHIVEBOX_USER and stat.st_gid == ARCHIVEBOX_GROUP:
+        return
+
     with SudoPermission(uid=0, fallback=True):
-        dir_path.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["chown", str(ARCHIVEBOX_USER), str(dir_path)], stderr=subprocess.DEVNULL)
-        for child in dir_path.iterdir():
-            subprocess.run(["chown", str(ARCHIVEBOX_USER), str(child)], stderr=subprocess.DEVNULL)
+        try:
+            os.chown(dir_path, ARCHIVEBOX_USER, ARCHIVEBOX_GROUP)
+        except (OSError, PermissionError):
+            pass
 
 
 def tmp_dir_socket_path_is_short_enough(dir_path: Path) -> bool:

@@ -1,6 +1,7 @@
 __package__ = "archivebox.config"
 
 import json
+import os
 import re
 import secrets
 import sys
@@ -76,6 +77,7 @@ class StorageConfig(BaseConfigSet):
     # ARCHIVE_DIR / USERS_DIR are resolved dynamically via get_config().
     ARCHIVE_DIR: Path = Field(default=CONSTANTS.ARCHIVE_DIR)
     USERS_DIR: Path = Field(default=CONSTANTS.USERS_DIR)
+    PERSONAS_DIR: Path = Field(default=CONSTANTS.PERSONAS_DIR)
 
     # TMP_DIR must be a local, fast, readable/writable dir by archivebox user,
     # must be a short path due to unix path length restrictions for socket files (<100 chars)
@@ -461,6 +463,7 @@ def get_config(
     snapshot: Any = None,
     archiveresult: Any = None,
     machine: Any = None,
+    include_machine: bool = True,
     resolve_plugins: bool = True,
 ) -> ArchiveBoxBaseConfig:
     """
@@ -484,7 +487,7 @@ def get_config(
     if crawl is None and snapshot is not None:
         crawl = snapshot.crawl
 
-    if machine is None:
+    if include_machine and machine is None:
         try:
             from django.apps import apps
 
@@ -520,10 +523,10 @@ def get_config(
 
     scope_overrides: ConfigPayload = {}
 
-    if machine is not None and machine.config:
+    if include_machine and machine is not None and machine.config:
         from archivebox.machine.models import _sanitize_machine_config
 
-        scope_overrides.update(_sanitize_machine_config(machine.config))
+        scope_overrides.update(_sanitize_machine_config(machine.config, lib_dir=config_data.get("LIB_DIR")))
 
     if persona is not None:
         scope_overrides.update(persona.get_derived_config())
@@ -564,6 +567,7 @@ def get_config(
     config_data["ABX_RUNTIME"] = "archivebox"
 
     config = ArchiveBoxConfig.model_validate(config_data)
+    os.environ["ABXPKG_LIB_DIR"] = str(config.LIB_DIR)
     archiving_warning_key = (config.TIMEOUT, config.USE_COLOR)
     if archiving_warning_key not in _WARNED_ARCHIVING_CONFIGS:
         config.warn_if_invalid()

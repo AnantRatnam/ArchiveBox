@@ -1506,7 +1506,7 @@
         <link href="{% static 'select2.min.css' %}" rel="stylesheet"/>
         <script src="{% static 'select2.min.js' %}"></script>
 
-        <link rel="stylesheet" type="text/css" href="{% static "admin.css" %}">
+        <link rel="stylesheet" type="text/css" href="{% static "admin.css" %}?v={{ STATIC_CACHE_KEY|default:VERSION|urlencode }}">
         
         <script>
             function selectSnapshotListView(e) {

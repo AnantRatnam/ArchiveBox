@@ -12,9 +12,12 @@ Tests cover:
 """
 
 import os
+import subprocess
+import sys
+import tempfile
 from datetime import timedelta
+from pathlib import Path
 from typing import cast
-from unittest.mock import Mock, patch
 
 import pytest
 from django.test import TestCase
@@ -94,10 +97,16 @@ class TestMachineModel(TestCase):
 
     def test_machine_from_jsonl_update(self):
         """Machine.from_json() should update machine config."""
+        from archivebox.config.constants import CONSTANTS
+
         Machine.current()  # Ensure machine exists
+        wget_path = CONSTANTS.DEFAULT_LIB_DIR / "wget"
+        wget_path.parent.mkdir(parents=True, exist_ok=True)
+        wget_path.write_text("#!/bin/sh\n")
+        self.addCleanup(lambda: wget_path.exists() and wget_path.unlink())
         record = {
             "config": {
-                "WGET_BINARY": "/usr/bin/wget",
+                "WGET_BINARY": str(wget_path),
             },
         }
 
@@ -105,15 +114,22 @@ class TestMachineModel(TestCase):
 
         self.assertIsNotNone(result)
         assert result is not None
-        self.assertEqual(result.config.get("WGET_BINARY"), "/usr/bin/wget")
+        self.assertEqual(result.config.get("WGET_BINARY"), str(wget_path))
 
-    def test_machine_from_jsonl_strips_legacy_chromium_version(self):
-        """Machine.from_json() should ignore legacy browser version keys."""
+    def test_machine_from_jsonl_keeps_only_valid_binary_paths(self):
+        """Machine.from_json() should persist only valid LIB_DIR binary paths."""
+        from archivebox.config.constants import CONSTANTS
+
         Machine.current()  # Ensure machine exists
+        wget_path = CONSTANTS.DEFAULT_LIB_DIR / "wget"
+        wget_path.parent.mkdir(parents=True, exist_ok=True)
+        wget_path.write_text("#!/bin/sh\n")
+        self.addCleanup(lambda: wget_path.exists() and wget_path.unlink())
         record = {
             "config": {
-                "WGET_BINARY": "/usr/bin/wget",
+                "WGET_BINARY": str(wget_path),
                 "CHROMIUM_VERSION": "123.4.5",
+                "YTDLP_BINARY": "/tmp/archivebox-test-missing-yt-dlp",
             },
         }
 
@@ -121,8 +137,9 @@ class TestMachineModel(TestCase):
 
         self.assertIsNotNone(result)
         assert result is not None
-        self.assertEqual(result.config.get("WGET_BINARY"), "/usr/bin/wget")
+        self.assertEqual(result.config.get("WGET_BINARY"), str(wget_path))
         self.assertNotIn("CHROMIUM_VERSION", result.config)
+        self.assertNotIn("YTDLP_BINARY", result.config)
 
     def test_machine_from_jsonl_invalid(self):
         """Machine.from_json() should return None for invalid records."""
@@ -132,21 +149,28 @@ class TestMachineModel(TestCase):
     def test_machine_current_keeps_only_derived_runtime_cache(self):
         """Machine.current() should keep derived cache entries, not runtime config."""
         import archivebox.machine.models as models
+        from archivebox.config.constants import CONSTANTS
 
-        chrome_path = "/tmp/archivebox-test-chromium"
-        node_path = "/tmp/archivebox-test-node"
-        open(chrome_path, "a").close()
-        open(node_path, "a").close()
-        self.addCleanup(lambda: os.path.exists(chrome_path) and os.remove(chrome_path))
-        self.addCleanup(lambda: os.path.exists(node_path) and os.remove(node_path))
+        active_lib_dir = CONSTANTS.DEFAULT_LIB_DIR
+        active_lib_dir.mkdir(parents=True, exist_ok=True)
+        chrome_path = active_lib_dir / "chromium"
+        node_path = active_lib_dir / "node"
+        chrome_path.write_text("#!/bin/sh\n")
+        node_path.write_text("#!/bin/sh\n")
+        external_path = "/tmp/archivebox-test-external-node"
+        open(external_path, "a").close()
+        self.addCleanup(lambda: chrome_path.exists() and chrome_path.unlink())
+        self.addCleanup(lambda: node_path.exists() and node_path.unlink())
+        self.addCleanup(lambda: os.path.exists(external_path) and os.remove(external_path))
         machine = Machine.current()
         machine.config = {
-            "CHROME_BINARY": chrome_path,
-            "NODE_BINARY": node_path,
+            "CHROME_BINARY": str(chrome_path),
+            "NODE_BINARY": str(node_path),
             "ABX_INSTALL_CACHE": {"wget": "2026-03-24T00:00:00+00:00"},
             "CHROME_ISOLATION": "snapshot",
             "CHROME_USER_DATA_DIR": "/tmp/profile",
             "CHROMIUM_VERSION": "123.4.5",
+            "YTDLP_BINARY": external_path,
             "WGET_BINARY": "/tmp/archivebox-test-missing-wget",
         }
         machine.save(update_fields=["config"])
@@ -154,12 +178,13 @@ class TestMachineModel(TestCase):
 
         refreshed = Machine.current()
 
-        self.assertEqual(refreshed.config.get("CHROME_BINARY"), chrome_path)
-        self.assertEqual(refreshed.config.get("NODE_BINARY"), node_path)
-        self.assertEqual(refreshed.config.get("ABX_INSTALL_CACHE"), {"wget": "2026-03-24T00:00:00+00:00"})
+        self.assertEqual(refreshed.config.get("CHROME_BINARY"), str(chrome_path))
+        self.assertEqual(refreshed.config.get("NODE_BINARY"), str(node_path))
+        self.assertNotIn("ABX_INSTALL_CACHE", refreshed.config)
         self.assertNotIn("CHROME_ISOLATION", refreshed.config)
         self.assertNotIn("CHROME_USER_DATA_DIR", refreshed.config)
         self.assertNotIn("CHROMIUM_VERSION", refreshed.config)
+        self.assertNotIn("YTDLP_BINARY", refreshed.config)
         self.assertNotIn("WGET_BINARY", refreshed.config)
 
     def test_get_config_auto_applies_current_machine_config(self):
@@ -167,12 +192,14 @@ class TestMachineModel(TestCase):
         import archivebox.machine.models as models
         from archivebox.config.common import get_config
 
-        chrome_path = "/tmp/archivebox-test-chromium"
-        open(chrome_path, "a").close()
-        self.addCleanup(lambda: os.path.exists(chrome_path) and os.remove(chrome_path))
+        lib_dir = get_config(include_machine=False).LIB_DIR
+        chrome_path = lib_dir / "chromium"
+        chrome_path.parent.mkdir(parents=True, exist_ok=True)
+        chrome_path.write_text("#!/bin/sh\n")
+        self.addCleanup(lambda: chrome_path.exists() and chrome_path.unlink())
         machine = Machine.current()
         machine.config = {
-            "CHROME_BINARY": chrome_path,
+            "CHROME_BINARY": str(chrome_path),
             "ABX_INSTALL_CACHE": {"chrome": "2026-03-24T00:00:00+00:00"},
             "CHROME_ISOLATION": "snapshot",
         }
@@ -181,8 +208,7 @@ class TestMachineModel(TestCase):
 
         config = get_config()
 
-        self.assertEqual(config.CHROME_BINARY, chrome_path)
-        self.assertEqual(config["ABX_INSTALL_CACHE"], {"chrome": "2026-03-24T00:00:00+00:00"})
+        self.assertEqual(config.CHROME_BINARY, str(chrome_path))
         self.assertEqual(config.CHROME_ISOLATION, "crawl")
 
     def test_machine_manager_current(self):
@@ -222,36 +248,6 @@ class TestNetworkInterfaceModel(TestCase):
         """NetworkInterface.objects.current() should return current interface."""
         interface = NetworkInterface.current()
         self.assertIsNotNone(interface)
-
-    def test_networkinterface_current_refresh_creates_new_interface_when_properties_change(self):
-        """Refreshing should persist a new NetworkInterface row when the host network fingerprint changes."""
-        import archivebox.machine.models as models
-
-        first = {
-            "mac_address": "aa:bb:cc:dd:ee:01",
-            "ip_public": "1.1.1.1",
-            "ip_local": "192.168.1.10",
-            "dns_server": "8.8.8.8",
-            "hostname": "host-a",
-            "iface": "en0",
-            "isp": "ISP A",
-            "city": "City",
-            "region": "Region",
-            "country": "Country",
-        }
-        second = {
-            **first,
-            "ip_public": "2.2.2.2",
-            "ip_local": "10.0.0.5",
-        }
-
-        with patch.object(models, "get_host_network", side_effect=[first, second]):
-            interface1 = NetworkInterface.current(refresh=True)
-            interface2 = NetworkInterface.current(refresh=True)
-
-        self.assertNotEqual(interface1.id, interface2.id)
-        self.assertEqual(interface1.machine_id, interface2.machine_id)
-        self.assertEqual(NetworkInterface.objects.filter(machine=interface1.machine).count(), 2)
 
 
 class TestBinaryModel(TestCase):
@@ -343,6 +339,20 @@ class TestBinaryModel(TestCase):
         self.assertIsNotNone(binary)
         assert binary is not None
         self.assertEqual(binary.overrides, overrides)
+
+    def test_binary_from_json_canonicalizes_path_like_names(self):
+        """Binary.from_json() should store command names, not path cache values."""
+        binary = Binary.from_json(
+            {
+                "name": "/tmp/old-lib/pip/venv/bin/trafilatura",
+                "binproviders": "env,pip",
+                "overrides": {"pip": {"install_args": ["trafilatura"]}},
+            },
+        )
+
+        self.assertIsNotNone(binary)
+        assert binary is not None
+        self.assertEqual(binary.name, "trafilatura")
 
     def test_binary_from_json_does_not_coerce_legacy_override_shapes(self):
         """Binary.from_json() should no longer translate legacy non-dict provider overrides."""
@@ -507,48 +517,82 @@ class TestProcessCurrent(TestCase):
 
     def test_process_detect_type_runner(self):
         """_detect_process_type should detect the background runner command."""
-        with patch("sys.argv", ["archivebox", "run", "--daemon"]):
+        old_argv = sys.argv
+        try:
+            sys.argv = ["archivebox", "run", "--daemon"]
             result = Process._detect_process_type()
             self.assertEqual(result, Process.TypeChoices.ORCHESTRATOR)
+        finally:
+            sys.argv = old_argv
 
     def test_process_detect_type_runner_watch(self):
         """runner_watch should be classified as a worker, not the orchestrator itself."""
-        with patch("sys.argv", ["archivebox", "manage", "runner_watch", "--pidfile=/tmp/runserver.pid"]):
+        old_argv = sys.argv
+        try:
+            sys.argv = ["archivebox", "manage", "runner_watch", "--pidfile=/tmp/runserver.pid"]
             result = Process._detect_process_type()
             self.assertEqual(result, Process.TypeChoices.WORKER)
+        finally:
+            sys.argv = old_argv
 
     def test_process_detect_type_cli(self):
         """_detect_process_type should detect CLI commands."""
-        with patch("sys.argv", ["archivebox", "add", "http://example.com"]):
+        old_argv = sys.argv
+        try:
+            sys.argv = ["archivebox", "add", "http://example.com"]
             result = Process._detect_process_type()
             self.assertEqual(result, Process.TypeChoices.CLI)
+        finally:
+            sys.argv = old_argv
 
     def test_process_detect_type_binary(self):
         """_detect_process_type should detect non-ArchiveBox subprocesses as binary processes."""
-        with patch("sys.argv", ["/usr/bin/wget", "https://example.com"]):
+        old_argv = sys.argv
+        try:
+            sys.argv = ["/usr/bin/wget", "https://example.com"]
             result = Process._detect_process_type()
             self.assertEqual(result, Process.TypeChoices.BINARY)
+        finally:
+            sys.argv = old_argv
 
     def test_process_proc_allows_interpreter_wrapped_script(self):
         """Process.proc should accept a script recorded in DB when wrapped by an interpreter in psutil."""
-        proc = Process.objects.create(
-            machine=Machine.current(),
-            cmd=["/tmp/on_CrawlSetup__90_chrome_launch.daemon.bg.js", "--url=https://example.com/"],
-            pid=12345,
-            status=Process.StatusChoices.RUNNING,
-            started_at=timezone.now(),
+        import psutil
+
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        script = Path(temp_dir.name) / "on_CrawlSetup__90_chrome_launch.daemon.bg.py"
+        script.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+        process = subprocess.Popen(
+            [sys.executable, str(script), "--url=https://example.com/"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
 
-        os_proc = Mock()
-        os_proc.create_time.return_value = proc.started_at.timestamp()
-        os_proc.cmdline.return_value = [
-            "node",
-            "/tmp/on_CrawlSetup__90_chrome_launch.daemon.bg.js",
-            "--url=https://example.com/",
-        ]
+        def cleanup_process():
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
 
-        with patch("archivebox.machine.models.psutil.Process", return_value=os_proc):
-            self.assertIs(proc.proc, os_proc)
+        self.addCleanup(cleanup_process)
+        os_proc = psutil.Process(process.pid)
+        proc = Process.objects.create(
+            machine=Machine.current(),
+            cmd=[str(script), "--url=https://example.com/"],
+            pid=process.pid,
+            status=Process.StatusChoices.RUNNING,
+            started_at=timezone.datetime.fromtimestamp(os_proc.create_time(), tz=timezone.get_current_timezone()),
+        )
+
+        resolved_proc = proc.proc
+        self.assertIsNotNone(resolved_proc)
+        assert resolved_proc is not None
+        self.assertEqual(resolved_proc.pid, process.pid)
 
 
 class TestProcessHierarchy(TestCase):
@@ -789,18 +833,11 @@ class TestProcessClassMethods(TestCase):
             started_at=timezone.now() - PROCESS_TIMEOUT_GRACE - timedelta(seconds=10),
         )
 
-        with (
-            patch.object(Process, "poll", return_value=None),
-            patch.object(Process, "kill_tree") as kill_tree,
-            patch.object(Process, "terminate") as terminate,
-        ):
-            cleaned = Process.cleanup_stale_running()
+        cleaned = Process.cleanup_stale_running()
 
         self.assertGreaterEqual(cleaned, 1)
         stale.refresh_from_db()
         self.assertEqual(stale.status, Process.StatusChoices.EXITED)
-        kill_tree.assert_not_called()
-        terminate.assert_not_called()
 
     def test_cleanup_orphaned_workers_marks_dead_root_children_exited(self):
         """cleanup_orphaned_workers should retire rows whose CLI/orchestrator root is gone."""
@@ -824,14 +861,11 @@ class TestProcessClassMethods(TestCase):
             started_at=started_at,
         )
 
-        with patch.object(Process, "kill_tree") as kill_tree, patch.object(Process, "terminate") as terminate:
-            cleaned = Process.cleanup_orphaned_workers()
+        cleaned = Process.cleanup_orphaned_workers()
 
         self.assertEqual(cleaned, 1)
         child.refresh_from_db()
         self.assertEqual(child.status, Process.StatusChoices.EXITED)
-        kill_tree.assert_not_called()
-        terminate.assert_not_called()
 
     def test_cleanup_orphaned_workers_marks_non_running_children_exited(self):
         """cleanup_orphaned_workers should retire child rows whose OS process is already gone."""

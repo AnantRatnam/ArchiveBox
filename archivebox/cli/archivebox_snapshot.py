@@ -35,7 +35,7 @@ from collections.abc import Iterable
 
 import rich_click as click
 from rich import print as rprint
-from django.db.models import Q, Sum
+from django.db.models import Case, IntegerField, Q, Sum, When
 from django.db.models.functions import Coalesce
 
 from archivebox.cli.cli_utils import apply_filters
@@ -213,7 +213,7 @@ def list_snapshots(
 
     is_tty = sys.stdout.isatty() and not csv
 
-    queryset = Snapshot.objects.annotate(output_size_sum=Coalesce(Sum("archiveresult__output_size"), 0)).order_by("-created_at")
+    queryset = Snapshot.objects.order_by("-created_at")
 
     # Apply filters
     filter_kwargs = {
@@ -264,7 +264,17 @@ def list_snapshots(
 
     if sort:
         queryset = queryset.order_by(sort)
-    if limit:
+
+    if not is_tty:
+        if limit:
+            limited_ids = list(queryset.values_list("id", flat=True)[:limit])
+            preserved_order = Case(
+                *(When(id=snapshot_id, then=position) for position, snapshot_id in enumerate(limited_ids)),
+                output_field=IntegerField(),
+            )
+            queryset = Snapshot.objects.filter(id__in=limited_ids).order_by(preserved_order)
+        queryset = queryset.annotate(output_size_sum=Coalesce(Sum("archiveresult__output_size"), 0)).prefetch_related("tags")
+    elif limit:
         queryset = queryset[:limit]
 
     count = 0
@@ -276,8 +286,36 @@ def list_snapshots(
         rows: list[str] = []
         if with_headers:
             rows.append(",".join(cols))
+        simple_cols = {
+            "id",
+            "crawl_id",
+            "url",
+            "title",
+            "timestamp",
+            "depth",
+            "status",
+            "fs_version",
+            "bookmarked_at",
+            "created_at",
+            "modified_at",
+            "retry_at",
+            "downloaded_at",
+        }
+        from archivebox.misc.util import to_json
+
         for snapshot in queryset.iterator(chunk_size=500):
-            rows.append(snapshot.to_csv(cols=cols, separator=","))
+            if set(cols).issubset(simple_cols):
+                rows.append(
+                    ",".join(
+                        to_json(
+                            value.isoformat() if hasattr((value := getattr(snapshot, col, "")), "isoformat") else value,
+                            indent=None,
+                        )
+                        for col in cols
+                    ),
+                )
+            else:
+                rows.append(snapshot.to_csv(cols=cols, separator=","))
             count += 1
         output = "\n".join(rows)
         if output:

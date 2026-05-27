@@ -442,6 +442,7 @@ def run_hook(
     lib_bin_dir = resolved_config.LIB_BIN_DIR
     if lib_dir:
         env["LIB_DIR"] = str(lib_dir)
+        env["ABXPKG_LIB_DIR"] = str(lib_dir)
     if lib_bin_dir:
         env["LIB_BIN_DIR"] = str(lib_bin_dir)
 
@@ -468,6 +469,7 @@ def run_hook(
     SKIP_KEYS = {
         "PATH",
         "LIB_DIR",
+        "ABXPKG_LIB_DIR",
         "LIB_BIN_DIR",
         "NODE_PATH",
         "NODE_MODULES_DIR",

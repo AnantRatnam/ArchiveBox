@@ -52,8 +52,6 @@ PROCESS_RECHECK_INTERVAL = 60  # Re-validate every 60 seconds
 PID_REUSE_WINDOW = timedelta(hours=24)  # Max age for considering a PID match valid
 PROCESS_TIMEOUT_GRACE = timedelta(seconds=30)  # Extra margin before force-cleaning timed-out RUNNING rows
 START_TIME_TOLERANCE = 5.0  # Seconds tolerance for start time matching
-LEGACY_MACHINE_CONFIG_KEYS = frozenset({"CHROMIUM_VERSION"})
-MACHINE_CONFIG_ALWAYS_ALLOWED_KEYS = frozenset({"ABX_INSTALL_CACHE"})
 
 
 def _find_existing_binary_for_reference(machine: Machine, reference: str) -> Binary | None:
@@ -74,6 +72,13 @@ def _find_existing_binary_for_reference(machine: Machine, reference: str) -> Bin
             return named_match
 
     return qs.filter(name=reference).order_by("-modified_at").first()
+
+
+def _canonical_binary_name(name: Any) -> str:
+    name = str(name or "").strip()
+    if "/" in name or "\\" in name or name.startswith("~"):
+        return Path(name).expanduser().name
+    return name
 
 
 def _get_process_binary_env_keys(plugin_name: str, hook_path: str, env: dict[str, Any] | None) -> list[str]:
@@ -122,13 +127,12 @@ def _get_process_binary_env_keys(plugin_name: str, hook_path: str, env: dict[str
     return keys
 
 
-def _sanitize_machine_config(config: dict[str, Any] | None) -> dict[str, Any]:
+def _sanitize_machine_config(config: dict[str, Any] | None, *, lib_dir: str | Path | None = None) -> dict[str, Any]:
     if not isinstance(config, dict):
         return {}
 
-    sanitized = {key: value for key, value in config.items() if key in MACHINE_CONFIG_ALWAYS_ALLOWED_KEYS or str(key).endswith("_BINARY")}
-    for key in LEGACY_MACHINE_CONFIG_KEYS:
-        sanitized.pop(key, None)
+    sanitized = {key: value for key, value in config.items() if str(key).endswith("_BINARY")}
+    active_lib_dir = Path(lib_dir).expanduser().resolve(strict=False) if lib_dir else None
     for key, value in list(sanitized.items()):
         if not str(key).endswith("_BINARY"):
             continue
@@ -140,8 +144,16 @@ def _sanitize_machine_config(config: dict[str, Any] | None) -> dict[str, Any]:
             continue
         if "/" in value or value.startswith("~"):
             try:
-                if not Path(value).expanduser().exists():
+                path = Path(value).expanduser()
+                if not path.exists():
                     sanitized.pop(key, None)
+                    continue
+                if active_lib_dir is not None:
+                    resolved_path = path.resolve(strict=False)
+                    try:
+                        resolved_path.relative_to(active_lib_dir)
+                    except ValueError:
+                        sanitized.pop(key, None)
             except OSError:
                 sanitized.pop(key, None)
     return sanitized
@@ -237,7 +249,9 @@ class Machine(ModelWithHealthStats):
 
     @classmethod
     def _sanitize_config(cls, machine: Machine) -> Machine:
-        sanitized = _sanitize_machine_config(machine.config)
+        from archivebox.config.constants import CONSTANTS
+
+        sanitized = _sanitize_machine_config(machine.config, lib_dir=os.environ.get("LIB_DIR") or CONSTANTS.DEFAULT_LIB_DIR)
         current = machine.config or {}
         if sanitized != current:
             machine.config = sanitized
@@ -521,7 +535,7 @@ class Binary(ModelWithHealthStats, ModelWithStateMachine):
         Returns:
             Binary instance or None
         """
-        name = record.get("name")
+        name = _canonical_binary_name(record.get("name"))
         if not name:
             return None
 
@@ -1094,6 +1108,8 @@ class Process(models.Model):
         indexes = [
             models.Index(fields=["machine", "status", "retry_at"]),
             models.Index(fields=["binary", "exit_code"]),
+            models.Index(fields=["pid", "started_at"]),
+            models.Index(fields=["process_type", "worker_type", "pwd", "started_at"]),
         ]
 
     def __str__(self) -> str:

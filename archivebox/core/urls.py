@@ -69,7 +69,7 @@ urlpatterns = [
     path("accounts/login/", RedirectView.as_view(url="/admin/login/")),
     path("accounts/logout/", RedirectView.as_view(url="/admin/logout/")),
     path("accounts/", include("django.contrib.auth.urls")),
-    path("admin/live-progress/", live_progress_view, name="live_progress"),
+    path("admin/live-progress/", archivebox_admin.admin_view(live_progress_view), name="live_progress"),
     path("admin/", archivebox_admin.urls),
     path("api/", include("archivebox.api.urls"), name="api"),
     path("health/", HealthCheckView.as_view(), name="healthcheck"),

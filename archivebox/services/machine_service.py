@@ -16,15 +16,17 @@ class MachineService(BaseService):
 
     async def on_MachineEvent__save_to_db(self, event: MachineEvent) -> None:
         from archivebox.machine.models import Machine, _sanitize_machine_config
+        from archivebox.config.common import get_config
 
         if event.config_type != "derived":
             return
 
         machine = await sync_to_async(Machine.current, thread_sensitive=True)()
+        lib_dir = await sync_to_async(lambda: get_config(include_machine=False).LIB_DIR, thread_sensitive=True)()
         config = dict(machine.config or {})
 
         if event.config is not None:
-            config.update(_sanitize_machine_config(event.config))
+            config.update(_sanitize_machine_config(event.config, lib_dir=lib_dir))
         elif event.method == "update":
             key = event.key.replace("config/", "", 1).strip()
             if key:
@@ -36,5 +38,5 @@ class MachineService(BaseService):
         else:
             return
 
-        machine.config = _sanitize_machine_config(config)
+        machine.config = _sanitize_machine_config(config, lib_dir=lib_dir)
         await machine.asave(update_fields=["config", "modified_at"])

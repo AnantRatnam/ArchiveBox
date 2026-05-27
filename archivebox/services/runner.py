@@ -4,6 +4,7 @@ import asyncio
 import contextvars
 import json
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -206,6 +207,7 @@ class CrawlRunner:
         self.initial_snapshot_ids = snapshot_ids
         self.snapshot_tasks: dict[str, asyncio.Task[None]] = {}
         self.snapshot_semaphore = asyncio.Semaphore(1)
+        self.max_concurrent_snapshots = 1
         self.persona = None
         self.base_config: dict[str, Any] = {}
         self.derived_config: dict[str, Any] = {}
@@ -214,11 +216,60 @@ class CrawlRunner:
         self._live_stream = None
         self.root_crawl_event_id: str | None = None
         self.root_crawl_start_event_id: str | None = None
+        self._run_task: asyncio.Task[None] | None = None
         self._skip_wait_until_idle = False
+        self._signal_abort_requested = False
+
+    def _install_signal_handlers(self) -> list[tuple[signal.Signals, Any, bool]]:
+        loop = asyncio.get_running_loop()
+        installed: list[tuple[signal.Signals, Any, bool]] = []
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            previous = signal.getsignal(sig)
+
+            def request_abort(sig=sig) -> None:
+                self._request_abort_from_signal(sig)
+
+            try:
+                loop.add_signal_handler(sig, request_abort)
+                installed.append((sig, previous, True))
+            except (NotImplementedError, RuntimeError):
+                signal.signal(sig, lambda _signum, _frame, sig=sig: self._request_abort_from_signal(sig))
+                installed.append((sig, previous, False))
+        return installed
+
+    def _restore_signal_handlers(self, installed: list[tuple[signal.Signals, Any, bool]]) -> None:
+        loop = asyncio.get_running_loop()
+        for sig, previous, installed_on_loop in reversed(installed):
+            if installed_on_loop:
+                loop.remove_signal_handler(sig)
+            signal.signal(sig, previous)
+
+    def _request_abort_from_signal(self, sig: signal.Signals) -> None:
+        if self._signal_abort_requested:
+            if self._run_task is not None and not self._run_task.done():
+                self._run_task.cancel()
+            return
+        self._signal_abort_requested = True
+        self._skip_wait_until_idle = True
+        asyncio.create_task(self.abort_from_signal(sig.name))
+
+    async def abort_from_signal(self, signal_name: str) -> None:
+        from archivebox.crawls.models import Crawl
+
+        await sync_to_async(
+            Crawl.objects.filter(id=self.crawl.id).exclude(status=Crawl.StatusChoices.SEALED).update,
+            thread_sensitive=False,
+        )(
+            status=Crawl.StatusChoices.STARTED,
+            retry_at=timezone.now(),
+            modified_at=timezone.now(),
+        )
 
     async def crawl_is_cancelled(self) -> bool:
         from archivebox.crawls.models import Crawl
 
+        if self._signal_abort_requested:
+            return True
         return await Crawl.objects.filter(id=self.crawl.id, status=Crawl.StatusChoices.SEALED).aexists()
 
     async def watch_for_cancelled_crawl(self, parent_event: BaseEvent, *, poll_interval: float = 1.0) -> None:
@@ -239,10 +290,13 @@ class CrawlRunner:
             runtime="archivebox",
             crawl_id=str(self.crawl.id),
         )
+        installed_signal_handlers = self._install_signal_handlers()
         root_snapshot_id: str | None = None
         try:
+            self._run_task = asyncio.current_task()
             snapshot_ids = await sync_to_async(self.load_run_state, thread_sensitive=True)()
-            max_concurrent_snapshots = max(1, int(self.base_config.CRAWL_MAX_CONCURRENT_SNAPSHOTS))
+            max_concurrent_snapshots = max(1, int(self.base_config.get("CRAWL_MAX_CONCURRENT_SNAPSHOTS", 1)))
+            self.max_concurrent_snapshots = max_concurrent_snapshots
             self.snapshot_semaphore = asyncio.Semaphore(max_concurrent_snapshots)
             live_ui = self._create_live_ui()
             with live_ui if live_ui is not None else nullcontext():
@@ -259,6 +313,8 @@ class CrawlRunner:
                     root_snapshot_id = snapshot_ids[0]
                     await self.run_crawl(root_snapshot_id, snapshot_ids)
         finally:
+            self._run_task = None
+            self._restore_signal_handlers(installed_signal_handlers)
             await heartbeat.stop()
             if not self._skip_wait_until_idle:
                 await self.bus.wait_until_idle()
@@ -271,6 +327,8 @@ class CrawlRunner:
             await sync_to_async(self.finalize_run_state, thread_sensitive=True)()
 
     async def enqueue_snapshot(self, snapshot_id: str) -> None:
+        if await self.crawl_is_cancelled():
+            return
         task = self.snapshot_tasks.get(snapshot_id)
         if task is not None and not task.done():
             return
@@ -285,6 +343,7 @@ class CrawlRunner:
 
     async def wait_for_snapshot_tasks(self) -> None:
         task_errors: list[Exception] = []
+        stop_scheduling = False
         while True:
             pending_tasks: list[asyncio.Task[None]] = []
             for snapshot_id, task in list(self.snapshot_tasks.items()):
@@ -300,15 +359,18 @@ class CrawlRunner:
                         await sync_to_async(recover_orphaned_crawls, thread_sensitive=True)()
                     except Exception as err:
                         task_errors.append(err)
+                        stop_scheduling = True
                     continue
                 pending_tasks.append(task)
             if not pending_tasks:
+                if task_errors:
+                    if len(task_errors) == 1:
+                        raise task_errors[0]
+                    raise ExceptionGroup("One or more snapshot tasks failed", task_errors)
+                if stop_scheduling:
+                    return
                 await self.enqueue_pending_snapshots_from_projection()
                 if not self.snapshot_tasks:
-                    if task_errors:
-                        if len(task_errors) == 1:
-                            raise task_errors[0]
-                        raise ExceptionGroup("One or more snapshot tasks failed", task_errors)
                     return
                 continue
             done, _pending = await asyncio.wait(pending_tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -326,22 +388,55 @@ class CrawlRunner:
                     await sync_to_async(recover_orphaned_crawls, thread_sensitive=True)()
                 except Exception as err:
                     task_errors.append(err)
-            await self.enqueue_pending_snapshots_from_projection()
+                    stop_scheduling = True
+            if self.snapshot_tasks and await self.crawl_is_cancelled():
+                stop_scheduling = True
+            if not stop_scheduling:
+                await self.enqueue_pending_snapshots_from_projection()
+
+    async def drain_snapshot_tasks(self) -> None:
+        task_errors: list[Exception] = []
+        while self.snapshot_tasks:
+            done, _pending = await asyncio.wait(list(self.snapshot_tasks.values()), return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                for snapshot_id, tracked_task in list(self.snapshot_tasks.items()):
+                    if tracked_task is task:
+                        self.snapshot_tasks.pop(snapshot_id, None)
+                        break
+                try:
+                    task.result()
+                except asyncio.CancelledError as err:
+                    if _is_external_task_cancelled(err):
+                        raise
+                    await sync_to_async(recover_orphaned_snapshots, thread_sensitive=True)()
+                    await sync_to_async(recover_orphaned_crawls, thread_sensitive=True)()
+                except Exception as err:
+                    task_errors.append(err)
+        if task_errors:
+            if len(task_errors) == 1:
+                raise task_errors[0]
+            raise ExceptionGroup("One or more snapshot tasks failed", task_errors)
 
     async def enqueue_pending_snapshots_from_projection(self) -> None:
         from archivebox.core.models import Snapshot
 
         if not isinstance(get_current_event(), CrawlStartEvent):
             return
+        if await self.crawl_is_cancelled():
+            return
 
+        active_snapshot_ids = [snapshot_id for snapshot_id, task in self.snapshot_tasks.items() if not task.done()]
+        available_slots = max(0, self.max_concurrent_snapshots - len(active_snapshot_ids))
+        if available_slots <= 0:
+            return
         pending_snapshot_ids = await sync_to_async(
-            lambda: [
-                str(snapshot_id)
-                for snapshot_id in self.crawl.snapshot_set.exclude(status=Snapshot.StatusChoices.SEALED)
+            lambda: list(
+                self.crawl.snapshot_set.exclude(status=Snapshot.StatusChoices.SEALED)
+                .exclude(id__in=active_snapshot_ids)
                 .filter(retry_at__lte=timezone.now())
                 .order_by("depth", "created_at")
-                .values_list("id", flat=True)
-            ],
+                .values_list("id", flat=True)[:available_slots],
+            ),
             thread_sensitive=True,
         )()
         for snapshot_id in pending_snapshot_ids:
@@ -361,8 +456,8 @@ class CrawlRunner:
             current_process.machine = current_iface.machine
             current_process.save(update_fields=["iface", "machine", "modified_at"])
         self.persona = self.crawl.resolve_persona()
-        self.base_config = get_config(crawl=self.crawl)
-        self.derived_config = _sanitize_machine_config(Machine.current().config)
+        self.base_config = get_config(crawl=self.crawl, include_machine=False)
+        self.derived_config = _sanitize_machine_config(Machine.current().config, lib_dir=self.base_config["LIB_DIR"])
         self.crawl_output_dir = str(self.crawl.output_dir)
         self.base_config["ABX_RUNTIME"] = "archivebox"
         if self.selected_plugins is None:
@@ -463,7 +558,7 @@ class CrawlRunner:
         from archivebox.config.common import get_config
 
         snapshot = Snapshot.objects.select_related("crawl").get(id=snapshot_id)
-        config = get_config(crawl=self.crawl, snapshot=snapshot)
+        config = get_config(crawl=self.crawl, snapshot=snapshot, include_machine=False)
         config.update(self.base_config)
         config["CRAWL_DIR"] = self.crawl_output_dir
         config["SNAP_DIR"] = str(snapshot.output_dir)
@@ -514,24 +609,13 @@ class CrawlRunner:
         if parent_snapshot is None:
             return
 
-        for record in discovered_urls:
-            url = str(record.get("url") or "").strip()
-            if not url:
-                continue
-            child_snapshot = await sync_to_async(self.crawl.create_discovered_snapshot, thread_sensitive=True)(
-                parent_snapshot,
-                url=url,
-                depth=parent_snapshot.depth + 1,
-                title=str(record.get("title") or "").strip(),
-                tags=str(record.get("tags") or "").strip(),
-            )
-            if child_snapshot is None:
-                has_capacity = await sync_to_async(self.crawl.has_remaining_snapshot_capacity, thread_sensitive=True)()
-                if has_capacity:
-                    continue
-                break
-            if self.process_discovered_snapshots_inline and isinstance(get_current_event(), CrawlStartEvent):
-                await self.enqueue_snapshot(str(child_snapshot.id))
+        await sync_to_async(self.crawl.create_discovered_snapshots, thread_sensitive=True)(
+            parent_snapshot,
+            discovered_urls,
+            depth=parent_snapshot.depth + 1,
+        )
+        if self.process_discovered_snapshots_inline and isinstance(get_current_event(), CrawlStartEvent):
+            await self.enqueue_pending_snapshots_from_projection()
 
     async def run_crawl(self, root_snapshot_id: str, snapshot_ids: list[str]) -> None:
         snapshot = await sync_to_async(self.load_snapshot_payload, thread_sensitive=True)(root_snapshot_id)
@@ -618,6 +702,10 @@ class CrawlRunner:
             if event.event_id != self.root_crawl_start_event_id:
                 return
             for snapshot_id in snapshot_ids:
+                if sum(1 for task in self.snapshot_tasks.values() if not task.done()) >= self.max_concurrent_snapshots:
+                    break
+                if await self.crawl_is_cancelled():
+                    break
                 await self.enqueue_snapshot(snapshot_id)
             await self.wait_for_snapshot_tasks()
 
@@ -652,6 +740,8 @@ class CrawlRunner:
                         self.root_crawl_start_event_id = crawl_start_event.event_id
                         await _run_event_now(event.emit(crawl_start_event), None)
                 finally:
+                    if self.snapshot_tasks:
+                        await self.drain_snapshot_tasks()
                     await _run_event_now(
                         event.emit(
                             CrawlCleanupEvent(
@@ -749,7 +839,7 @@ class CrawlRunner:
             snapshot_hooks = [(plugin, hook) for plugin in plugins.values() for hook in plugin.filter_hooks("Snapshot")]
             snapshot_phase_timeout = compute_phase_timeout(snapshot_hooks, config)
             await _emit_machine_config(self.bus, config=config, derived_config=derived_config, parent_event=crawl_start_event)
-            HookSnapshotService(
+            snapshot_service = HookSnapshotService(
                 self.bus,
                 url=snapshot["url"],
                 snapshot=abx_snapshot,
@@ -760,27 +850,30 @@ class CrawlRunner:
                 snapshot_cleanup_phase_timeout=snapshot_phase_timeout,
                 abort_requested=self.crawl_is_cancelled,
             )
-            snapshot_event = SnapshotEvent(
-                url=snapshot["url"],
-                snapshot_id=snapshot["id"],
-                output_dir=str(output_dir),
-                depth=int(snapshot["depth"]),
-                event_timeout=snapshot_phase_timeout,
-                event_handler_slow_timeout=slow_warning_timeout(snapshot_phase_timeout),
-            )
-            emitted_snapshot_event = crawl_start_event.emit(snapshot_event)
-            await _run_event_now(emitted_snapshot_event, snapshot_phase_timeout)
-            completed_snapshot = await self.bus.find(
-                SnapshotCompletedEvent,
-                child_of=emitted_snapshot_event,
-                past=True,
-                future=snapshot_phase_timeout,
-            )
-            if completed_snapshot is None:
-                raise RuntimeError(f"Snapshot {snapshot_id} did not complete")
-            await completed_snapshot.wait(timeout=snapshot_phase_timeout)
-            await completed_snapshot.event_results_list()
-            await self.enqueue_discovered_snapshots_from_outputs(snapshot)
+            try:
+                snapshot_event = SnapshotEvent(
+                    url=snapshot["url"],
+                    snapshot_id=snapshot["id"],
+                    output_dir=str(output_dir),
+                    depth=int(snapshot["depth"]),
+                    event_timeout=snapshot_phase_timeout,
+                    event_handler_slow_timeout=slow_warning_timeout(snapshot_phase_timeout),
+                )
+                emitted_snapshot_event = crawl_start_event.emit(snapshot_event)
+                await _run_event_now(emitted_snapshot_event, snapshot_phase_timeout)
+                completed_snapshot = await self.bus.find(
+                    SnapshotCompletedEvent,
+                    child_of=emitted_snapshot_event,
+                    past=True,
+                    future=snapshot_phase_timeout,
+                )
+                if completed_snapshot is None:
+                    raise RuntimeError(f"Snapshot {snapshot_id} did not complete")
+                await completed_snapshot.wait(timeout=snapshot_phase_timeout)
+                await completed_snapshot.event_results_list()
+                await self.enqueue_discovered_snapshots_from_outputs(snapshot)
+            finally:
+                snapshot_service.close()
 
     def seal_snapshot_due_to_limit(self, snapshot_id: str) -> None:
         from archivebox.core.models import Snapshot
@@ -815,13 +908,13 @@ def run_crawl(
 
 async def _run_binary(binary_id: str) -> None:
     from archivebox.config.common import get_config
-    from archivebox.machine.models import Binary, Machine
+    from archivebox.machine.models import Binary, Machine, _sanitize_machine_config
 
     binary = await Binary.objects.aget(id=binary_id)
     plugins = discover_plugins()
-    config = get_config()
+    config = get_config(include_machine=False)
     machine = await sync_to_async(Machine.current, thread_sensitive=True)()
-    derived_config = _normalize_runtime_config(dict(machine.config))
+    derived_config = _normalize_runtime_config(_sanitize_machine_config(machine.config, lib_dir=config["LIB_DIR"]))
     config["ABX_RUNTIME"] = "archivebox"
     config = _normalize_runtime_config(config)
     bus = create_bus(name=_bus_name("ArchiveBox_binary", str(binary.id)), total_timeout=1800.0)
@@ -867,12 +960,12 @@ def run_binary(binary_id: str) -> None:
 
 async def _run_install(plugin_names: list[str] | None = None) -> None:
     from archivebox.config.common import get_config
-    from archivebox.machine.models import Machine
+    from archivebox.machine.models import Machine, _sanitize_machine_config
 
     plugins = discover_plugins()
-    config = get_config()
+    config = get_config(include_machine=False)
     machine = await sync_to_async(Machine.current, thread_sensitive=True)()
-    derived_config = _normalize_runtime_config(dict(machine.config))
+    derived_config = _normalize_runtime_config(_sanitize_machine_config(machine.config, lib_dir=config["LIB_DIR"]))
     config["ABX_RUNTIME"] = "archivebox"
     config = _normalize_runtime_config(config)
     bus = create_bus(name="ArchiveBox_install", total_timeout=3600.0)

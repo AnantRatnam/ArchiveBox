@@ -309,9 +309,60 @@
         text-align: center;
         color: #58a6ff;
     }
+    #progress-monitor .snapshot-preview {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 84px;
+        height: 52px;
+        flex: 0 0 84px;
+        border-radius: 6px;
+        border: 1px solid #30363d;
+        background: #161b22;
+        color: #6e7681;
+        overflow: hidden;
+        text-decoration: none;
+    }
+    #progress-monitor .snapshot-preview:hover {
+        border-color: #58a6ff;
+        box-shadow: 0 0 0 1px rgba(88, 166, 255, 0.2);
+    }
+    #progress-monitor .snapshot-preview img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        object-position: top center;
+        display: block;
+    }
+    #progress-monitor .snapshot-preview.placeholder {
+        font-size: 20px;
+    }
     #progress-monitor .snapshot-info {
         flex: 1;
         min-width: 0;
+    }
+    #progress-monitor .snapshot-title-line {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        min-width: 0;
+    }
+    #progress-monitor .snapshot-favicon {
+        width: 16px;
+        height: 16px;
+        border-radius: 3px;
+        object-fit: contain;
+        background: #fff;
+        flex: 0 0 16px;
+    }
+    #progress-monitor .snapshot-title {
+        color: #f0f6fc;
+        font-size: 12px;
+        font-weight: 600;
+        line-height: 1.3;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }
     #progress-monitor .snapshot-url {
         font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
@@ -351,6 +402,12 @@
         background: #21262d;
         overflow: hidden;
         white-space: nowrap;
+        color: inherit;
+        text-decoration: none;
+    }
+    #progress-monitor a.extractor-badge:hover {
+        background: #30363d;
+        color: #f0f6fc;
     }
     #progress-monitor .extractor-badge .progress-fill {
         position: absolute;
@@ -416,14 +473,6 @@
     #progress-monitor .extractor-badge .badge-icon {
         font-size: 10px;
     }
-    #progress-monitor .extractor-badge.started .badge-icon {
-        animation: spin 1s linear infinite;
-    }
-    @keyframes spin {
-        from { transform: rotate(0deg); }
-        to { transform: rotate(360deg); }
-    }
-
     /* Status Badge */
     #progress-monitor .status-badge {
         font-size: 10px;
@@ -593,11 +642,11 @@
                     <span class="stat-label">Queued</span>
                     <span class="stat-value warning" id="total-queued">0</span>
                 </div>
-                <div class="stat clickable" id="stat-succeeded" title="Click to reset counter">
+                <div class="stat" id="stat-succeeded">
                     <span class="stat-label">Done</span>
                     <span class="stat-value success" id="total-succeeded">0</span>
                 </div>
-                <div class="stat clickable" id="stat-failed" title="Click to reset counter">
+                <div class="stat" id="stat-failed">
                     <span class="stat-label">Failed</span>
                     <span class="stat-value error" id="total-failed">0</span>
                 </div>
@@ -629,10 +678,6 @@
     let isCollapsed = localStorage.getItem('progress-monitor-collapsed') === 'true';
     let knownThumbnailIds = new Set();
 
-    // Baselines for resettable counters
-    let succeededBaseline = parseInt(localStorage.getItem('progress-succeeded-baseline') || '0');
-    let failedBaseline = parseInt(localStorage.getItem('progress-failed-baseline') || '0');
-
     function getApiKey() {
         return (window.ARCHIVEBOX_API_KEY || '').trim();
     }
@@ -650,21 +695,28 @@
         if (apiKey) headers['X-ArchiveBox-API-Key'] = apiKey;
         return headers;
     }
-    let lastSucceeded = 0;
-    let lastFailed = 0;
-
-    // Click handlers for resetting counters
-    document.getElementById('stat-succeeded').addEventListener('click', function() {
-        succeededBaseline = lastSucceeded;
-        localStorage.setItem('progress-succeeded-baseline', succeededBaseline);
-        document.getElementById('total-succeeded').textContent = '0';
-    });
-    document.getElementById('stat-failed').addEventListener('click', function() {
-        failedBaseline = lastFailed;
-        localStorage.setItem('progress-failed-baseline', failedBaseline);
-        document.getElementById('total-failed').textContent = '0';
-    });
-
+    function escapeHtml(value) {
+        return String(value || '').replace(/[&<>"']/g, char => ({
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#39;',
+        }[char]));
+    }
+    function escapeAttr(value) {
+        return escapeHtml(value).replace(/`/g, '&#96;');
+    }
+    window.nextPreviewFallback = function(img) {
+        const fallbacks = (img.dataset.fallbacks || '').split(',').filter(Boolean);
+        if (fallbacks.length > 0) {
+            img.src = fallbacks.shift();
+            img.dataset.fallbacks = fallbacks.join(',');
+        } else {
+            img.closest('.snapshot-preview')?.classList.add('placeholder');
+            img.closest('.snapshot-preview').innerHTML = '<span>▤</span>';
+        }
+    };
     function formatUrl(url) {
         if (!url) return '(no URL)';
         try {
@@ -677,19 +729,20 @@
 
     function getPluginIcon(plugin) {
         const icons = {
-            'screenshot': '&#128247;',
-            'favicon': '&#11088;',
-            'dom': '&#128196;',
-            'pdf': '&#128462;',
-            'title': '&#128221;',
-            'headers': '&#128203;',
-            'singlefile': '&#128230;',
-            'readability': '&#128214;',
-            'mercury': '&#9884;',
-            'wget': '&#128229;',
-            'media': '&#127909;',
+            'screenshot': '▧',
+            'chrome_mhtml': '▧',
+            'favicon': '◆',
+            'dom': '&lt;/&gt;',
+            'pdf': 'PDF',
+            'title': 'T',
+            'headers': '{}',
+            'singlefile': '▣',
+            'readability': 'R',
+            'mercury': 'M',
+            'wget': '↓',
+            'media': '▶',
         };
-        return icons[plugin] || '&#128196;';
+        return icons[plugin] || '•';
     }
 
 
@@ -697,37 +750,52 @@
     function updateThumbnails(thumbnails) {}
 
     function renderExtractor(extractor) {
-        const icon = extractor.status === 'started' ? '&#8635;' :
-                    extractor.status === 'succeeded' ? '&#10003;' :
-                    extractor.status === 'failed' ? '&#10007;' :
-                    extractor.status === 'backoff' ? '&#8987;' :
-                    extractor.status === 'skipped' ? '&#8674;' : '&#9675;';
+        const icon = extractor.status === 'started' ? '▶' :
+                    extractor.status === 'succeeded' ? '✓' :
+                    extractor.status === 'failed' ? '!' :
+                    extractor.status === 'backoff' ? 'wait' :
+                    extractor.status === 'skipped' ? 'skip' :
+                    extractor.status === 'noresults' ? '∅' : getPluginIcon(extractor.plugin);
         const progress = typeof extractor.progress === 'number'
             ? Math.max(0, Math.min(100, extractor.progress))
             : null;
         const progressStyle = progress !== null ? ` style="width: ${progress}%;"` : '';
         const pidHtml = extractor.status === 'started' && extractor.pid ? `<span class="pid-label compact">pid ${extractor.pid}</span>` : '';
+        const href = extractor.output_url || extractor.admin_url || '';
+        const tag = href ? 'a' : 'span';
+        const hrefAttr = href ? ` href="${escapeAttr(href)}"` : '';
+        const title = extractor.output_path
+            ? `${extractor.plugin || 'output'}: ${extractor.output_path}`
+            : `${extractor.plugin || 'hook'}${extractor.hook_name ? `: ${extractor.hook_name}` : ''}`;
 
         return `
-            <span class="extractor-badge ${extractor.status || 'queued'}">
+            <${tag} class="extractor-badge ${extractor.status || 'queued'}"${hrefAttr} title="${escapeAttr(title)}">
                 <span class="progress-fill"${progressStyle}></span>
                 <span class="badge-content">
                     <span class="badge-icon">${icon}</span>
-                    <span>${extractor.label || extractor.plugin || 'unknown'}</span>
+                    <span>${escapeHtml(extractor.label || extractor.plugin || 'unknown')}</span>
                     ${pidHtml}
                 </span>
-            </span>
+            </${tag}>
         `;
     }
 
     function renderSnapshot(snapshot, crawlId) {
-        const statusIcon = snapshot.status === 'started' ? '&#8635;' : '&#128196;';
-        const adminUrl = `/admin/core/snapshot/${snapshot.id || 'unknown'}/change/`;
+        const statusIcon = snapshot.status === 'started' ? '▤' : '▢';
+        const adminUrl = snapshot.admin_url || `/admin/core/snapshot/${snapshot.id || 'unknown'}/change/`;
         const canCancel = snapshot.status === 'queued';
         const cancelBtn = canCancel
             ? `<button class="cancel-item-btn" data-cancel-type="snapshot" data-snapshot-id="${snapshot.id}" data-label="✕" title="Cancel snapshot">✕</button>`
             : '';
         const snapshotPidHtml = snapshot.worker_pid ? `<span class="pid-label compact">pid ${snapshot.worker_pid}</span>` : '';
+        const titleText = snapshot.title || formatUrl(snapshot.full_url || snapshot.url);
+        const urlText = snapshot.full_url || snapshot.url || '';
+        const faviconHtml = snapshot.favicon_url
+            ? `<img class="snapshot-favicon" src="${escapeAttr(snapshot.favicon_url)}" alt="" decoding="async" loading="lazy" onerror="this.remove()">`
+            : '';
+        const previewHtml = snapshot.preview_url
+            ? `<a class="snapshot-preview" href="${escapeAttr(snapshot.preview_link || snapshot.view_url || adminUrl)}" title="Open snapshot output"><img src="${escapeAttr(snapshot.preview_url)}" alt="" decoding="async" loading="lazy" data-fallbacks="${escapeAttr((snapshot.preview_fallbacks || []).join(','))}" onerror="nextPreviewFallback(this)"></a>`
+            : `<a class="snapshot-preview placeholder" href="${escapeAttr(snapshot.view_url || adminUrl)}" title="Open snapshot"><span>${statusIcon}</span></a>`;
 
         let extractorHtml = '';
         if (snapshot.all_plugins && snapshot.all_plugins.length > 0) {
@@ -757,15 +825,25 @@
                 : hasProcessEntries
                     ? `${snapshot.completed_plugins || 0}/${snapshot.total_plugins || 0} tasks${(snapshot.failed_plugins || 0) > 0 ? ` <span style="color:#f85149">(${snapshot.failed_plugins} failed)</span>` : ''}${runningProcessCount > 0 ? ` <span style="color:#d29922">(${runningProcessCount} hooks running)</span>` : ''}`
                     : `${snapshot.completed_plugins || 0}/${snapshot.total_plugins || 0} extractors${(snapshot.failed_plugins || 0) > 0 ? ` <span style="color:#f85149">(${snapshot.failed_plugins} failed)</span>` : ''}`
-            : 'Waiting for extractors...';
+            : snapshot.worker_state === 'crashed'
+                ? '<span style="color:#f85149">Worker stopped before extractors started</span>'
+                : snapshot.worker_state === 'stalled'
+                    ? '<span style="color:#d29922">Waiting for runner to resume</span>'
+                    : snapshot.worker_state === 'cancelled'
+                        ? '<span style="color:#8b949e">Cancelled before completion</span>'
+                        : 'Waiting for extractors...';
 
         return `
             <div class="snapshot-item">
                 <div class="snapshot-header">
+                    ${previewHtml}
                     <a class="snapshot-header-link" href="${adminUrl}">
-                        <span class="snapshot-icon">${statusIcon}</span>
                         <div class="snapshot-info">
-                            <div class="snapshot-url">Snapshot: ${formatUrl(snapshot.url)}</div>
+                            <div class="snapshot-title-line">
+                                ${faviconHtml}
+                                <span class="snapshot-title">${escapeHtml(titleText)}</span>
+                            </div>
+                            <div class="snapshot-url">${escapeHtml(urlText)}</div>
                             <div class="snapshot-meta">
                                 ${snapshotMeta}
                             </div>
@@ -787,7 +865,7 @@
     }
 
     function renderCrawl(crawl) {
-        const statusIcon = crawl.status === 'started' ? '&#8635;' : '&#128269;';
+        const statusIcon = crawl.status === 'started' ? '▦' : '▥';
         const adminUrl = `/admin/crawls/crawl/${crawl.id || 'unknown'}/change/`;
         const canCancel = crawl.status === 'queued' || crawl.status === 'started';
         const cancelBtn = canCancel
@@ -828,21 +906,39 @@
         if (crawl.status === 'queued' && !crawl.can_start) {
             warningHtml = `
                 <div style="padding: 8px 14px; background: rgba(248, 81, 73, 0.1); border-top: 1px solid #f85149; color: #f85149; font-size: 11px;">
-                    ⚠️ Crawl cannot start: ${crawl.urls_preview ? 'unknown error' : 'no URLs'}
+                    Crawl cannot start: ${crawl.urls_preview ? 'unknown error' : 'no URLs'}
                 </div>
             `;
         } else if (crawl.status === 'queued' && crawl.retry_at_future) {
             // Queued but retry_at is in future (was claimed by worker, will retry)
             warningHtml = `
                 <div style="padding: 8px 14px; background: rgba(88, 166, 255, 0.1); border-top: 1px solid #58a6ff; color: #58a6ff; font-size: 11px;">
-                    🔄 Trying in ${crawl.seconds_until_retry || 0}s...${crawl.urls_preview ? ` (${crawl.urls_preview})` : ''}
+                    Trying in ${crawl.seconds_until_retry || 0}s...${crawl.urls_preview ? ` (${escapeHtml(crawl.urls_preview)})` : ''}
                 </div>
             `;
         } else if (crawl.status === 'queued' && crawl.total_snapshots === 0) {
             // Queued and waiting to be picked up by worker
             warningHtml = `
                 <div style="padding: 8px 14px; background: rgba(210, 153, 34, 0.1); border-top: 1px solid #d29922; color: #d29922; font-size: 11px;">
-                    ⏳ Waiting for the runner to pick up...${crawl.urls_preview ? ` (${crawl.urls_preview})` : ''}
+                    Waiting for the runner to pick up...${crawl.urls_preview ? ` (${escapeHtml(crawl.urls_preview)})` : ''}
+                </div>
+            `;
+        } else if (crawl.status === 'started' && crawl.worker_state === 'crashed') {
+            warningHtml = `
+                <div style="padding: 8px 14px; background: rgba(248, 81, 73, 0.1); border-top: 1px solid #f85149; color: #f85149; font-size: 11px;">
+                    Runner stopped with ${crawl.started_snapshots || 0} active and ${crawl.pending_snapshots || 0} pending snapshots. It will resume when the runner starts again.
+                </div>
+            `;
+        } else if (crawl.status === 'started' && crawl.worker_state === 'stalled') {
+            warningHtml = `
+                <div style="padding: 8px 14px; background: rgba(210, 153, 34, 0.1); border-top: 1px solid #d29922; color: #d29922; font-size: 11px;">
+                    Runner is online but no worker is attached to this crawl yet.
+                </div>
+            `;
+        } else if (crawl.worker_state === 'cancelled') {
+            warningHtml = `
+                <div style="padding: 8px 14px; background: rgba(139, 148, 158, 0.1); border-top: 1px solid #6e7681; color: #8b949e; font-size: 11px;">
+                    Crawl was cancelled. ${crawl.cancelled_snapshots || 0} snapshot${(crawl.cancelled_snapshots || 0) === 1 ? '' : 's'} stopped before completion.
                 </div>
             `;
         }
@@ -854,22 +950,23 @@
         } else if ((crawl.urls_count || 0) > 0) {
             metaText += ` | ${crawl.urls_count} URLs`;
         } else if (crawl.urls_preview) {
-            metaText += ` | ${crawl.urls_preview.substring(0, 40)}${crawl.urls_preview.length > 40 ? '...' : ''}`;
+            metaText += ` | ${escapeHtml(crawl.urls_preview.substring(0, 40))}${crawl.urls_preview.length > 40 ? '...' : ''}`;
         }
 
         return `
             <div class="crawl-item" data-crawl-id="${crawl.id || 'unknown'}">
                 <div class="crawl-header">
                     <a class="crawl-header-link" href="${adminUrl}">
-                        <span class="crawl-icon">${statusIcon}</span>
-                        <div class="crawl-info">
-                            <div class="crawl-label">Crawl: ${crawl.label || '(no label)'}</div>
+                            <span class="crawl-icon">${statusIcon}</span>
+                            <div class="crawl-info">
+                            <div class="crawl-label">Crawl: ${escapeHtml(crawl.label || '(no label)')}</div>
                             <div class="crawl-meta">${metaText}</div>
                         </div>
                         <div class="crawl-stats">
                             <span style="color:#3fb950">${crawl.completed_snapshots || 0} done</span>
                             <span style="color:#d29922">${crawl.started_snapshots || 0} active</span>
                             <span style="color:#8b949e">${crawl.pending_snapshots || 0} pending</span>
+                            ${(crawl.cancelled_snapshots || 0) > 0 ? `<span style="color:#8b949e">${crawl.cancelled_snapshots} cancelled</span>` : ''}
                         </div>
                         ${crawlPidHtml}
                         <span class="status-badge ${crawl.status || 'unknown'}">${crawl.status || 'unknown'}</span>
@@ -921,11 +1018,20 @@
         const text = document.getElementById('orchestrator-text');
         const pidEl = document.getElementById('orchestrator-pid');
         const hasWorkers = data.total_workers > 0;
+        const hasBlockedCrawl = (data.active_crawls || []).some(c => c.worker_state === 'crashed' || c.worker_state === 'stalled');
 
-        if (hasWorkers || hasActivity) {
+        if (hasWorkers) {
             dot.classList.remove('stopped', 'idle');
             dot.classList.add('running');
             text.textContent = 'Running';
+        } else if (hasActivity && hasBlockedCrawl) {
+            dot.classList.remove('idle', 'running');
+            dot.classList.add('stopped');
+            text.textContent = 'Runner stopped';
+        } else if (hasActivity) {
+            dot.classList.remove('stopped', 'running');
+            dot.classList.add('idle');
+            text.textContent = 'Waiting';
         } else {
             // No activity - show as idle (whether orchestrator process exists or not)
             dot.classList.remove('stopped', 'running');
@@ -950,22 +1056,8 @@
         document.getElementById('total-queued').textContent =
             data.crawls_pending + data.snapshots_pending + data.archiveresults_pending;
 
-        // Store raw values and display relative to baseline
-        lastSucceeded = data.archiveresults_succeeded;
-        lastFailed = data.archiveresults_failed;
-
-        // If baseline is higher than current (e.g. after DB reset), reset baseline
-        if (succeededBaseline > lastSucceeded) {
-            succeededBaseline = 0;
-            localStorage.setItem('progress-succeeded-baseline', '0');
-        }
-        if (failedBaseline > lastFailed) {
-            failedBaseline = 0;
-            localStorage.setItem('progress-failed-baseline', '0');
-        }
-
-        document.getElementById('total-succeeded').textContent = lastSucceeded - succeededBaseline;
-        document.getElementById('total-failed').textContent = lastFailed - failedBaseline;
+        document.getElementById('total-succeeded').textContent = data.archiveresults_succeeded;
+        document.getElementById('total-failed').textContent = data.archiveresults_failed;
 
         // Render crawl tree
         if (data.active_crawls.length > 0) {

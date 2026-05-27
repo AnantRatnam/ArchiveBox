@@ -3,13 +3,176 @@
 
 import json
 import os
+import signal
 import sqlite3
 import subprocess
 import sys
+import time
 
 import pytest
 
 from .conftest import _find_system_browser
+
+
+def _pid_is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _wait_for_pid_exit(pid: int, *, timeout: float = 5.0) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not _pid_is_alive(pid):
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"PID {pid} is still alive")
+
+
+def _cleanup_process_group(group_pid: int | None, *child_pids: int | None) -> None:
+    if group_pid and _pid_is_alive(group_pid):
+        try:
+            os.killpg(group_pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            try:
+                os.kill(group_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    for pid in child_pids:
+        if pid and _pid_is_alive(pid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+@pytest.mark.timeout(90)
+def test_cli_run_signal_cleans_background_hook_process_group(tmp_path, process):
+    os.chdir(tmp_path)
+    assert process.returncode == 0, process.stderr
+
+    plugins_root = tmp_path / "runtime_plugins"
+    plugin_dir = plugins_root / "cancel_group"
+    plugin_dir.mkdir(parents=True)
+    daemon_hook = plugin_dir / "on_CrawlSetup__10_daemon.daemon.bg.sh"
+    foreground_hook = plugin_dir / "on_CrawlSetup__20_foreground.sh"
+    daemon_hook.write_text(
+        "\n".join(
+            [
+                "#!/usr/bin/env bash",
+                "set -euo pipefail",
+                'test_dir="${LEAK_TEST_DIR:?}"',
+                "sleep 600 &",
+                'echo $$ > "$test_dir/daemon.pid"',
+                'echo $! > "$test_dir/daemon-child.pid"',
+                'echo ready > "$test_dir/daemon.ready"',
+                "trap 'echo cleaned > \"$test_dir/daemon.cleaned\"; exit 0' TERM INT",
+                "wait",
+                "",
+            ],
+        ),
+    )
+    foreground_hook.write_text(
+        "\n".join(
+            [
+                "#!/usr/bin/env bash",
+                "set -euo pipefail",
+                'test_dir="${LEAK_TEST_DIR:?}"',
+                'echo $$ > "$test_dir/foreground.pid"',
+                'echo ready > "$test_dir/foreground.ready"',
+                "trap 'echo cleaned > \"$test_dir/foreground.cleaned\"; exit 0' TERM INT",
+                "while true; do sleep 1; done",
+                "",
+            ],
+        ),
+    )
+    daemon_hook.chmod(0o755)
+    foreground_hook.chmod(0o755)
+
+    leak_test_dir = tmp_path / "leak-check"
+    leak_test_dir.mkdir()
+    env = os.environ.copy()
+    env.update(
+        {
+            "ABX_PLUGINS_DIR": str(plugins_root),
+            "LEAK_TEST_DIR": str(leak_test_dir),
+            "PLUGINS": "cancel_group",
+            "TIMEOUT": "30",
+            "USE_COLOR": "false",
+            "SHOW_PROGRESS": "false",
+        },
+    )
+
+    create_result = subprocess.run(
+        [sys.executable, "-m", "archivebox", "crawl", "create", "https://example.com"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+    )
+    assert create_result.returncode == 0, create_result.stderr or create_result.stdout
+    crawl_records = [json.loads(line) for line in create_result.stdout.splitlines() if line.strip().startswith("{")]
+    crawl_id = next(record["id"] for record in crawl_records if record.get("type") == "Crawl")
+
+    daemon_pid: int | None = None
+    daemon_child_pid: int | None = None
+    foreground_pid: int | None = None
+    run_process = subprocess.Popen(
+        [sys.executable, "-m", "archivebox", "run", f"--crawl-id={crawl_id}"],
+        cwd=tmp_path,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            if (leak_test_dir / "daemon.ready").exists() and (leak_test_dir / "foreground.ready").exists():
+                break
+            if run_process.poll() is not None:
+                output = run_process.communicate(timeout=1)[0]
+                raise AssertionError(f"archivebox run exited before hooks were ready:\n{output}")
+            time.sleep(0.05)
+        assert (leak_test_dir / "daemon.ready").exists()
+        assert (leak_test_dir / "foreground.ready").exists()
+
+        daemon_pid = int((leak_test_dir / "daemon.pid").read_text().strip())
+        daemon_child_pid = int((leak_test_dir / "daemon-child.pid").read_text().strip())
+        foreground_pid = int((leak_test_dir / "foreground.pid").read_text().strip())
+        assert _pid_is_alive(daemon_pid)
+        assert _pid_is_alive(daemon_child_pid)
+        assert _pid_is_alive(foreground_pid)
+
+        run_process.send_signal(signal.SIGTERM)
+        time.sleep(0.1)
+        if run_process.poll() is None:
+            run_process.send_signal(signal.SIGTERM)
+        output = run_process.communicate(timeout=20)[0]
+        assert "Runner error" not in output
+
+        _wait_for_pid_exit(daemon_pid)
+        _wait_for_pid_exit(daemon_child_pid)
+        _wait_for_pid_exit(foreground_pid)
+        assert (leak_test_dir / "daemon.cleaned").read_text().strip() == "cleaned"
+        assert (leak_test_dir / "foreground.cleaned").read_text().strip() == "cleaned"
+    finally:
+        if run_process.poll() is None:
+            try:
+                os.killpg(run_process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            run_process.communicate(timeout=5)
+        _cleanup_process_group(daemon_pid, daemon_child_pid)
+        _cleanup_process_group(foreground_pid)
 
 
 @pytest.mark.timeout(180)

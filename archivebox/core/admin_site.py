@@ -10,6 +10,9 @@ from admin_data_views.admin import (
     get_app_list as adv_get_app_list,
 )
 
+from archivebox.config import VERSION
+from archivebox.config.version import get_COMMIT_HASH
+
 if TYPE_CHECKING:
     from django.http import HttpRequest
     from django.template.response import TemplateResponse
@@ -23,6 +26,12 @@ class ArchiveBoxAdmin(admin.AdminSite):
     index_title = "Admin Views"
     site_title = "Admin"
     namespace = "admin"
+
+    def each_context(self, request: "HttpRequest") -> dict[str, Any]:
+        context = super().each_context(request)
+        context["VERSION"] = VERSION
+        context["STATIC_CACHE_KEY"] = (get_COMMIT_HASH() or VERSION or "dev").strip()
+        return context
 
     @staticmethod
     def _format_object_count(count: int) -> tuple[int, str, str]:
