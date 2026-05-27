@@ -1110,6 +1110,8 @@ class Process(models.Model):
             models.Index(fields=["binary", "exit_code"]),
             models.Index(fields=["pid", "started_at"]),
             models.Index(fields=["process_type", "worker_type", "pwd", "started_at"]),
+            models.Index(fields=["machine", "process_type", "-modified_at"], name="machine_pro_progress_recent_idx"),
+            models.Index(fields=["machine", "status", "process_type"], name="machine_pro_progress_running_idx"),
         ]
 
     def __str__(self) -> str:

@@ -374,6 +374,7 @@ class Snapshot(ModelWithOutputDir, ModelWithConfig, ModelWithNotes, ModelWithHea
         verbose_name_plural = "Snapshots"
         indexes = [
             models.Index(fields=["-bookmarked_at", "-created_at"], name="snapshot_public_order_idx"),
+            models.Index(fields=["crawl", "status", "modified_at"], name="snapshot_progress_idx"),
         ]
         constraints = [
             # Allow same URL in different crawls, but not duplicates within same crawl

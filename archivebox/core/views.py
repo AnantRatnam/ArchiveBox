@@ -1323,6 +1323,7 @@ def live_progress_view(request):
         if not request.user.is_authenticated or not request.user.is_active or not request.user.is_staff:
             return JsonResponse({"error": "Permission denied"}, status=403)
 
+        request_config = request.archivebox_config
         now = timezone.now()
         crawl_scope = Crawl.objects.all()
         snapshot_scope = Snapshot.objects.all()
@@ -1388,8 +1389,49 @@ def live_progress_view(request):
 
             return hook_details(Path(hook_path).name, plugin=Path(hook_path).parent.name or "setup")
 
+        def archiveresult_output_path(ar) -> str | None:
+            output_file_map = ar.output_files if isinstance(ar.output_files, dict) else {}
+
+            def is_root_relative(path: str) -> bool:
+                metadata = output_file_map.get(path) or {}
+                return bool(isinstance(metadata, dict) and metadata.get("root_relative"))
+
+            if ar.output_str:
+                raw_output = str(ar.output_str).strip()
+                if ar._looks_like_output_path(raw_output, ar.plugin):
+                    output_path = Path(raw_output)
+                    if output_path.is_absolute():
+                        return None
+
+                    if raw_output.startswith(f"{ar.plugin}/"):
+                        candidates = [raw_output]
+                    elif len(output_path.parts) == 1:
+                        candidates = [f"{ar.plugin}/{raw_output}", raw_output]
+                    else:
+                        candidates = [raw_output]
+
+                    if raw_output in output_file_map and is_root_relative(raw_output):
+                        return raw_output
+
+                    for relative_path in candidates:
+                        plugin_relative = relative_path.removeprefix(f"{ar.plugin}/")
+                        if relative_path in output_file_map:
+                            return f"{ar.plugin}/{relative_path}" if not relative_path.startswith(f"{ar.plugin}/") else relative_path
+                        if plugin_relative in output_file_map:
+                            return f"{ar.plugin}/{plugin_relative}"
+
+            output_file_paths = list(output_file_map.keys())
+            if output_file_paths:
+                fallback_path = ArchiveResult._fallback_output_file_path(output_file_paths, ar.plugin, output_file_map)
+                if fallback_path:
+                    if is_root_relative(fallback_path):
+                        return fallback_path
+                    return f"{ar.plugin}/{fallback_path}"
+
+            return None
+
         def snapshot_output_url(snapshot, output_path: str) -> str:
-            return build_snapshot_url(str(snapshot.id), output_path, request=request, config=getattr(request, "archivebox_config", None))
+            return build_snapshot_url(str(snapshot.id), output_path, request=request, config=request_config)
 
         def snapshot_archive_path(snapshot) -> str:
             if snapshot.fs_version in ("0.7.0", "0.8.0"):
@@ -1410,19 +1452,20 @@ def live_progress_view(request):
             return build_web_url(
                 f"/{snapshot_archive_path(snapshot)}/index.html{anchor}",
                 request=request,
-                config=getattr(request, "archivebox_config", None),
+                config=request_config,
             )
 
-        machine = Machine.objects.filter(guid=get_host_guid()).first()
+        machine_id = Machine.objects.filter(guid=get_host_guid()).values_list("id", flat=True).first()
         orchestrator_proc = (
             Process.objects.filter(
-                machine=machine,
+                machine_id=machine_id,
                 process_type=Process.TypeChoices.ORCHESTRATOR,
                 status=Process.StatusChoices.RUNNING,
             )
+            .only("id", "pid", "started_at", "machine_id", "process_type", "status")
             .order_by("-started_at")
             .first()
-            if machine is not None
+            if machine_id is not None
             else None
         )
         runner_worker = None
@@ -1472,29 +1515,32 @@ def live_progress_view(request):
 
         # Build hierarchical active crawls with nested snapshots and archive results
 
-        active_crawls_qs = (
-            crawl_scope.filter(
-                Q(status__in=[Crawl.StatusChoices.QUEUED, Crawl.StatusChoices.STARTED])
-                | Q(status=Crawl.StatusChoices.SEALED, modified_at__gte=recently_cancelled_after),
-            )
-            .select_related("created_by")
-            .only(
-                "id",
-                "created_at",
-                "created_by_id",
-                "modified_at",
-                "urls",
-                "max_depth",
-                "status",
-                "retry_at",
-                "label",
-                "created_by__id",
-                "created_by__username",
-            )
-            .distinct()
-            .order_by("-modified_at")[:10]
+        active_crawl_fields = (
+            "id",
+            "created_at",
+            "created_by_id",
+            "modified_at",
+            "urls",
+            "max_depth",
+            "status",
+            "retry_at",
+            "label",
+            "created_by__id",
+            "created_by__username",
         )
-        active_crawls_list = list(active_crawls_qs)
+        active_crawl_candidates = []
+        for status in (Crawl.StatusChoices.QUEUED, Crawl.StatusChoices.STARTED, Crawl.StatusChoices.SEALED):
+            status_qs = crawl_scope.filter(status=status)
+            if status == Crawl.StatusChoices.SEALED:
+                status_qs = status_qs.filter(modified_at__gte=recently_cancelled_after)
+            active_crawl_candidates.extend(
+                status_qs.select_related("created_by").only(*active_crawl_fields).order_by("-modified_at")[:10],
+            )
+        active_crawls_list = sorted(
+            {str(crawl.id): crawl for crawl in active_crawl_candidates}.values(),
+            key=lambda crawl: crawl.modified_at,
+            reverse=True,
+        )[:10]
         active_crawl_ids = [crawl.id for crawl in active_crawls_list]
         snapshot_counts_by_crawl: dict[str, dict[str, int]] = {str(crawl_id): {} for crawl_id in active_crawl_ids}
         cancelled_snapshot_counts_by_crawl: dict[str, int] = {str(crawl_id): 0 for crawl_id in active_crawl_ids}
@@ -1514,25 +1560,25 @@ def live_progress_view(request):
                 ):
                     cancelled_snapshot_counts_by_crawl[str(row["crawl_id"])] = row["count"]
 
-        if machine is not None:
+        if machine_id is not None:
             running_processes = Process.objects.filter(
-                machine=machine,
+                machine_id=machine_id,
                 status=Process.StatusChoices.RUNNING,
                 process_type__in=[
                     Process.TypeChoices.HOOK,
                     Process.TypeChoices.BINARY,
                 ],
-            ).only("id", "machine_id", "process_type", "status", "pwd", "cmd", "pid", "exit_code", "started_at", "modified_at")
+            ).values("id", "process_type", "status", "pwd", "cmd", "pid", "exit_code", "started_at", "modified_at")
             recent_processes = (
                 Process.objects.filter(
-                    machine=machine,
+                    machine_id=machine_id,
                     process_type__in=[
                         Process.TypeChoices.HOOK,
                         Process.TypeChoices.BINARY,
                     ],
                     modified_at__gte=now - timedelta(minutes=10),
                 )
-                .only("id", "machine_id", "process_type", "status", "pwd", "cmd", "pid", "exit_code", "started_at", "modified_at")
+                .values("id", "process_type", "status", "pwd", "cmd", "pid", "exit_code", "started_at", "modified_at")
                 .order_by("-modified_at")
             )
         else:
@@ -1623,9 +1669,9 @@ def live_progress_view(request):
 
         running_worker_ids: set[str] = set()
         for proc in running_processes:
-            if not proc.pwd:
+            if not proc["pwd"]:
                 continue
-            proc_pwd = Path(proc.pwd)
+            proc_pwd = Path(proc["pwd"])
             matched_snapshot = find_snapshot_for_process(proc_pwd)
             matched_crawl = (
                 crawls_by_id.get(str(matched_snapshot.crawl_id)) if matched_snapshot is not None else find_crawl_for_process(proc_pwd)
@@ -1638,17 +1684,17 @@ def live_progress_view(request):
             else:
                 crawl_id = str(matched_snapshot.crawl_id)
                 snapshot_id = str(matched_snapshot.id)
-            running_worker_ids.add(str(proc.id))
-            _plugin, _label, phase, _hook_name = process_label(proc.cmd)
-            if crawl_id and proc.pid:
-                crawl_process_pids.setdefault(crawl_id, proc.pid)
-            if phase == "snapshot" and snapshot_id and proc.pid:
-                snapshot_process_pids.setdefault(snapshot_id, proc.pid)
+            running_worker_ids.add(str(proc["id"]))
+            _plugin, _label, phase, _hook_name = process_label(proc["cmd"])
+            if crawl_id and proc["pid"]:
+                crawl_process_pids.setdefault(crawl_id, proc["pid"])
+            if phase == "snapshot" and snapshot_id and proc["pid"]:
+                snapshot_process_pids.setdefault(snapshot_id, proc["pid"])
 
         for proc in recent_processes:
-            if not proc.pwd:
+            if not proc["pwd"]:
                 continue
-            proc_pwd = Path(proc.pwd)
+            proc_pwd = Path(proc["pwd"])
             matched_snapshot = find_snapshot_for_process(proc_pwd)
             matched_crawl = (
                 crawls_by_id.get(str(matched_snapshot.crawl_id)) if matched_snapshot is not None else find_crawl_for_process(proc_pwd)
@@ -1658,32 +1704,32 @@ def live_progress_view(request):
             crawl_id = str(matched_snapshot.crawl_id if matched_snapshot is not None else matched_crawl.id)
             snapshot_id = str(matched_snapshot.id) if matched_snapshot is not None else ""
 
-            plugin, label, phase, hook_name = process_label(proc.cmd)
+            plugin, label, phase, hook_name = process_label(proc["cmd"])
 
             record_scope = str(snapshot_id) if phase == "snapshot" and snapshot_id else str(crawl_id)
-            proc_key = f"{record_scope}:{plugin}:{label}:{proc.status}:{proc.exit_code}"
+            proc_key = f"{record_scope}:{plugin}:{label}:{proc['status']}:{proc['exit_code']}"
             if proc_key in seen_process_records:
                 continue
             seen_process_records.add(proc_key)
 
             status = (
                 "started"
-                if proc.status == Process.StatusChoices.RUNNING
-                else ("failed" if proc.exit_code not in (None, 0) else "succeeded")
+                if proc["status"] == Process.StatusChoices.RUNNING
+                else ("failed" if proc["exit_code"] not in (None, 0) else "succeeded")
             )
             payload: dict[str, object] = {
-                "id": str(proc.id),
+                "id": str(proc["id"]),
                 "plugin": plugin,
                 "label": label,
                 "hook_name": hook_name,
                 "status": status,
                 "phase": phase,
                 "source": "process",
-                "process_id": str(proc.id),
+                "process_id": str(proc["id"]),
             }
-            if status == "started" and proc.pid:
-                payload["pid"] = proc.pid
-            proc_started_at = proc.started_at or proc.modified_at
+            if status == "started" and proc["pid"]:
+                payload["pid"] = proc["pid"]
+            proc_started_at = proc["started_at"] or proc["modified_at"]
             if phase == "snapshot" and snapshot_id:
                 process_records_by_snapshot.setdefault(snapshot_id, []).append((payload, proc_started_at))
             elif crawl_id:
@@ -1744,11 +1790,11 @@ def live_progress_view(request):
                     snapshot_title = snapshot._normalize_title_candidate(title_result.output_str, snapshot_url=snapshot.url)
                 favicon_result = result_by_plugin.get("favicon")
                 if favicon_result is not None and favicon_result.status == ArchiveResult.StatusChoices.SUCCEEDED:
-                    favicon_path = favicon_result.embed_path_db() or "favicon/favicon.ico"
+                    favicon_path = archiveresult_output_path(favicon_result) or "favicon/favicon.ico"
                     snapshot_favicon_url = snapshot_output_url(snapshot, favicon_path)
                 screenshot_result = result_by_plugin.get("screenshot")
                 if screenshot_result is not None and screenshot_result.status == ArchiveResult.StatusChoices.SUCCEEDED:
-                    screenshot_path = screenshot_result.embed_path_db() or "screenshot/screenshot.png"
+                    screenshot_path = archiveresult_output_path(screenshot_result) or "screenshot/screenshot.png"
                     snapshot_preview_url = snapshot_output_url(snapshot, screenshot_path)
                     snapshot_preview_link = snapshot_view_url(snapshot, screenshot_path)
                     if snapshot_favicon_url:
@@ -1800,7 +1846,7 @@ def live_progress_view(request):
                         "process_id": str(ar.process_id) if ar.process_id else None,
                         "admin_url": f"/admin/core/archiveresult/{ar.id}/change/",
                     }
-                    output_path = ar.embed_path_db()
+                    output_path = archiveresult_output_path(ar)
                     if output_path:
                         plugin_payload["output_path"] = output_path
                         plugin_payload["output_url"] = snapshot_view_url(snapshot, output_path)

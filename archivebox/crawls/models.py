@@ -170,6 +170,7 @@ class Crawl(ModelWithOutputDir, ModelWithConfig, ModelWithHealthStats, ModelWith
         verbose_name_plural = "Crawls"
         indexes = [
             models.Index(fields=["-created_at", "-retry_at", "-id"], name="crawl_admin_order_idx"),
+            models.Index(fields=["status", "-modified_at"], name="crawl_progress_status_idx"),
         ]
 
     def __str__(self):
