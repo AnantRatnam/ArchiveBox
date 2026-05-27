@@ -477,20 +477,25 @@ class Snapshot(ModelWithOutputDir, ModelWithConfig, ModelWithNotes, ModelWithHea
 
         super().save(*args, **kwargs)
 
+        from django.db import transaction
+
+        def finish_snapshot_save():
+            self.ensure_legacy_archive_symlink()
+            self.ensure_crawl_symlink()
+            existing_urls = {url for _raw_line, url in self.crawl._iter_url_lines() if url}
+            if self.crawl.url_passes_filters(self.url, snapshot=self) and self.url not in existing_urls:
+                self.crawl.urls += f"\n{self.url}"
+                self.crawl.save()
+
+        # get_or_create/update_or_create wrap save() in atomic(); defer filesystem
+        # work and crawl maintenance so SQLite commits before touching the disk.
+        transaction.on_commit(finish_snapshot_save)
+
         migration_cleanup = getattr(self, "_pending_fs_migration_cleanup", None)
         if migration_cleanup:
-            from django.db import transaction
-
             old_dir, new_dir = migration_cleanup
             transaction.on_commit(lambda: self._cleanup_old_migration_dir(old_dir, new_dir))
             delattr(self, "_pending_fs_migration_cleanup")
-
-        self.ensure_legacy_archive_symlink()
-        self.ensure_crawl_symlink()
-        existing_urls = {url for _raw_line, url in self.crawl._iter_url_lines() if url}
-        if self.crawl.url_passes_filters(self.url, snapshot=self) and self.url not in existing_urls:
-            self.crawl.urls += f"\n{self.url}"
-            self.crawl.save()
 
         # if is_new:
         #     from archivebox.misc.logging_util import log_worker_event

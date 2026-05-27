@@ -7,6 +7,7 @@ from pathlib import Path
 
 from django.db import models
 from django.db.models import F
+from django.db import transaction
 from django.utils import timezone
 from django.contrib.auth import get_user_model
 from django.urls import reverse_lazy
@@ -114,7 +115,9 @@ class ModelWithOutputDir(ModelWithUUID):
 
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
-        Path(self.output_dir).mkdir(parents=True, exist_ok=True)
+        output_dir = Path(self.output_dir)
+        # Avoid holding SQLite write transactions open across slow filesystem work.
+        transaction.on_commit(lambda: output_dir.mkdir(parents=True, exist_ok=True))
         # Note: index.json is deprecated, models should use write_index_jsonl() for full data
 
     @property
