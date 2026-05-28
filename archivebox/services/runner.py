@@ -889,6 +889,20 @@ class CrawlRunner:
                 await completed_snapshot.wait(timeout=snapshot_phase_timeout)
                 await completed_snapshot.event_results_list()
                 await self.enqueue_discovered_snapshots_from_outputs(snapshot)
+                await sync_to_async(
+                    lambda: (
+                        self.crawl.sm.seal()
+                        if self.crawl.status == self.crawl.StatusChoices.STARTED
+                        and not self.crawl.snapshot_set.filter(
+                            status__in=[
+                                self.crawl.snapshot_set.model.StatusChoices.QUEUED,
+                                self.crawl.snapshot_set.model.StatusChoices.STARTED,
+                            ],
+                        ).exists()
+                        else None
+                    ),
+                    thread_sensitive=True,
+                )()
             finally:
                 snapshot_service.close()
 
@@ -1135,7 +1149,7 @@ def recover_orphaned_crawls() -> int:
             continue
 
         crawl.update_and_requeue(
-            status=Crawl.StatusChoices.QUEUED,
+            status=Crawl.StatusChoices.STARTED,
             retry_at=now,
         )
         recovered += 1
@@ -1223,8 +1237,9 @@ def recover_orphaned_snapshots() -> int:
         )
 
         crawl = snapshot.crawl
+        crawl_status = crawl.status if crawl.status == Crawl.StatusChoices.STARTED else Crawl.StatusChoices.QUEUED
         crawl.update_and_requeue(
-            status=Crawl.StatusChoices.QUEUED,
+            status=crawl_status,
             retry_at=now,
         )
         recovered += 1
