@@ -293,34 +293,37 @@ def main(daemon: bool, crawl_id: str, snapshot_id: str, binary_id: str):
     - --snapshot-id: Run one snapshot through its crawl only
     - --binary-id: Run one queued binary install directly on the bus
     """
-    if snapshot_id:
-        sys.exit(run_snapshot_worker(snapshot_id))
+    from archivebox.core.shutdown_util import foreground_parent_watchdog, foreground_shutdown_signals
 
-    if binary_id:
-        try:
-            from archivebox.services.runner import run_binary
+    with foreground_shutdown_signals(), foreground_parent_watchdog(enabled=not daemon):
+        if snapshot_id:
+            sys.exit(run_snapshot_worker(snapshot_id))
 
-            run_binary(binary_id)
-            sys.exit(0)
-        except KeyboardInterrupt:
-            sys.exit(0)
-        except Exception as e:
-            rprint(f"[red]Runner error: {type(e).__name__}: {e}[/red]", file=sys.stderr)
-            import traceback
+        if binary_id:
+            try:
+                from archivebox.services.runner import run_binary
 
-            traceback.print_exc()
-            sys.exit(1)
+                run_binary(binary_id)
+                sys.exit(0)
+            except KeyboardInterrupt:
+                sys.exit(0)
+            except Exception as e:
+                rprint(f"[red]Runner error: {type(e).__name__}: {e}[/red]", file=sys.stderr)
+                import traceback
 
-    if crawl_id:
-        sys.exit(run_runner(daemon=False, crawl_id=crawl_id))
+                traceback.print_exc()
+                sys.exit(1)
 
-    if daemon:
-        sys.exit(run_runner(daemon=True))
+        if crawl_id:
+            sys.exit(run_runner(daemon=False, crawl_id=crawl_id))
 
-    if not sys.stdin.isatty():
-        sys.exit(process_stdin_records())
-    else:
-        sys.exit(run_runner(daemon=daemon))
+        if daemon:
+            sys.exit(run_runner(daemon=True))
+
+        if not sys.stdin.isatty():
+            sys.exit(process_stdin_records())
+        else:
+            sys.exit(run_runner(daemon=daemon))
 
 
 def run_snapshot_worker(snapshot_id: str) -> int:
