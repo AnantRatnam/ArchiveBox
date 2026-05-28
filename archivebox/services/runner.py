@@ -1180,6 +1180,20 @@ def recover_orphaned_snapshots() -> int:
             .prefetch_related("archiveresult_set")
             if snapshot.status == Snapshot.StatusChoices.SEALED
         )
+    empty_active_snapshot_ids = list(
+        Snapshot.objects.filter(
+            crawl__status=Crawl.StatusChoices.STARTED,
+            status=Snapshot.StatusChoices.SEALED,
+            downloaded_at__isnull=False,
+            archiveresult__isnull=True,
+        )
+        .values_list("id", flat=True)
+        .distinct(),
+    )
+    if empty_active_snapshot_ids:
+        orphaned_snapshots.extend(
+            Snapshot.objects.filter(id__in=empty_active_snapshot_ids).select_related("crawl").prefetch_related("archiveresult_set"),
+        )
     running_processes = Process.objects.filter(
         status=Process.StatusChoices.RUNNING,
         process_type__in=[
