@@ -301,7 +301,20 @@ def upgrade_core_tables(apps, schema_editor):
                         COALESCE(added, CURRENT_TIMESTAMP) as created_at,
                         COALESCE(updated, added, CURRENT_TIMESTAMP) as modified_at,
                         updated as downloaded_at,
-                        'queued' as status
+                        CASE
+                            WHEN EXISTS (
+                                SELECT 1 FROM core_archiveresult
+                                WHERE core_archiveresult.snapshot_id = core_snapshot.id
+                                AND core_archiveresult.status IN ('queued', 'started', 'backoff')
+                            )
+                            THEN 'queued'
+                            WHEN EXISTS (
+                                SELECT 1 FROM core_archiveresult
+                                WHERE core_archiveresult.snapshot_id = core_snapshot.id
+                            )
+                            THEN 'sealed'
+                            ELSE 'queued'
+                        END as status
                     FROM core_snapshot;
                 """)
             elif has_bookmarked_at and not has_added:
@@ -320,7 +333,25 @@ def upgrade_core_tables(apps, schema_editor):
                     select_cols.append("REPLACE(crawl_id, '-', '')")
                 if has_status:
                     insert_cols.append("status")
-                    select_cols.append("status")
+                    select_cols.append(
+                        """
+                        CASE
+                            WHEN status IN ('sealed', 'started', 'paused') THEN status
+                            WHEN EXISTS (
+                                SELECT 1 FROM core_archiveresult
+                                WHERE core_archiveresult.snapshot_id = core_snapshot.id
+                                AND core_archiveresult.status IN ('queued', 'started', 'backoff')
+                            )
+                            THEN status
+                            WHEN EXISTS (
+                                SELECT 1 FROM core_archiveresult
+                                WHERE core_archiveresult.snapshot_id = core_snapshot.id
+                            )
+                            THEN 'sealed'
+                            ELSE status
+                        END
+                        """,
+                    )
                 if has_retry_at:
                     insert_cols.append("retry_at")
                     select_cols.append("retry_at")

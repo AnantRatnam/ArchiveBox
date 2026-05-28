@@ -360,8 +360,8 @@ CHANNEL_LAYERS = {"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}
 
 SECRET_KEY = CONFIG.SECRET_KEY or get_random_string(50, "abcdefghijklmnopqrstuvwxyz0123456789_")
 
-ALLOWED_HOSTS = CONFIG.ALLOWED_HOSTS.split(",")
-CSRF_TRUSTED_ORIGINS = list(set(CONFIG.CSRF_TRUSTED_ORIGINS.split(",")))
+ALLOWED_HOSTS = [host.strip() for host in CONFIG.ALLOWED_HOSTS.split(",") if host.strip()]
+CSRF_TRUSTED_ORIGINS = list({origin.strip() for origin in CONFIG.CSRF_TRUSTED_ORIGINS.split(",") if origin.strip()})
 
 admin_base_url = normalize_base_url(get_admin_base_url())
 if admin_base_url and admin_base_url not in CSRF_TRUSTED_ORIGINS:

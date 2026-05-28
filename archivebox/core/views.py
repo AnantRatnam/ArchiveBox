@@ -191,8 +191,7 @@ class SnapshotView(View):
             "PREVIEW_ORIGINALS",
             "LISTEN_HOST",
             "USES_SUBDOMAIN_ROUTING",
-            "ADMIN_BASE_URL",
-            "ARCHIVE_BASE_URL",
+            "BASE_URL",
             "PERMISSIONS",
             "SERVER_SECURITY_MODE",
         }

@@ -54,6 +54,7 @@ def _build_script(body: str) -> str:
     from archivebox.core.host_utils import (
         get_admin_host,
         get_admin_base_url,
+        get_base_host,
         get_api_host,
         get_web_host,
         get_web_base_url,
@@ -201,8 +202,12 @@ class TestUrlRouting:
             snapshot_subdomain = get_snapshot_subdomain(snapshot_id)
             snapshot_host = get_snapshot_host(snapshot_id)
             original_host = get_original_host(domain)
-            base_host = SERVER_CONFIG.LISTEN_HOST
+            listen_host = SERVER_CONFIG.LISTEN_HOST
+            base_host = get_base_host()
 
+            listen_host_only, listen_port = split_host_port(listen_host)
+            assert listen_host_only == "127.0.0.1"
+            assert listen_port == "8000"
             host_only, port = split_host_port(base_host)
             assert host_only == "archivebox.localhost"
             assert port == "8000"
@@ -262,7 +267,7 @@ class TestUrlRouting:
             """,
             mode="safe-subdomains-fullreplay",
             env_overrides={
-                "LISTEN_HOST": "archivebox.io",
+                "BASE_URL": "https://archivebox.io",
             },
         )
 
@@ -330,7 +335,7 @@ class TestUrlRouting:
             snapshot_host = get_snapshot_host(snapshot_id)
             original_host = get_original_host(snapshot.domain)
             web_host = get_web_host()
-            host_only, port = split_host_port(SERVER_CONFIG.LISTEN_HOST)
+            host_only, port = split_host_port(get_base_host())
             legacy_snapshot_host = f"{snapshot_id}.{host_only}"
             if port:
                 legacy_snapshot_host = f"{legacy_snapshot_host}:{port}"
@@ -574,7 +579,7 @@ class TestUrlRouting:
             snapshot_id = str(snapshot.id)
 
             client = Client()
-            base_host = SERVER_CONFIG.LISTEN_HOST
+            base_host = get_base_host()
             web_host = get_web_host()
             admin_host = get_admin_host()
             api_host = get_api_host()
@@ -635,7 +640,7 @@ class TestUrlRouting:
             snapshot_id = str(snapshot.id)
 
             client = Client()
-            base_host = SERVER_CONFIG.LISTEN_HOST
+            base_host = get_base_host()
 
             assert SERVER_CONFIG.SERVER_SECURITY_MODE == "unsafe-onedomain-noadmin"
             assert SERVER_CONFIG.CONTROL_PLANE_ENABLED is False
@@ -670,7 +675,7 @@ class TestUrlRouting:
             snapshot_id = str(snapshot.id)
 
             client = Client()
-            base_host = SERVER_CONFIG.LISTEN_HOST
+            base_host = get_base_host()
 
             assert SERVER_CONFIG.SERVER_SECURITY_MODE == "danger-onedomain-fullreplay"
             assert SERVER_CONFIG.CONTROL_PLANE_ENABLED is True
@@ -710,15 +715,15 @@ class TestUrlRouting:
             """
             snapshot = get_snapshot()
             snapshot_id = str(snapshot.id)
-            base_host = SERVER_CONFIG.LISTEN_HOST
+            base_host = get_base_host()
 
             assert SERVER_CONFIG.SERVER_SECURITY_MODE == "safe-onedomain-nojsreplay"
             assert get_admin_host() == base_host
             assert get_web_host() == base_host
 
-            assert get_admin_base_url() == "https://admin.archivebox.example"
+            assert get_admin_base_url() == "https://archivebox.example"
             assert get_web_base_url() == "https://archivebox.example"
-            assert build_admin_url("/admin/login/") == "https://admin.archivebox.example/admin/login/"
+            assert build_admin_url("/admin/login/") == "https://archivebox.example/admin/login/"
             assert build_snapshot_url(snapshot_id, "index.jsonl") == (
                 f"https://archivebox.example/snapshot/{snapshot_id}/index.jsonl"
             )
@@ -727,8 +732,7 @@ class TestUrlRouting:
             """,
             mode="safe-onedomain-nojsreplay",
             env_overrides={
-                "ADMIN_BASE_URL": "https://admin.archivebox.example",
-                "ARCHIVE_BASE_URL": "https://archivebox.example",
+                "BASE_URL": "https://archivebox.example",
             },
         )
 
@@ -748,7 +752,7 @@ class TestUrlRouting:
             """,
             mode="safe-subdomains-fullreplay",
             env_overrides={
-                "ARCHIVE_BASE_URL": "https://web.archivebox.example",
+                "BASE_URL": "https://archivebox.example",
             },
         )
 
@@ -769,7 +773,7 @@ class TestUrlRouting:
             resp = client.get("/public/", HTTP_HOST=web_host)
             assert resp.status_code == 200
             public_html = response_body(resp).decode("utf-8", "ignore")
-            assert "http://web.archivebox.localhost:8000" in public_html
+            assert f"http://{snapshot_host}/" in public_html
 
             ensure_admin_user()
             assert client.login(username="testadmin", password="testpassword")
@@ -839,7 +843,7 @@ class TestUrlRouting:
             resp = client.get(f"/admin/core/snapshot/{snapshot_id}/change/", HTTP_HOST=admin_host)
             assert resp.status_code == 200
             admin_html = response_body(resp).decode("utf-8", "ignore")
-            assert f"http://web.archivebox.localhost:8000/{snapshot.archive_path}" in admin_html
+            assert f"http://{web_host}/{snapshot.archive_path}" in admin_html
             assert f"http://{snapshot_host}/" in admin_html
 
             result = ArchiveResult.objects.filter(snapshot=snapshot).first()
@@ -866,6 +870,7 @@ class TestUrlRouting:
                 '{"level":"warn","text":"second line"}\\n',
                 encoding="utf-8",
             )
+            snapshot.write_html_details()
 
             client = Client()
             resp = client.get(f"/{snapshot.url_path}/index.html", HTTP_HOST=web_host)

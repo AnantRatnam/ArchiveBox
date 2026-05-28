@@ -419,9 +419,9 @@ def build_test_env(port: int, **extra: str) -> dict[str, str]:
     env.update(
         {
             "PLUGINS": "wget",
-            "LISTEN_HOST": f"archivebox.localhost:{port}",
+            "LISTEN_HOST": f"127.0.0.1:{port}",
+            "BASE_URL": f"http://archivebox.localhost:{port}",
             "ALLOWED_HOSTS": "*",
-            "CSRF_TRUSTED_ORIGINS": f"http://admin.archivebox.localhost:{port}",
             "PUBLIC_ADD_VIEW": "True",
             "USE_COLOR": "False",
             "SHOW_PROGRESS": "False",
@@ -830,7 +830,8 @@ def real_archive_with_example(tmp_path_factory, request):
         [
             "config",
             "--set",
-            "LISTEN_HOST=archivebox.localhost:8000",
+            "LISTEN_HOST=127.0.0.1:8000",
+            "BASE_URL=http://archivebox.localhost:8000",
             "PUBLIC_INDEX=True",
             "PUBLIC_ADD_VIEW=True",
         ],

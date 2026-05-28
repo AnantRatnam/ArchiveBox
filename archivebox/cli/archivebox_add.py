@@ -180,8 +180,8 @@ def add(
         persona_id=persona_obj.id,
         label=f"{USER}@{HOSTNAME} $ {cmd_str} [{timestamp}]",
         created_by_id=created_by_id,
-        status=Crawl.StatusChoices.QUEUED if bg or index_only else Crawl.StatusChoices.STARTED,
-        retry_at=timezone.now() if bg else None,
+        status=Crawl.StatusChoices.QUEUED,
+        retry_at=None if index_only else timezone.now(),
         config=crawl_config,
     )
 
@@ -258,12 +258,9 @@ def add(
             except Exception:
                 rel_output_str = str(crawl.output_dir)
 
-            bind_addr = config.BIND_ADDR or "127.0.0.1:8000"
-            if bind_addr.startswith("http://") or bind_addr.startswith("https://"):
-                base_url = bind_addr
-            else:
-                base_url = f"http://{bind_addr}"
-            admin_url = f"{base_url}/admin/crawls/crawl/{crawl.id}/change/"
+            from archivebox.core.host_utils import build_admin_url
+
+            admin_url = build_admin_url(f"/admin/crawls/crawl/{crawl.id}/change/", config=config)
 
             print("\n[bold]crawl output saved to:[/bold]")
             print(f"  {rel_output_str}")

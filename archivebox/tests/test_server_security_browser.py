@@ -345,9 +345,9 @@ def _start_server(data_dir: Path, *, mode: str, port: int) -> subprocess.Popen[s
     env.update(
         {
             "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
-            "LISTEN_HOST": f"archivebox.localhost:{port}",
+            "LISTEN_HOST": f"127.0.0.1:{port}",
+            "BASE_URL": f"http://archivebox.localhost:{port}",
             "ALLOWED_HOSTS": "*",
-            "CSRF_TRUSTED_ORIGINS": f"http://archivebox.localhost:{port},http://admin.archivebox.localhost:{port}",
             "SERVER_SECURITY_MODE": mode,
             "USE_COLOR": "False",
             "SHOW_PROGRESS": "False",

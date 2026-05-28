@@ -278,9 +278,18 @@ class TestRunEmpty:
 
 
 class TestRunDaemonMode:
-    def test_run_daemon_ignores_piped_stdin_and_starts_real_runner(self, initialized_archive, db):
+    @pytest.mark.parametrize("stdin_kind", ["malformed", "valid-snapshot"])
+    def test_run_daemon_ignores_piped_stdin_and_starts_real_runner(self, initialized_archive, db, stdin_kind):
         from archivebox.machine.models import Process
+        from archivebox.core.models import Snapshot
         from archivebox.tests.test_orm_helpers import use_archivebox_db
+
+        snapshot_url = None
+        if stdin_kind == "valid-snapshot":
+            snapshot_url = create_test_url()
+            piped_stdin = json.dumps(create_test_snapshot_json(url=snapshot_url)) + "\n"
+        else:
+            piped_stdin = "{this is not jsonl}\n"
 
         env = os.environ.copy()
         env.update(
@@ -306,7 +315,7 @@ class TestRunDaemonMode:
         assert proc.stderr is not None
 
         try:
-            proc.stdin.write("{this is not jsonl}\n")
+            proc.stdin.write(piped_stdin)
             proc.stdin.close()
 
             deadline = time.monotonic() + 20
@@ -327,6 +336,9 @@ class TestRunDaemonMode:
                 time.sleep(0.25)
 
             assert started is True
+            if snapshot_url is not None:
+                with use_archivebox_db(initialized_archive):
+                    assert not Snapshot.objects.filter(url=snapshot_url).exists()
         finally:
             if proc.poll() is None:
                 os.killpg(proc.pid, signal.SIGTERM)
@@ -725,6 +737,28 @@ class TestRecoverOrchestratorState:
 
 @pytest.mark.django_db
 class TestRunDueCrawlState:
+    def test_maintenance_only_runner_does_not_start_regular_queued_crawls(self):
+        from django.utils import timezone
+
+        from archivebox.base_models.models import get_or_create_system_user_pk
+        from archivebox.crawls.models import Crawl
+        from archivebox.services.runner import run_pending_crawls
+
+        now = timezone.now()
+        crawl = Crawl.objects.create(
+            urls="https://example.com",
+            created_by_id=get_or_create_system_user_pk(),
+            status=Crawl.StatusChoices.QUEUED,
+            retry_at=now,
+        )
+
+        assert run_pending_crawls(daemon=False, maintenance_only=True) == 0
+
+        crawl.refresh_from_db()
+        assert crawl.status == Crawl.StatusChoices.QUEUED
+        assert crawl.retry_at == now
+        assert crawl.snapshot_set.count() == 0
+
     def test_snapshot_start_writes_short_future_lease(self):
         from django.utils import timezone
 

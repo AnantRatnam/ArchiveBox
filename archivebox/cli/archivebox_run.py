@@ -238,7 +238,7 @@ def process_stdin_records() -> int:
     return 0
 
 
-def run_runner(daemon: bool = False, crawl_id: str | None = None) -> int:
+def run_runner(daemon: bool = False, crawl_id: str | None = None, maintenance_only: bool = False) -> int:
     """
     Run the background runner loop.
 
@@ -264,7 +264,7 @@ def run_runner(daemon: bool = False, crawl_id: str | None = None) -> int:
     current.mark_running(process_type=Process.TypeChoices.ORCHESTRATOR, pwd=str(CONSTANTS.DATA_DIR), timeout=0)
     try:
         with foreground_shutdown_signals(), foreground_parent_watchdog(enabled=not daemon):
-            run_pending_crawls(daemon=daemon, crawl_id=crawl_id)
+            run_pending_crawls(daemon=daemon, crawl_id=crawl_id, maintenance_only=maintenance_only)
         return 0
     except KeyboardInterrupt:
         return 0

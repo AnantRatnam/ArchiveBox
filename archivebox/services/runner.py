@@ -1285,6 +1285,8 @@ def run_due_snapshot(snapshot, *, lock_seconds: int) -> bool:
     if snapshot.is_paused:
         selected_plugins = queued_plugins_for_snapshot(str(snapshot.id))
         if not selected_plugins:
+            if snapshot.fs_migration_needed and Snapshot.claim_for_worker(snapshot, lock_seconds=lock_seconds):
+                run_snapshot_maintenance(str(snapshot.id))
             # Paused is a real lifecycle state; retry_at=MAX is only the
             # orchestrator selection marker. If a direct maintenance/update
             # command bumps retry_at on a paused snapshot but there are no
@@ -1465,7 +1467,7 @@ def run_install(*, plugin_names: list[str] | None = None) -> None:
     asyncio.run(_run_install(plugin_names=plugin_names))
 
 
-def run_pending_crawls(*, daemon: bool = False, crawl_id: str | None = None) -> int:
+def run_pending_crawls(*, daemon: bool = False, crawl_id: str | None = None, maintenance_only: bool = False) -> int:
     from archivebox.crawls.models import Crawl, CrawlSchedule
     from archivebox.core.models import ArchiveResult, Snapshot
     from archivebox.machine.models import Binary, Process
@@ -1486,16 +1488,19 @@ def run_pending_crawls(*, daemon: bool = False, crawl_id: str | None = None) -> 
                 if schedule.is_due(now):
                     schedule.enqueue(queued_at=now)
 
-        due_crawls = Crawl.objects.filter(retry_at__lte=timezone.now())
-        if crawl_id:
-            due_crawls = due_crawls.filter(id=crawl_id)
-        due_crawl = due_crawls.order_by("retry_at", "created_at").first()
-        if due_crawl is not None:
-            if not run_due_crawl(due_crawl, lock_seconds=crawl_claim_lock_seconds):
+        if not maintenance_only:
+            due_crawls = Crawl.objects.filter(retry_at__lte=timezone.now())
+            if crawl_id:
+                due_crawls = due_crawls.filter(id=crawl_id)
+            due_crawl = due_crawls.order_by("retry_at", "created_at").first()
+            if due_crawl is not None:
+                if not run_due_crawl(due_crawl, lock_seconds=crawl_claim_lock_seconds):
+                    continue
                 continue
-            continue
 
         due_snapshots = Snapshot.objects.filter(retry_at__lte=timezone.now()).select_related("crawl")
+        if maintenance_only:
+            due_snapshots = due_snapshots.filter(status__in=[Snapshot.StatusChoices.PAUSED, Snapshot.StatusChoices.SEALED])
         if crawl_id:
             due_snapshots = due_snapshots.filter(crawl_id=crawl_id)
         due_snapshot = due_snapshots.order_by("retry_at", "created_at").first()
@@ -1504,7 +1509,7 @@ def run_pending_crawls(*, daemon: bool = False, crawl_id: str | None = None) -> 
                 continue
             continue
 
-        if crawl_id is None:
+        if crawl_id is None and not maintenance_only:
             due_binary = (
                 Binary.objects.filter(retry_at__lte=timezone.now())
                 .exclude(status=Binary.StatusChoices.INSTALLED)

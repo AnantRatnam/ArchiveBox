@@ -20,9 +20,9 @@ services:
         environment:
             # - ADMIN_USERNAME=admin            # creates an admin user on first run with the given user/pass combo
             # - ADMIN_PASSWORD=SomeSecretPassword
-            - LISTEN_HOST=archivebox.localhost:8000
+            - LISTEN_HOST=0.0.0.0:8000
+            - BASE_URL=http://archivebox.localhost:8000  # public URL used to build admin/web/api/snapshot links
             - ALLOWED_HOSTS=*                   # set this to the hostname(s) you're going to serve the site from!
-            - CSRF_TRUSTED_ORIGINS=http://admin.archivebox.localhost:8000  # MUST match the admin UI URL for login/API to work
             - PUBLIC_INDEX=True                 # set to False to prevent anonymous users from viewing snapshot list
             - PUBLIC_SNAPSHOTS=True             # set to False to prevent anonymous users from viewing snapshot content
             - PUBLIC_ADD_VIEW=False             # set to True to allow anonymous users to submit new URLs to archive

@@ -123,12 +123,10 @@ class ServerConfig(BaseConfigSet):
     )
 
     SECRET_KEY: str = Field(default_factory=lambda: "".join(secrets.choice("abcdefghijklmnopqrstuvwxyz0123456789_") for _ in range(50)))
-    BIND_ADDR: str = Field(default="127.0.0.1:8000")
-    LISTEN_HOST: str = Field(default="archivebox.localhost:8000")
-    ADMIN_BASE_URL: str = Field(default="")
-    ARCHIVE_BASE_URL: str = Field(default="")
+    LISTEN_HOST: str = Field(default="127.0.0.1:8000")
+    BASE_URL: str = Field(default="")
     ALLOWED_HOSTS: str = Field(default="*")
-    CSRF_TRUSTED_ORIGINS: str = Field(default="http://admin.archivebox.localhost:8000")
+    CSRF_TRUSTED_ORIGINS: str = Field(default="")
     SERVER_SECURITY_MODE: str = Field(default="safe-subdomains-fullreplay")
 
     SNAPSHOTS_PER_PAGE: int = Field(default=40)

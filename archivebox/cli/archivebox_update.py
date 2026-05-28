@@ -341,7 +341,7 @@ def update(
                             if exit_code != 0:
                                 raise SystemExit(exit_code)
                     else:
-                        exit_code = run_runner(daemon=False)
+                        exit_code = run_runner(daemon=False, maintenance_only=index_only or migrate_only)
                         if exit_code != 0:
                             raise SystemExit(exit_code)
 

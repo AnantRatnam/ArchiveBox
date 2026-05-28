@@ -25,7 +25,7 @@ def server(
     from archivebox.config.common import get_config
 
     config = get_config()
-    runserver_args = list(runserver_args or (config.BIND_ADDR,))
+    runserver_args = list(runserver_args or (config.LISTEN_HOST,))
 
     if init:
         from archivebox.cli.archivebox_init import init as archivebox_init
@@ -62,6 +62,11 @@ def server(
     except IndexError:
         pass
 
+    os.environ["LISTEN_HOST"] = f"{host}:{port}"
+    from archivebox.core.host_utils import build_admin_url
+
+    admin_url = build_admin_url("/admin/")
+
     from archivebox.workers.supervisord_util import (
         start_server_workers,
         stop_existing_supervisord_process,
@@ -83,7 +88,7 @@ def server(
         f"    [blink][green]>[/green][/blink] Starting ArchiveBox webserver on [deep_sky_blue4][link=http://{host}:{port}]http://{host}:{port}[/link][/deep_sky_blue4]",
     )
     print(
-        f"    [green]>[/green] Log in to ArchiveBox Admin UI on [deep_sky_blue3][link=http://{host}:{port}/admin]http://{host}:{port}/admin[/link][/deep_sky_blue3]",
+        f"    [green]>[/green] Log in to ArchiveBox Admin UI on [deep_sky_blue3][link={admin_url}]{admin_url}[/link][/deep_sky_blue3]",
     )
     print("    > Writing ArchiveBox error log to ./logs/errors.log")
     print()
