@@ -180,7 +180,7 @@ def update(
     before: float | None = None,
     after: float | None = None,
     resume: str | None = None,
-    batch_size: int = 100,
+    batch_size: int = 500,
     continuous: bool = False,
     index_only: bool = False,
     migrate_only: bool = False,
@@ -403,7 +403,7 @@ def update(
             resume_cmd.append("--migrate-only")
         if index_only:
             resume_cmd.append("--index-only")
-        if batch_size != 100:
+        if batch_size != 500:
             resume_cmd.extend(["--batch-size", str(batch_size)])
         if exact_resume or resume:
             resume_cmd.extend(["--resume", str(exact_resume or resume)])
@@ -446,7 +446,7 @@ def update(
             stop_own_supervisord_process()
 
 
-def drain_old_archive_dirs(resume_from: str | None = None, batch_size: int = 100) -> dict[str, int]:
+def drain_old_archive_dirs(resume_from: str | None = None, batch_size: int = 500) -> dict[str, int]:
     """
     Drain old archive/ directories (0.8.x → 0.9.x migration).
 
@@ -605,7 +605,7 @@ def drain_old_archive_dirs(resume_from: str | None = None, batch_size: int = 100
     return stats
 
 
-def process_all_db_snapshots(batch_size: int = 100, resume: str | None = None, wait_for_turn=None) -> dict[str, int]:
+def process_all_db_snapshots(batch_size: int = 500, resume: str | None = None, wait_for_turn=None) -> dict[str, int]:
     """
     O(n) scan over entire DB from most recent to least recent.
 
@@ -880,7 +880,7 @@ def print_index_stats(stats: dict[str, Any]) -> None:
 @click.option("--before", type=float, help="Only snapshots before timestamp")
 @click.option("--after", type=float, help="Only snapshots after timestamp")
 @click.option("--filter-type", type=click.Choice(["exact", "substring", "regex", "domain", "tag", "timestamp"]), default="exact")
-@click.option("--batch-size", type=int, default=100, help="Commit every N snapshots")
+@click.option("--batch-size", type=int, default=500, help="Commit every N records")
 @click.option("--continuous", is_flag=True, help="Run continuously as background worker")
 @click.option("--index-only", is_flag=True, help="Backfill available search indexes from existing archived content")
 @click.option("--migrate-only", is_flag=True, help="Only migrate filesystem and update database/index state")

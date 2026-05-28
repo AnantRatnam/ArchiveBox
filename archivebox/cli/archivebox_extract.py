@@ -293,11 +293,13 @@ def run_plugins(
         rprint("[red]No snapshots to process[/red]", file=sys.stderr)
         return 1
 
-    rprint(f"[blue]Queued {processed_count} snapshots for extraction[/blue]", file=sys.stderr)
+    if show_progress:
+        rprint(f"[blue]Queued {processed_count} snapshots for extraction[/blue]", file=sys.stderr)
 
     # Run orchestrator if --wait (default)
     if wait:
-        rprint("[blue]Running plugins...[/blue]", file=sys.stderr)
+        if show_progress:
+            rprint("[blue]Running plugins...[/blue]", file=sys.stderr)
         snapshot_ids_by_crawl: dict[str, set[str]] = defaultdict(set)
         for snapshot_id, crawl_id in existing_snapshots:
             snapshot_ids_by_crawl[str(crawl_id)].add(str(snapshot_id))

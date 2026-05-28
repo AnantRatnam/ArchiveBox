@@ -100,8 +100,9 @@ def foreground_shutdown_signals(
     previous_handlers = {sig: signal.getsignal(sig) for sig in handled_signals}
 
     def raise_keyboard_interrupt(signum, _frame):
-        state.signal_name = signal.Signals(signum).name
-        os.write(sys.stdout.fileno(), f"\n[🛑] Got {state.signal_name}, stopping gracefully...\n".encode())
+        if state.signal_name is None:
+            state.signal_name = signal.Signals(signum).name
+            os.write(sys.stdout.fileno(), f"\n[🛑] Got {state.signal_name}, stopping gracefully...\n".encode())
         raise KeyboardInterrupt
 
     try:
