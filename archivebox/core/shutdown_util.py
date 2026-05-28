@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import os
 import signal
 import subprocess
 import sys
-import os
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -101,8 +101,7 @@ def foreground_shutdown_signals(
 
     def raise_keyboard_interrupt(signum, _frame):
         state.signal_name = signal.Signals(signum).name
-        sys.stdout.write(f"\n[🛑] Got {state.signal_name}, stopping gracefully...\n")
-        sys.stdout.flush()
+        os.write(sys.stdout.fileno(), f"\n[🛑] Got {state.signal_name}, stopping gracefully...\n".encode())
         raise KeyboardInterrupt
 
     try:
@@ -119,7 +118,7 @@ def foreground_parent_watchdog(
     *,
     enabled: bool = True,
     check_interval: float = 2.0,
-    shutdown_signal: signal.Signals = signal.SIGINT,
+    shutdown_signal: signal.Signals = signal.SIGTERM,
 ) -> Iterator[None]:
     """Ask a foreground command to exit if its launcher/wrapper disappears.
 

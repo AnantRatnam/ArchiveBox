@@ -150,7 +150,7 @@ run_with_timeout() {
     ) &
     local watchdog=$!
 
-    trap 'kill_tree "$child"; kill "$watchdog" >/dev/null 2>&1 || true' INT TERM
+    trap '[[ -n "${child:-}" ]] && kill_tree "$child"; [[ -n "${watchdog:-}" ]] && kill "$watchdog" >/dev/null 2>&1 || true' INT TERM
 
     wait "$child"
     local code=$?
@@ -190,7 +190,7 @@ run_server_for_a_bit() {
     ) >> "$logfile" 2>&1 &
     local child=$!
 
-    trap 'kill_tree "$child"' INT TERM
+    trap '[[ -n "${child:-}" ]] && kill_tree "$child"' INT TERM
 
     sleep "$hold"
     echo "[$(ts)] STOP label=$label pid=$child after=${hold}s" | tee -a "$logfile"

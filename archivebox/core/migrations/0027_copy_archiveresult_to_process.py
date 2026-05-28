@@ -140,35 +140,33 @@ def get_or_create_binary(cursor, machine_id, name, abspath, version):
     cursor.execute("PRAGMA table_info(machine_binary)")
     binary_cols = {row[1] for row in cursor.fetchall()}
 
-    # Use only columns that exist in current schema
-    # 0.8.x schema: id, created_at, modified_at, machine_id, name, binprovider, abspath, version, sha256, num_uses_failed, num_uses_succeeded
-    # 0.9.x schema adds: binproviders, overrides, status, retry_at, output_dir
-    if "binproviders" in binary_cols:
-        # 0.9.x schema
-        cursor.execute(
-            """
-            INSERT INTO machine_binary (
-                id, created_at, modified_at, machine_id,
-                name, binproviders, overrides, binprovider, abspath, version, sha256,
-                status, retry_at, output_dir,
-                num_uses_failed, num_uses_succeeded
-            ) VALUES (?, ?, ?, ?, ?, 'env', '{}', 'env', ?, ?, '',
-                      'succeeded', NULL, '', 0, 0)
+    values_by_col = {
+        "id": binary_id,
+        "created_at": now,
+        "modified_at": now,
+        "machine_id": machine_id,
+        "name": name,
+        "binproviders": "env",
+        "overrides": "{}",
+        "binprovider": "env",
+        "abspath": abspath,
+        "version": version,
+        "sha256": "",
+        "status": "installed",
+        "retry_at": None,
+        "output_dir": "",
+        "num_uses_failed": 0,
+        "num_uses_succeeded": 0,
+    }
+    insert_cols = [col for col in values_by_col if col in binary_cols]
+    placeholders = ", ".join(["?"] * len(insert_cols))
+    cursor.execute(
+        f"""
+        INSERT INTO machine_binary ({", ".join(insert_cols)})
+        VALUES ({placeholders})
         """,
-            [binary_id, now, now, machine_id, name, abspath, version],
-        )
-    else:
-        # 0.8.x schema (simpler)
-        cursor.execute(
-            """
-            INSERT INTO machine_binary (
-                id, created_at, modified_at, machine_id,
-                name, binprovider, abspath, version, sha256,
-                num_uses_failed, num_uses_succeeded
-            ) VALUES (?, ?, ?, ?, ?, 'env', ?, ?, '', 0, 0)
-        """,
-            [binary_id, now, now, machine_id, name, abspath, version],
-        )
+        [values_by_col[col] for col in insert_cols],
+    )
 
     return binary_id
 

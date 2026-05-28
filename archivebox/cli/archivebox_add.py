@@ -111,7 +111,7 @@ def add(
     from archivebox.personas.models import Persona
     from archivebox.misc.logging_util import printable_filesize
     from archivebox.misc.system import get_dir_size
-    from archivebox.core.shutdown_util import foreground_parent_watchdog
+    from archivebox.core.shutdown_util import foreground_parent_watchdog, foreground_shutdown_signals
     from archivebox.services.runner import run_crawl
     from django.utils import timezone
 
@@ -217,7 +217,7 @@ def add(
     else:
         # Foreground mode: run full crawl runner until all work is done
         print("[green]\\[*] Starting crawl runner to process crawl...[/green]")
-        with foreground_parent_watchdog():
+        with foreground_shutdown_signals(), foreground_parent_watchdog():
             run_crawl(str(crawl.id))
 
         # Print summary for foreground runs
@@ -300,26 +300,29 @@ def add(
 def main(**kwargs):
     """Add a new URL or list of URLs to your archive"""
 
-    raw_urls = kwargs.pop("urls")
-    urls = _collect_input_urls(raw_urls)
-    if not urls:
-        raise click.UsageError("No URLs provided. Pass URLs as arguments or via stdin.")
-    if int(kwargs.get("max_urls") or 0) < 0:
-        raise click.BadParameter("max_urls must be 0 or a positive integer.", param_hint="--max-urls")
-    if int(kwargs.get("crawl_timeout") or 0) < 0:
-        raise click.BadParameter("crawl_timeout must be 0 or a positive integer.", param_hint="--crawl-timeout")
-    try:
-        kwargs["crawl_max_size"] = parse_filesize_to_bytes(kwargs.get("crawl_max_size"))
-    except ValueError as err:
-        raise click.BadParameter(str(err), param_hint="--crawl-max-size") from err
-    try:
-        kwargs["snapshot_max_size"] = parse_filesize_to_bytes(kwargs.get("snapshot_max_size"))
-    except ValueError as err:
-        raise click.BadParameter(str(err), param_hint="--snapshot-max-size") from err
-    if kwargs.get("crawl_max_concurrent_snapshots") is not None and int(kwargs["crawl_max_concurrent_snapshots"]) < 1:
-        raise click.BadParameter("crawl_max_concurrent_snapshots must be at least 1.", param_hint="--crawl-max-concurrent-snapshots")
+    from archivebox.core.shutdown_util import foreground_parent_watchdog, foreground_shutdown_signals
 
-    add(urls=urls, **kwargs)
+    with foreground_shutdown_signals(), foreground_parent_watchdog():
+        raw_urls = kwargs.pop("urls")
+        urls = _collect_input_urls(raw_urls)
+        if not urls:
+            raise click.UsageError("No URLs provided. Pass URLs as arguments or via stdin.")
+        if int(kwargs.get("max_urls") or 0) < 0:
+            raise click.BadParameter("max_urls must be 0 or a positive integer.", param_hint="--max-urls")
+        if int(kwargs.get("crawl_timeout") or 0) < 0:
+            raise click.BadParameter("crawl_timeout must be 0 or a positive integer.", param_hint="--crawl-timeout")
+        try:
+            kwargs["crawl_max_size"] = parse_filesize_to_bytes(kwargs.get("crawl_max_size"))
+        except ValueError as err:
+            raise click.BadParameter(str(err), param_hint="--crawl-max-size") from err
+        try:
+            kwargs["snapshot_max_size"] = parse_filesize_to_bytes(kwargs.get("snapshot_max_size"))
+        except ValueError as err:
+            raise click.BadParameter(str(err), param_hint="--snapshot-max-size") from err
+        if kwargs.get("crawl_max_concurrent_snapshots") is not None and int(kwargs["crawl_max_concurrent_snapshots"]) < 1:
+            raise click.BadParameter("crawl_max_concurrent_snapshots must be at least 1.", param_hint="--crawl-max-concurrent-snapshots")
+
+        add(urls=urls, **kwargs)
 
 
 if __name__ == "__main__":

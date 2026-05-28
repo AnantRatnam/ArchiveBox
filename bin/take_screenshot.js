@@ -23,6 +23,7 @@ Environment:
   SCREENSHOT_FULL_PAGE       Set to 1 to capture the full page, defaults to viewport only
   SCREENSHOT_SCROLL_SELECTOR Scroll this selector into view before capture
   SCREENSHOT_WAIT_SELECTOR   Wait for this selector before capture
+  SCREENSHOT_HOST_RESOLVER_RULES  Chrome host resolver rules
   SCREENSHOT_SNAPSHOT_VIEW   Set to list or grid before loading the page
   SCREENSHOT_RESET_FILTERS   Set to 1 to clear the admin filter collapsed preference
 `);
@@ -60,6 +61,9 @@ async function main() {
     headless: true,
     defaultViewport: { width, height },
   };
+  if (process.env.SCREENSHOT_HOST_RESOLVER_RULES) {
+    launchOptions.args = [`--host-resolver-rules=${process.env.SCREENSHOT_HOST_RESOLVER_RULES}`];
+  }
   const executablePath = chromePath();
   if (executablePath) {
     launchOptions.executablePath = executablePath;

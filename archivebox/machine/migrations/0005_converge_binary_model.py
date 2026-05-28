@@ -23,8 +23,8 @@ def converge_binary_table(apps, schema_editor):
         print("✓ Dropping machine_installedbinary table (0.8.6rc0 divergence)")
         cursor.execute("DROP TABLE IF EXISTS machine_installedbinary")
 
-    # Create Binary table if it doesn't exist
-    # This handles the case where 0.8.6rc0's 0001_initial didn't create it
+    # Create Binary table if it doesn't exist.
+    # This handles the case where 0.8.6rc0's 0001_initial didn't create it.
     if "machine_binary" not in existing_tables:
         print("✓ Creating machine_binary table with correct schema")
         cursor.execute("""
@@ -56,6 +56,28 @@ def converge_binary_table(apps, schema_editor):
         print("✓ machine_binary table created")
     else:
         print("✓ machine_binary table already exists")
+        cursor.execute("PRAGMA table_info(machine_binary)")
+        binary_cols = {row[1] for row in cursor.fetchall()}
+
+        # Old 0.8.x data dirs already have machine_binary, but with the
+        # pre-abxpkg shape. Converge it here before later migrations and
+        # runtime code expect Binary.binproviders / Binary.status to exist.
+        if "binproviders" not in binary_cols:
+            cursor.execute("ALTER TABLE machine_binary ADD COLUMN binproviders VARCHAR(255) NOT NULL DEFAULT 'env'")
+        if "overrides" not in binary_cols:
+            cursor.execute("ALTER TABLE machine_binary ADD COLUMN overrides TEXT NOT NULL DEFAULT '{}'")
+        if "status" not in binary_cols:
+            cursor.execute("ALTER TABLE machine_binary ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'installed'")
+        if "retry_at" not in binary_cols:
+            cursor.execute("ALTER TABLE machine_binary ADD COLUMN retry_at DATETIME NULL")
+        if "output_dir" not in binary_cols:
+            cursor.execute("ALTER TABLE machine_binary ADD COLUMN output_dir VARCHAR(255) NOT NULL DEFAULT ''")
+
+        cursor.execute(
+            "UPDATE machine_binary SET binproviders = COALESCE(NULLIF(binproviders, ''), COALESCE(NULLIF(binprovider, ''), 'env'))",
+        )
+        cursor.execute("UPDATE machine_binary SET overrides = COALESCE(NULLIF(overrides, ''), '{}')")
+        cursor.execute("UPDATE machine_binary SET status = COALESCE(NULLIF(status, ''), 'installed')")
 
 
 class Migration(migrations.Migration):

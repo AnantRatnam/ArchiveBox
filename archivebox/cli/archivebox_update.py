@@ -102,6 +102,7 @@ def reindex_snapshots(
     search_plugins: list[str],
     batch_size: int,
     collect_ids: bool = False,
+    wait_for_turn=None,
 ) -> dict[str, Any]:
     from archivebox.cli.archivebox_extract import run_plugins
 
@@ -114,6 +115,8 @@ def reindex_snapshots(
     def run_batch() -> None:
         if not records:
             return
+        if wait_for_turn:
+            wait_for_turn()
         batch_records = list(records)
         # Index-only backfill intentionally queues only search ArchiveResult
         # rows. The extract runner bumps Snapshot.retry_at so the orchestrator
@@ -201,11 +204,15 @@ def update(
 
     setup_django()
     from archivebox.machine.models import Process
-    from archivebox.core.shutdown_util import foreground_parent_watchdog
-    from archivebox.services.supervision_service import current_command, ensure_daemon_stack
+    from archivebox.core.shutdown_util import foreground_parent_watchdog, foreground_shutdown_signals
+    from archivebox.services.supervision_service import current_command, ensure_daemon_stack, standby_until_runtime_stack_needed
     from archivebox.workers.supervisord_util import stop_existing_supervisord_process
 
     command = current_command(Process.TypeChoices.UPDATE, data_dir=CONSTANTS.DATA_DIR)
+
+    def wait_for_turn() -> None:
+        standby_until_runtime_stack_needed(command, data_dir=CONSTANTS.DATA_DIR)
+
     is_filtered_update = any(
         (
             filter_patterns,
@@ -229,10 +236,11 @@ def update(
         # Run migrations first to ensure DB schema is up-to-date
         print("[*] Checking for pending migrations...")
         check_migrations(auto_apply=True)
+        wait_for_turn()
         if stop_daemon_stack:
             stop_existing_supervisord_process()
 
-        with foreground_parent_watchdog():
+        with foreground_shutdown_signals(), foreground_parent_watchdog():
             while True:
                 do_migrate = migrate_only or not index_only
                 do_index = index_only or not migrate_only
@@ -269,6 +277,7 @@ def update(
                             resume=resume,
                             batch_size=batch_size,
                             queue_for_archiving=do_run_until_idle,
+                            wait_for_turn=wait_for_turn,
                         )
                         print_stats(stats)
                         touched_snapshot_ids.update(stats.get("snapshot_ids", []))
@@ -282,7 +291,11 @@ def update(
                         )
 
                         print("[*] Phase 2: Processing all database snapshots (most recent first)...")
-                        stats_combined["phase2"] = process_all_db_snapshots(batch_size=batch_size, resume=resume)
+                        stats_combined["phase2"] = process_all_db_snapshots(
+                            batch_size=batch_size,
+                            resume=resume,
+                            wait_for_turn=wait_for_turn,
+                        )
                         print_combined_stats(stats_combined)
 
                 if do_index:
@@ -311,6 +324,7 @@ def update(
                             search_plugins=search_plugins,
                             batch_size=batch_size,
                             collect_ids=is_filtered_update,
+                            wait_for_turn=wait_for_turn,
                         )
                         print_index_stats(stats)
                         touched_snapshot_ids.update(stats.get("snapshot_ids", []))
@@ -540,7 +554,7 @@ def drain_old_archive_dirs(resume_from: str | None = None, batch_size: int = 100
     return stats
 
 
-def process_all_db_snapshots(batch_size: int = 100, resume: str | None = None) -> dict[str, int]:
+def process_all_db_snapshots(batch_size: int = 100, resume: str | None = None, wait_for_turn=None) -> dict[str, int]:
     """
     O(n) scan over entire DB from most recent to least recent.
 
@@ -577,6 +591,8 @@ def process_all_db_snapshots(batch_size: int = 100, resume: str | None = None) -
         updated = 0
         checked = 0
         while True:
+            if wait_for_turn:
+                wait_for_turn()
             ids = list(rows.order_by("-timestamp").values_list("id", flat=True)[:batch_size])
             if not ids:
                 if updated:
@@ -614,6 +630,8 @@ def process_all_db_snapshots(batch_size: int = 100, resume: str | None = None) -
     def queue_stale_fs_batch() -> None:
         if not stale_batch:
             return
+        if wait_for_turn:
+            wait_for_turn()
         now = timezone.now()
         snapshot_ids = [snapshot_id for snapshot_id, _crawl_id, _timestamp in stale_batch]
         # Do not bump fs_version here. The orchestrator calls Snapshot.save(),
@@ -676,6 +694,7 @@ def process_filtered_snapshots(
     resume: str | None,
     batch_size: int,
     queue_for_archiving: bool = True,
+    wait_for_turn=None,
 ) -> dict[str, Any]:
     """Process snapshots matching filters (DB query only)."""
     from archivebox.core.models import Snapshot
@@ -703,6 +722,8 @@ def process_filtered_snapshots(
     print(f"[*] Found {total} matching snapshots")
 
     for snapshot in snapshots.select_related("crawl").paged_iterator(chunk_size=batch_size):
+        if wait_for_turn and stats["processed"] % batch_size == 0:
+            wait_for_turn()
         stats["processed"] += 1
 
         # Skip snapshots with missing crawl references
@@ -815,7 +836,10 @@ def print_index_stats(stats: dict[str, Any]) -> None:
 @click.argument("filter_patterns", nargs=-1)
 @docstring(update.__doc__)
 def main(**kwargs):
-    update(**kwargs)
+    from archivebox.core.shutdown_util import foreground_parent_watchdog, foreground_shutdown_signals
+
+    with foreground_shutdown_signals(), foreground_parent_watchdog():
+        update(**kwargs)
 
 
 if __name__ == "__main__":
