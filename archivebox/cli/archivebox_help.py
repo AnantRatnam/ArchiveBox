@@ -2,12 +2,33 @@
 __package__ = "archivebox.cli"
 __command__ = "archivebox help"
 
+import ast
+import importlib.util
 import os
 from pathlib import Path
 
 import click
 from rich import print
 from rich.panel import Panel
+
+
+def _command_doc(cmd: str, import_path: str) -> str:
+    modname, _ = import_path.rsplit(".", 1)
+    spec = importlib.util.find_spec(modname)
+    if spec is None or spec.origin is None:
+        return ""
+
+    try:
+        tree = ast.parse(Path(spec.origin).read_text())
+    except OSError:
+        return ""
+
+    for name in (cmd, "main"):
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name == name:
+                return (ast.get_docstring(node) or "").splitlines()[0]
+
+    return (ast.get_docstring(tree) or "").splitlines()[0]
 
 
 def help() -> None:
@@ -22,16 +43,12 @@ def help() -> None:
     log_cli_command("help", [], None, ".")
 
     COMMANDS_HELP_TEXT = (
-        "\n    ".join(
-            f"[green]{cmd.ljust(20)}[/green] {ArchiveBoxGroup._lazy_load(cmd).__doc__}" for cmd in ArchiveBoxGroup.meta_commands.keys()
-        )
+        "\n    ".join(f"[green]{cmd.ljust(20)}[/green] {_command_doc(cmd, path)}" for cmd, path in ArchiveBoxGroup.meta_commands.items())
+        + "\n\n    "
+        + "\n    ".join(f"[green]{cmd.ljust(20)}[/green] {_command_doc(cmd, path)}" for cmd, path in ArchiveBoxGroup.setup_commands.items())
         + "\n\n    "
         + "\n    ".join(
-            f"[green]{cmd.ljust(20)}[/green] {ArchiveBoxGroup._lazy_load(cmd).__doc__}" for cmd in ArchiveBoxGroup.setup_commands.keys()
-        )
-        + "\n\n    "
-        + "\n    ".join(
-            f"[green]{cmd.ljust(20)}[/green] {ArchiveBoxGroup._lazy_load(cmd).__doc__}" for cmd in ArchiveBoxGroup.archive_commands.keys()
+            f"[green]{cmd.ljust(20)}[/green] {_command_doc(cmd, path)}" for cmd, path in ArchiveBoxGroup.archive_commands.items()
         )
     )
 

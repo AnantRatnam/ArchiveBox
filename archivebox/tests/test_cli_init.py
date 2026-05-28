@@ -14,7 +14,7 @@ from archivebox.config.common import get_config
 from archivebox.core.models import ArchiveResult, Snapshot
 from archivebox.crawls.models import Crawl
 from archivebox.machine.models import Machine
-from archivebox.tests.orm_helpers import use_archivebox_db
+from archivebox.tests.test_orm_helpers import use_archivebox_db
 
 pytestmark = pytest.mark.django_db(transaction=True)
 

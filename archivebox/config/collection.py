@@ -2,13 +2,12 @@ __package__ = "archivebox.config"
 
 import os
 
-from benedict import benedict
-
 from archivebox.config.constants import CONSTANTS
 from archivebox.config.configset import CaseConfigParser
+from archivebox.misc.logging import AttrDict
 
 
-def write_config_file(config: dict[str, str]) -> benedict:
+def write_config_file(config: dict[str, str]) -> AttrDict:
     """load the ini-formatted config file from DATA_DIR/Archivebox.conf"""
 
     from archivebox.config.common import get_all_configs
@@ -64,7 +63,7 @@ def write_config_file(config: dict[str, str]) -> benedict:
         else:
             existing_config = {}
 
-        config_file[section_name] = benedict({**existing_config, key: val})
+        config_file[section_name] = AttrDict({**existing_config, key: val})
 
     with open(config_path, "w+", encoding="utf-8") as new:
         config_file.write(new)
@@ -85,4 +84,4 @@ def write_config_file(config: dict[str, str]) -> benedict:
     if os.access(f"{config_path}.bak", os.F_OK):
         os.remove(f"{config_path}.bak")
 
-    return benedict({key.upper(): updated_config.get(key.upper()) for key in config.keys()})
+    return AttrDict({key.upper(): updated_config.get(key.upper()) for key in config.keys()})

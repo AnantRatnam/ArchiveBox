@@ -1703,9 +1703,24 @@ class TestPublicIndexSearch:
         public_crawl = Crawl.objects.create(urls="https://public.example", created_by=admin_user, config={"PERMISSIONS": "public"})
         unlisted_crawl = Crawl.objects.create(urls="https://unlisted.example", created_by=admin_user, config={"PERMISSIONS": "unlisted"})
         private_crawl = Crawl.objects.create(urls="https://private.example", created_by=admin_user, config={"PERMISSIONS": "private"})
-        Snapshot.objects.create(url="https://public.example", title="Public Snapshot", crawl=public_crawl, status=Snapshot.StatusChoices.SEALED)
-        Snapshot.objects.create(url="https://unlisted.example", title="Unlisted Snapshot", crawl=unlisted_crawl, status=Snapshot.StatusChoices.SEALED)
-        Snapshot.objects.create(url="https://private.example", title="Private Snapshot", crawl=private_crawl, status=Snapshot.StatusChoices.SEALED)
+        Snapshot.objects.create(
+            url="https://public.example",
+            title="Public Snapshot",
+            crawl=public_crawl,
+            status=Snapshot.StatusChoices.SEALED,
+        )
+        Snapshot.objects.create(
+            url="https://unlisted.example",
+            title="Unlisted Snapshot",
+            crawl=unlisted_crawl,
+            status=Snapshot.StatusChoices.SEALED,
+        )
+        Snapshot.objects.create(
+            url="https://private.example",
+            title="Private Snapshot",
+            crawl=private_crawl,
+            status=Snapshot.StatusChoices.SEALED,
+        )
 
         response = client.get("/public/", HTTP_HOST=PUBLIC_HOST)
 
@@ -1720,7 +1735,11 @@ class TestPublicIndexSearch:
 
         unlisted_crawl = Crawl.objects.create(urls="https://unlisted.example", created_by=admin_user, config={"PERMISSIONS": "unlisted"})
         private_crawl = Crawl.objects.create(urls="https://private.example", created_by=admin_user, config={"PERMISSIONS": "private"})
-        unlisted_snapshot = Snapshot.objects.create(url="https://unlisted.example", crawl=unlisted_crawl, status=Snapshot.StatusChoices.SEALED)
+        unlisted_snapshot = Snapshot.objects.create(
+            url="https://unlisted.example",
+            crawl=unlisted_crawl,
+            status=Snapshot.StatusChoices.SEALED,
+        )
         private_snapshot = Snapshot.objects.create(url="https://private.example", crawl=private_crawl, status=Snapshot.StatusChoices.SEALED)
 
         unlisted_response = client.get(f"/snapshot/{unlisted_snapshot.id}/", HTTP_HOST=WEB_HOST)

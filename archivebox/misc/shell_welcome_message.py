@@ -13,13 +13,13 @@ import pydantic  # noqa
 import requests  # noqa
 import subprocess  # noqa
 import archivebox
-from benedict import benedict  # noqa
 from django.utils import timezone  # noqa
 from datetime import datetime, timedelta  # noqa
 
 from archivebox import CONSTANTS  # noqa
 from archivebox.cli import *  # noqa
 from archivebox.config.common import get_config
+from archivebox.misc.logging import AttrDict  # noqa
 
 
 if __name__ == "__main__":
@@ -34,10 +34,11 @@ if __name__ == "__main__":
     prnt = lambda *args, **kwargs: console.print(*args, overflow="ellipsis", soft_wrap=True, **kwargs)
 
     # print the welcome message
-    prnt("[green]import re, os, sys, psutil, subprocess, requests, json, pydantic, benedict, django[/]")
+    prnt("[green]import re, os, sys, psutil, subprocess, requests, json, pydantic, django[/]")
     prnt("[yellow4]# ArchiveBox Imports[/]")
     prnt("[yellow4]import archivebox[/]")
     prnt("[yellow4]from archivebox.cli import *[/]")
+    prnt("[yellow4]from archivebox.misc.logging import AttrDict[/]")
     prnt()
 
     if console.width >= 80:

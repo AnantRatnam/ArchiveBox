@@ -4,15 +4,19 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('crawls', '0014_crawl_persona_fk'),
+        ("crawls", "0014_crawl_persona_fk"),
     ]
 
     operations = [
         migrations.AlterField(
-            model_name='crawl',
-            name='status',
-            field=models.CharField(choices=[('queued', 'Queued'), ('started', 'Started'), ('paused', 'Paused'), ('sealed', 'Sealed')], db_index=True, default='queued', max_length=15),
+            model_name="crawl",
+            name="status",
+            field=models.CharField(
+                choices=[("queued", "Queued"), ("started", "Started"), ("paused", "Paused"), ("sealed", "Sealed")],
+                db_index=True,
+                default="queued",
+                max_length=15,
+            ),
         ),
     ]

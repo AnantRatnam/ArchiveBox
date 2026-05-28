@@ -980,7 +980,7 @@ class PublicIndexView(ListView):
             self.request.GET.get("q")
             and get_search_mode_base(search_mode, config=runtime_config) == "deep"
             and search_mode_backend
-            and getattr(context.get("paginator"), "count", 0) == 0
+            and getattr(context.get("paginator"), "count", 0) == 0,
         )
         for snapshot in context.get("object_list") or ():
             snapshot._icons_compact = True
@@ -991,22 +991,19 @@ class PublicIndexView(ListView):
         return context
 
     def get_queryset(self, **kwargs):
-        qs = (
-            public_snapshots_queryset(super().get_queryset(**kwargs))
-            .prefetch_related(
-                Prefetch("crawl", queryset=Crawl.objects.select_related("created_by")),
-                "tags",
-                Prefetch(
-                    "archiveresult_set",
-                    queryset=ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.SUCCEEDED).only(
-                        "id",
-                        "snapshot_id",
-                        "plugin",
-                        "status",
-                        "output_size",
-                    ),
+        qs = public_snapshots_queryset(super().get_queryset(**kwargs)).prefetch_related(
+            Prefetch("crawl", queryset=Crawl.objects.select_related("created_by")),
+            "tags",
+            Prefetch(
+                "archiveresult_set",
+                queryset=ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.SUCCEEDED).only(
+                    "id",
+                    "snapshot_id",
+                    "plugin",
+                    "status",
+                    "output_size",
                 ),
-            )
+            ),
         )
         query = self.request.GET.get("q", default="").strip()
 
@@ -1292,10 +1289,14 @@ class AddView(UserPassesTestMixin, FormView):
 
 class WebAddView(AddView):
     def _latest_snapshot_for_url(self, requested_url: str):
-        return direct_snapshots_queryset(
-            self.request,
-            SnapshotView.find_snapshots_for_url(requested_url),
-        ).order_by("-bookmarked_at", "-created_at", "-timestamp").first()
+        return (
+            direct_snapshots_queryset(
+                self.request,
+                SnapshotView.find_snapshots_for_url(requested_url),
+            )
+            .order_by("-bookmarked_at", "-created_at", "-timestamp")
+            .first()
+        )
 
     def _normalize_add_url(self, requested_url: str) -> str:
         if requested_url.startswith(("http://", "https://")):
@@ -1673,7 +1674,10 @@ def live_progress_view(request):
         }
         active_crawls_list = sorted(
             {str(crawl["id"]): crawl for crawl in active_crawl_candidates}.values(),
-            key=lambda crawl: (crawl_status_priority.get(crawl["status"], 9), -(crawl["modified_at"].timestamp() if crawl["modified_at"] else 0)),
+            key=lambda crawl: (
+                crawl_status_priority.get(crawl["status"], 9),
+                -(crawl["modified_at"].timestamp() if crawl["modified_at"] else 0),
+            ),
         )[:max_progress_crawls]
         for crawl in active_crawls_list:
             crawl["id"] = str(crawl["id"])
@@ -1697,8 +1701,7 @@ def live_progress_view(request):
                 persona_details_by_name[persona.name] = persona_details
         active_crawl_ids = [crawl["id"] for crawl in active_crawls_list]
         active_crawl_objects = {
-            str(crawl.id): crawl
-            for crawl in Crawl.objects.filter(id__in=active_crawl_ids).select_related("created_by")
+            str(crawl.id): crawl for crawl in Crawl.objects.filter(id__in=active_crawl_ids).select_related("created_by")
         }
         snapshot_counts_by_crawl: dict[str, dict[str, int]] = {str(crawl_id): {} for crawl_id in active_crawl_ids}
         cancelled_snapshot_counts_by_crawl: dict[str, int] = {str(crawl_id): 0 for crawl_id in active_crawl_ids}
@@ -2030,7 +2033,9 @@ def live_progress_view(request):
                         live_preview_stat = None
                     if live_preview_stat and live_preview_stat.st_size > 0:
                         token = SCREENCAST_SIGNER.sign(str(snapshot["id"]))
-                        snapshot_screencast_url = f"/admin/live-progress/screencast/{snapshot['id']}.jpg?v={live_preview_stat.st_mtime_ns}&token={quote(token)}"
+                        snapshot_screencast_url = (
+                            f"/admin/live-progress/screencast/{snapshot['id']}.jpg?v={live_preview_stat.st_mtime_ns}&token={quote(token)}"
+                        )
                         snapshot_screencast_link = snapshot_view_url(snapshot)
 
                 def plugin_sort_key(ar):
@@ -2191,7 +2196,9 @@ def live_progress_view(request):
             # Check if retry_at is in the future (would prevent worker from claiming)
             retry_at_future = crawl["retry_at"] > now if crawl["retry_at"] else False
             is_paused = active_crawl_objects[crawl_id].is_paused
-            seconds_until_retry = 0 if is_paused else int((crawl["retry_at"] - now).total_seconds()) if crawl["retry_at"] and retry_at_future else 0
+            seconds_until_retry = (
+                0 if is_paused else int((crawl["retry_at"] - now).total_seconds()) if crawl["retry_at"] and retry_at_future else 0
+            )
             crawl_worker_state = (
                 "running"
                 if crawl_process_pids.get(crawl_id)

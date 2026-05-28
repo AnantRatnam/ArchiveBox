@@ -132,7 +132,7 @@ Bases: {py:obj}`rich.highlighter.Highlighter`
 ````{py:data} DEFAULT_CLI_COLORS
 :canonical: archivebox.misc.logging.DEFAULT_CLI_COLORS
 :value: >
-   'benedict(...)'
+   'AttrDict(...)'
 
 ```{autodoc2-docstring} archivebox.misc.logging.DEFAULT_CLI_COLORS
 ```
@@ -142,7 +142,7 @@ Bases: {py:obj}`rich.highlighter.Highlighter`
 ````{py:data} ANSI
 :canonical: archivebox.misc.logging.ANSI
 :value: >
-   'benedict(...)'
+   'AttrDict(...)'
 
 ```{autodoc2-docstring} archivebox.misc.logging.ANSI
 ```
@@ -159,21 +159,21 @@ Bases: {py:obj}`rich.highlighter.Highlighter`
 
 ````
 
-````{py:function} stdout(*args, color: typing.Optional[str] = None, prefix: str = '', config: typing.Optional[benedict.benedict] = None) -> None
+````{py:function} stdout(*args, color: typing.Optional[str] = None, prefix: str = '', config: typing.Optional[archivebox.misc.logging.AttrDict] = None) -> None
 :canonical: archivebox.misc.logging.stdout
 
 ```{autodoc2-docstring} archivebox.misc.logging.stdout
 ```
 ````
 
-````{py:function} stderr(*args, color: typing.Optional[str] = None, prefix: str = '', config: typing.Optional[benedict.benedict] = None) -> None
+````{py:function} stderr(*args, color: typing.Optional[str] = None, prefix: str = '', config: typing.Optional[archivebox.misc.logging.AttrDict] = None) -> None
 :canonical: archivebox.misc.logging.stderr
 
 ```{autodoc2-docstring} archivebox.misc.logging.stderr
 ```
 ````
 
-````{py:function} hint(text: typing.Union[typing.Tuple[str, ...], typing.List[str], str], prefix='    ', config: typing.Optional[benedict.benedict] = None) -> None
+````{py:function} hint(text: typing.Union[typing.Tuple[str, ...], typing.List[str], str], prefix='    ', config: typing.Optional[archivebox.misc.logging.AttrDict] = None) -> None
 :canonical: archivebox.misc.logging.hint
 
 ```{autodoc2-docstring} archivebox.misc.logging.hint

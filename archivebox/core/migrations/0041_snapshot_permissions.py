@@ -5,15 +5,19 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('core', '0040_archiveresult_delete_at_snapshot_delete_at'),
+        ("core", "0040_archiveresult_delete_at_snapshot_delete_at"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='snapshot',
-            name='permissions',
-            field=models.GeneratedField(db_index=True, db_persist=True, expression=django.db.models.fields.json.KeyTextTransform('PERMISSIONS', 'config'), output_field=models.CharField(max_length=16, null=True)),
+            model_name="snapshot",
+            name="permissions",
+            field=models.GeneratedField(
+                db_index=True,
+                db_persist=True,
+                expression=django.db.models.fields.json.KeyTextTransform("PERMISSIONS", "config"),
+                output_field=models.CharField(max_length=16, null=True),
+            ),
         ),
     ]

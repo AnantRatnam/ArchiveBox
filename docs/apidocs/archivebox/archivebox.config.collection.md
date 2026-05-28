@@ -66,14 +66,14 @@
 ```
 ````
 
-````{py:function} load_config_val(key: str, default: typing.Any = None, type: typing.Optional[typing.Type] = None, aliases: typing.Optional[typing.Tuple[str, ...]] = None, config: typing.Optional[benedict.benedict] = None, env_vars: typing.Optional[os._Environ] = None, config_file_vars: typing.Optional[typing.Dict[str, str]] = None) -> typing.Any
+````{py:function} load_config_val(key: str, default: typing.Any = None, type: typing.Optional[typing.Type] = None, aliases: typing.Optional[typing.Tuple[str, ...]] = None, config: typing.Optional[archivebox.misc.logging.AttrDict] = None, env_vars: typing.Optional[os._Environ] = None, config_file_vars: typing.Optional[typing.Dict[str, str]] = None) -> typing.Any
 :canonical: archivebox.config.collection.load_config_val
 
 ```{autodoc2-docstring} archivebox.config.collection.load_config_val
 ```
 ````
 
-````{py:function} load_config_file() -> typing.Optional[benedict.benedict]
+````{py:function} load_config_file() -> typing.Optional[archivebox.misc.logging.AttrDict]
 :canonical: archivebox.config.collection.load_config_file
 
 ```{autodoc2-docstring} archivebox.config.collection.load_config_file
@@ -127,14 +127,14 @@
 ```
 ````
 
-````{py:function} write_config_file(config: typing.Dict[str, str]) -> benedict.benedict
+````{py:function} write_config_file(config: typing.Dict[str, str]) -> archivebox.misc.logging.AttrDict
 :canonical: archivebox.config.collection.write_config_file
 
 ```{autodoc2-docstring} archivebox.config.collection.write_config_file
 ```
 ````
 
-````{py:function} load_config(defaults: typing.Dict[str, typing.Any], config: typing.Optional[benedict.benedict] = None, out_dir: typing.Optional[str] = None, env_vars: typing.Optional[os._Environ] = None, config_file_vars: typing.Optional[typing.Dict[str, str]] = None) -> benedict.benedict
+````{py:function} load_config(defaults: typing.Dict[str, typing.Any], config: typing.Optional[archivebox.misc.logging.AttrDict] = None, out_dir: typing.Optional[str] = None, env_vars: typing.Optional[os._Environ] = None, config_file_vars: typing.Optional[typing.Dict[str, str]] = None) -> archivebox.misc.logging.AttrDict
 :canonical: archivebox.config.collection.load_config
 
 ```{autodoc2-docstring} archivebox.config.collection.load_config

@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from archivebox.core.models import Snapshot
-from archivebox.tests.orm_helpers import use_archivebox_db
+from archivebox.tests.test_orm_helpers import use_archivebox_db
 
 pytestmark = pytest.mark.django_db(transaction=True)
 

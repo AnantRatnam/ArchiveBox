@@ -163,4 +163,3 @@ def test_sonic_daemon_event_handler_requires_running_supervised_worker(monkeypat
             await bus.destroy()
 
     asyncio.run(run_test())
-

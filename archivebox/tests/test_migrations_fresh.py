@@ -15,7 +15,7 @@ from django.db.migrations.recorder import MigrationRecorder
 
 from archivebox.core.models import ArchiveResult, Snapshot, Tag
 from archivebox.crawls.models import Crawl
-from archivebox.tests.orm_helpers import use_archivebox_db
+from archivebox.tests.test_orm_helpers import use_archivebox_db
 
 from .migrations_helpers import run_archivebox
 

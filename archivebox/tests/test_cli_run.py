@@ -766,7 +766,12 @@ class TestRecoverOrchestratorStateRedFailureModes:
             status=Crawl.StatusChoices.SEALED,
             retry_at=None,
         )
-        snapshot = Snapshot.objects.create(url="https://blog.sweeting.me", crawl=crawl, status=Snapshot.StatusChoices.QUEUED, retry_at=future)
+        snapshot = Snapshot.objects.create(
+            url="https://blog.sweeting.me",
+            crawl=crawl,
+            status=Snapshot.StatusChoices.QUEUED,
+            retry_at=future,
+        )
 
         recover_orchestrator_state()
 
@@ -813,7 +818,12 @@ class TestRecoverOrchestratorStateRedFailureModes:
             status=Crawl.StatusChoices.STARTED,
             retry_at=None,
         )
-        snapshot = Snapshot.objects.create(url="https://www.mathjax.org/", crawl=crawl, status=Snapshot.StatusChoices.STARTED, retry_at=None)
+        snapshot = Snapshot.objects.create(
+            url="https://www.mathjax.org/",
+            crawl=crawl,
+            status=Snapshot.StatusChoices.STARTED,
+            retry_at=None,
+        )
         result = ArchiveResult.objects.create(
             snapshot=snapshot,
             plugin="title",

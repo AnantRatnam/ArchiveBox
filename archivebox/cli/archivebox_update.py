@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 
 __package__ = "archivebox.cli"
 
@@ -12,17 +13,18 @@ from collections.abc import Iterable
 from pathlib import Path
 
 import rich_click as click
-from django.core.exceptions import ObjectDoesNotExist
-from django.db.models import QuerySet
 
 from archivebox.misc.util import enforce_types, docstring
 
 if TYPE_CHECKING:
+    from django.db.models import QuerySet
     from archivebox.core.models import Snapshot
     from archivebox.crawls.models import Crawl
 
 
-def _get_snapshot_crawl(snapshot: "Snapshot") -> "Crawl | None":
+def _get_snapshot_crawl(snapshot: Snapshot) -> Crawl | None:
+    from django.core.exceptions import ObjectDoesNotExist
+
     try:
         return snapshot.crawl
     except ObjectDoesNotExist:
@@ -95,7 +97,7 @@ def _build_filtered_snapshots_queryset(
 
 
 def reindex_snapshots(
-    snapshots: QuerySet["Snapshot", "Snapshot"],
+    snapshots: QuerySet[Snapshot, Snapshot],
     *,
     search_plugins: list[str],
     batch_size: int,
@@ -233,7 +235,19 @@ def update(
             do_run_until_idle = do_migrate or do_index
 
             if do_migrate:
-                if filter_patterns or status or url__icontains or url__istartswith or tag or crawl_id or limit or sort or search or before or after:
+                if (
+                    filter_patterns
+                    or status
+                    or url__icontains
+                    or url__istartswith
+                    or tag
+                    or crawl_id
+                    or limit
+                    or sort
+                    or search
+                    or before
+                    or after
+                ):
                     print("[*] Processing filtered snapshots from database...")
                     stats = process_filtered_snapshots(
                         filter_patterns=filter_patterns,
@@ -355,7 +369,7 @@ def update(
         resume_cmd.extend(str(pattern) for pattern in filter_patterns)
         print("\n[red][X] archivebox update interrupted.[/red]")
         print("[yellow]Hint: resume this idempotent update with:[/yellow]")
-        print(f"    [green]{' '.join(shlex.quote(part) for part in resume_cmd)}[/green]")
+        print(f"    [green]{shlex.join(resume_cmd)}[/green]")
         raise SystemExit(130)
     finally:
         command.mark_exited()

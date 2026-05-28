@@ -13,7 +13,7 @@ import pytest
 from archivebox.core.models import Snapshot
 from archivebox.crawls.models import Crawl
 from archivebox.machine.models import Binary
-from archivebox.tests.orm_helpers import use_archivebox_db
+from archivebox.tests.test_orm_helpers import use_archivebox_db
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -171,8 +171,7 @@ def test_install_updates_binary_table(tmp_path, process):
 
     with use_archivebox_db(tmp_path):
         binary_counts = {
-            status: Binary.objects.filter(status=status).count()
-            for status in Binary.objects.values_list("status", flat=True).distinct()
+            status: Binary.objects.filter(status=status).count() for status in Binary.objects.values_list("status", flat=True).distinct()
         }
         snapshot_count = Snapshot.objects.count()
         sealed_crawls = Crawl.objects.filter(status="sealed").count()

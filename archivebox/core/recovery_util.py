@@ -182,17 +182,21 @@ def recover_orchestrator_state(*, include_chrome: bool = False) -> dict[str, int
         status__in=unfinished_archiveresult_statuses,
         process__status=Process.StatusChoices.RUNNING,
     )
-    unfinished_without_running_archiveresults = ArchiveResult.objects.filter(
-        snapshot_id=OuterRef("pk"),
-        status__in=[
-            ArchiveResult.StatusChoices.QUEUED,
-            ArchiveResult.StatusChoices.STARTED,
-            ArchiveResult.StatusChoices.BACKOFF,
-        ],
-    ).exclude(
-        status=ArchiveResult.StatusChoices.PAUSED,
-    ).exclude(
-        process__status=Process.StatusChoices.RUNNING,
+    unfinished_without_running_archiveresults = (
+        ArchiveResult.objects.filter(
+            snapshot_id=OuterRef("pk"),
+            status__in=[
+                ArchiveResult.StatusChoices.QUEUED,
+                ArchiveResult.StatusChoices.STARTED,
+                ArchiveResult.StatusChoices.BACKOFF,
+            ],
+        )
+        .exclude(
+            status=ArchiveResult.StatusChoices.PAUSED,
+        )
+        .exclude(
+            process__status=Process.StatusChoices.RUNNING,
+        )
     )
     active_child_snapshots = Snapshot.objects.filter(
         crawl_id=OuterRef("pk"),
@@ -314,7 +318,11 @@ def recover_orchestrator_state(*, include_chrome: bool = False) -> dict[str, int
     cleaned["unlocked_crawls"] = due_started_crawls.update(retry_at=now, modified_at=now)
     future_started_crawls = (
         Crawl.objects.filter(status=Crawl.StatusChoices.STARTED, retry_at__isnull=True)
-        .annotate(has_active_child=Exists(active_child_snapshots), has_due_child=Exists(due_child_snapshots), next_child_retry=next_future_child_retry)
+        .annotate(
+            has_active_child=Exists(active_child_snapshots),
+            has_due_child=Exists(due_child_snapshots),
+            next_child_retry=next_future_child_retry,
+        )
         .filter(has_active_child=True, has_due_child=False)
     )
     cleaned["unlocked_crawls"] += future_started_crawls.update(retry_at=Coalesce("next_child_retry", Value(now)), modified_at=now)

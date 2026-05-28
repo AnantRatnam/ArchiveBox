@@ -12,7 +12,7 @@ import pytest
 from archivebox.core.models import ArchiveResult, Snapshot
 from archivebox.crawls.models import Crawl
 from archivebox.machine.models import Process
-from archivebox.tests.orm_helpers import use_archivebox_db
+from archivebox.tests.test_orm_helpers import use_archivebox_db
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -90,13 +90,11 @@ def test_background_hooks_dont_block_parser_extractors(tmp_path, process, recurs
 
     assert wait_for_db_condition(
         timeout=120,
-        condition=lambda: (
-            ArchiveResult.objects.filter(
-                plugin__startswith="parse_",
-                plugin__endswith="_urls",
-                status__in=("started", "succeeded", "failed"),
-            ).exists()
-        ),
+        condition=lambda: ArchiveResult.objects.filter(
+            plugin__startswith="parse_",
+            plugin__endswith="_urls",
+            status__in=("started", "succeeded", "failed"),
+        ).exists(),
     ), "Parser extractors never progressed beyond queued status"
     stdout, stderr = stop_process(proc)
 
@@ -237,10 +235,7 @@ def test_recursive_crawl_creates_child_snapshots(tmp_path, process, recursive_te
     with use_archivebox_db(tmp_path):
         all_snapshots = list(Snapshot.objects.values_list("url", "depth"))
         root_snapshot = (
-            Snapshot.objects.filter(depth=0)
-            .order_by("created_at")
-            .values_list("id", "url", "depth", "parent_snapshot_id")
-            .first()
+            Snapshot.objects.filter(depth=0).order_by("created_at").values_list("id", "url", "depth", "parent_snapshot_id").first()
         )
         child_snapshots = list(Snapshot.objects.filter(depth=1).values_list("id", "url", "depth", "parent_snapshot_id"))
         crawl = Crawl.objects.order_by("-created_at").values_list("id", "max_depth").first()
@@ -351,7 +346,9 @@ def test_recursive_crawl_respects_max_urls(tmp_path, process, disable_extractors
         crawl_obj = Crawl.objects.order_by("-created_at").first()
         crawl = (crawl_obj.max_depth, crawl_obj.config["CRAWL_MAX_URLS"]) if crawl_obj else None
         snapshot_rows = list(Snapshot.objects.order_by("depth", "url").values_list("url", "depth", "parent_snapshot_id"))
-        depth_counts = {depth: Snapshot.objects.filter(depth=depth).count() for depth in set(Snapshot.objects.values_list("depth", flat=True))}
+        depth_counts = {
+            depth: Snapshot.objects.filter(depth=depth).count() for depth in set(Snapshot.objects.values_list("depth", flat=True))
+        }
 
     assert crawl == (2, 4)
     assert len(snapshot_rows) == 4
@@ -415,10 +412,7 @@ def test_recursive_crawl_depth_two_writes_real_outputs_and_process_records(tmp_p
         depth_counts = {depth: Snapshot.objects.filter(depth=depth).count() for depth in sorted(set(depths))}
         crawl = Crawl.objects.order_by("-created_at").values_list("id", "max_depth").first()
         root_snapshot = (
-            Snapshot.objects.filter(depth=0)
-            .order_by("created_at")
-            .values_list("id", "url", "depth", "parent_snapshot_id")
-            .first()
+            Snapshot.objects.filter(depth=0).order_by("created_at").values_list("id", "url", "depth", "parent_snapshot_id").first()
         )
         child_rows = list(Snapshot.objects.filter(depth=1).values_list("id", "url", "parent_snapshot_id"))
         deep_rows = list(Snapshot.objects.filter(depth=2).values_list("id", "url", "parent_snapshot_id"))
@@ -514,9 +508,7 @@ def test_root_snapshot_has_depth_zero(tmp_path, process, disable_extractors_dict
         ["archivebox", "add", "--depth=1", "--plugins=wget,parse_html_urls", recursive_test_site["root_url"]],
         env=env,
         timeout=120,
-        condition=lambda: (
-            Snapshot.objects.filter(url=recursive_test_site["root_url"]).count() >= 1
-        ),
+        condition=lambda: Snapshot.objects.filter(url=recursive_test_site["root_url"]).count() >= 1,
     )
 
     with use_archivebox_db(tmp_path):
@@ -545,13 +537,11 @@ def test_archiveresult_worker_queue_filters_by_foreground_extractors(tmp_path, p
         ["archivebox", "add", "--plugins=favicon,wget,parse_html_urls", recursive_test_site["root_url"]],
         env=env,
         timeout=120,
-        condition=lambda: (
-            ArchiveResult.objects.filter(
-                plugin__startswith="parse_",
-                plugin__endswith="_urls",
-                status__in=("started", "succeeded", "failed"),
-            ).exists()
-        ),
+        condition=lambda: ArchiveResult.objects.filter(
+            plugin__startswith="parse_",
+            plugin__endswith="_urls",
+            status__in=("started", "succeeded", "failed"),
+        ).exists(),
     )
 
     with use_archivebox_db(tmp_path):

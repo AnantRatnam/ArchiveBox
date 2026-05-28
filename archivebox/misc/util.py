@@ -1,11 +1,9 @@
 __package__ = "archivebox.misc"
 
 import re
-import requests
 import json as pyjson
 import http.cookiejar
 from decimal import Decimal, InvalidOperation
-from dateparser import parse as dateparser
 
 from typing import Any
 from collections.abc import Callable
@@ -18,17 +16,16 @@ from html import escape, unescape
 from datetime import datetime, timezone
 
 from base32_crockford import encode as base32_encode
-from w3lib.encoding import html_body_declared_encoding, http_content_type_encoding
-
-try:
-    import chardet  # type:ignore
-
-    detect_encoding = lambda rawdata: chardet.detect(rawdata)["encoding"]
-except ImportError:
-    detect_encoding = lambda rawdata: "utf-8"
-
 
 from .logging import COLOR_DICT
+
+
+def detect_encoding(rawdata):
+    try:
+        import chardet  # type:ignore
+    except ImportError:
+        return "utf-8"
+    return chardet.detect(rawdata)["encoding"]
 
 
 ### Parsing Helpers
@@ -374,6 +371,8 @@ def parse_date(date: Any) -> datetime | None:
         except ValueError:
             pass
 
+        from dateparser import parse as dateparser
+
         parsed_date = dateparser(normalized, settings={"TIMEZONE": "UTC"})
         if parsed_date is None:
             raise ValueError(f"Tried to parse invalid date string! {date}")
@@ -385,6 +384,9 @@ def parse_date(date: Any) -> datetime | None:
 @enforce_types
 def download_url(url: str, timeout: int | None = None, config=None, **config_kwargs) -> str:
     """Download the contents of a remote url and return the text"""
+
+    import requests
+    from w3lib.encoding import html_body_declared_encoding, http_content_type_encoding
 
     from archivebox.config.common import get_config
 
@@ -624,4 +626,3 @@ _test_url_strs = {
 }
 for url_str, num_urls in _test_url_strs.items():
     assert len(list(find_all_urls(url_str))) == num_urls, f"{url_str} does not contain {num_urls} urls"
-

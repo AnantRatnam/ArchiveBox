@@ -13,7 +13,6 @@ def clear_stale_persona_ids(apps, _schema_editor):
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("crawls", "0013_crawl_permissions"),
         ("personas", "0003_persona_permissions"),

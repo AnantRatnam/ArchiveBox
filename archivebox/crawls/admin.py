@@ -965,7 +965,11 @@ class CrawlScheduleAdmin(BaseModelAdmin):
 
     def snapshots(self, obj):
         crawl_ids = obj.crawl_set.values_list("pk", flat=True)
-        return render_snapshots_list(Snapshot.objects.filter(crawl_id__in=crawl_ids), request=getattr(self, "request", None), prefix="schedule_snapshots")
+        return render_snapshots_list(
+            Snapshot.objects.filter(crawl_id__in=crawl_ids),
+            request=getattr(self, "request", None),
+            prefix="schedule_snapshots",
+        )
 
 
 def register_admin(admin_site):

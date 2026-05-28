@@ -24,16 +24,20 @@ def clear_snapshot_output_size(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('core', '0041_snapshot_permissions'),
+        ("core", "0041_snapshot_permissions"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='snapshot',
-            name='output_size',
-            field=models.BigIntegerField(db_index=True, default=0, editable=False, help_text='Total bytes of all ArchiveResult output files'),
+            model_name="snapshot",
+            name="output_size",
+            field=models.BigIntegerField(
+                db_index=True,
+                default=0,
+                editable=False,
+                help_text="Total bytes of all ArchiveResult output files",
+            ),
         ),
         migrations.RunPython(backfill_snapshot_output_size, clear_snapshot_output_size),
     ]

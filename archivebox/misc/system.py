@@ -148,4 +148,3 @@ def get_dir_size(path: str | Path, recursive: bool = True, pattern: str | None =
         # e.g. FileNameTooLong or other error while trying to read dir
         pass
     return num_bytes, num_dirs, num_files
-

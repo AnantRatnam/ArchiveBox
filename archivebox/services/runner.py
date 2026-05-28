@@ -426,8 +426,7 @@ class CrawlRunner:
                     task_errors.append(err)
                     stop_scheduling = True
             if self.snapshot_tasks and (
-                await self.crawl_is_cancelled()
-                or (await self.crawl_is_paused() and not self.allow_paused_snapshot_maintenance)
+                await self.crawl_is_cancelled() or (await self.crawl_is_paused() and not self.allow_paused_snapshot_maintenance)
             ):
                 stop_scheduling = True
             if not stop_scheduling:
@@ -801,9 +800,7 @@ class CrawlRunner:
             cancel_watcher = asyncio.create_task(self.watch_for_cancelled_crawl(event))
             try:
                 try:
-                    if not await self.crawl_is_cancelled() and (
-                        not await self.crawl_is_paused() or self.allow_paused_snapshot_maintenance
-                    ):
+                    if not await self.crawl_is_cancelled() and (not await self.crawl_is_paused() or self.allow_paused_snapshot_maintenance):
                         await _run_event_now(
                             event.emit(
                                 CrawlSetupEvent(
@@ -816,9 +813,7 @@ class CrawlRunner:
                             ),
                             crawl_setup_phase_timeout,
                         )
-                    if not await self.crawl_is_cancelled() and (
-                        not await self.crawl_is_paused() or self.allow_paused_snapshot_maintenance
-                    ):
+                    if not await self.crawl_is_cancelled() and (not await self.crawl_is_paused() or self.allow_paused_snapshot_maintenance):
                         crawl_start_event = CrawlStartEvent(
                             url=snapshot["url"],
                             snapshot_id=snapshot["id"],
@@ -1125,9 +1120,7 @@ def run_due_crawl(crawl, *, lock_seconds: int) -> bool:
         from archivebox.core.models import Snapshot
 
         snapshot_count = crawl.snapshot_set.count()
-        due_nonsealed_snapshots = (
-            crawl.snapshot_set.filter(status=Snapshot.StatusChoices.QUEUED, retry_at__lte=timezone.now()).exists()
-        )
+        due_nonsealed_snapshots = crawl.snapshot_set.filter(status=Snapshot.StatusChoices.QUEUED, retry_at__lte=timezone.now()).exists()
         if snapshot_count and not due_nonsealed_snapshots:
             crawl.retry_at = None
             crawl.save(update_fields=["retry_at", "modified_at"])

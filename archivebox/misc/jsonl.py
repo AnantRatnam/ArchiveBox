@@ -163,4 +163,3 @@ def write_record(record: dict[str, Any], stream: TextIO | None = None) -> None:
     active_stream: TextIO = sys.stdout if stream is None else stream
     active_stream.write(json.dumps(record) + "\n")
     active_stream.flush()
-

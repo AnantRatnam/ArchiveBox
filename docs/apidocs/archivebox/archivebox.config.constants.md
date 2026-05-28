@@ -596,7 +596,7 @@ Bases: {py:obj}`collections.abc.Mapping`
 :canonical: archivebox.config.constants.ConstantsDict.DISABLED_CLI_COLORS
 :type: typing.Dict[str, str]
 :value: >
-   'benedict(...)'
+   'AttrDict(...)'
 
 ```{autodoc2-docstring} archivebox.config.constants.ConstantsDict.DISABLED_CLI_COLORS
 ```
@@ -689,15 +689,6 @@ Bases: {py:obj}`collections.abc.Mapping`
 
 ````
 
-````{py:method} __benedict__()
-:canonical: archivebox.config.constants.ConstantsDict.__benedict__
-:classmethod:
-
-```{autodoc2-docstring} archivebox.config.constants.ConstantsDict.__benedict__
-```
-
-````
-
 ````{py:method} __len__()
 :canonical: archivebox.config.constants.ConstantsDict.__len__
 :classmethod:
@@ -731,7 +722,7 @@ Bases: {py:obj}`collections.abc.Mapping`
 ````{py:data} CONSTANTS_CONFIG
 :canonical: archivebox.config.constants.CONSTANTS_CONFIG
 :value: >
-   '__benedict__(...)'
+   'AttrDict(...)'
 
 ```{autodoc2-docstring} archivebox.config.constants.CONSTANTS_CONFIG
 ```

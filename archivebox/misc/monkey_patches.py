@@ -4,7 +4,6 @@ __package__ = "archivebox"
 import datetime
 import warnings
 
-import benedict
 from daphne import access
 import django_stubs_ext
 from django.utils import timezone
@@ -79,9 +78,3 @@ class ModifiedAccessLogGenerator(access.AccessLogGenerator):
 
 
 access.AccessLogGenerator.write_entry = ModifiedAccessLogGenerator.write_entry  # type: ignore
-
-
-# fix benedict objects to pretty-print/repr more nicely with rich
-# https://stackoverflow.com/a/79048811/2156113
-# https://rich.readthedocs.io/en/stable/pretty.html#rich-repr-protocol
-benedict.benedict.__rich_repr__ = lambda self: (dict(self),)  # type: ignore

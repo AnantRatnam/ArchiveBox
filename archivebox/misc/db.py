@@ -86,7 +86,9 @@ def retry_sqlite_locks(action: Callable[[], Any], *, label: str, stderr: TextIO 
         else:
             console.print("[yellow]    No local process with index.sqlite3 open was visible to this user.[/yellow]")
         if attempts == 1:
-            console.print("[dim]    SQLite does not expose the active SQL statement from another process; only the owning local PIDs can be shown.[/dim]")
+            console.print(
+                "[dim]    SQLite does not expose the active SQL statement from another process; only the owning local PIDs can be shown.[/dim]",
+            )
         with console.status("[yellow]Waiting for SQLite database lock to clear...[/yellow]", spinner="dots"):
             time.sleep(5.0)
 
@@ -183,4 +185,3 @@ def apply_migrations(out_dir: Path = DATA_DIR, stdout: TextIO | None = None, std
         out1 = retry_sqlite_locks(migrate, label="applying migrations")
 
         return [line.strip() for line in out1.readlines() if line.strip()]
-

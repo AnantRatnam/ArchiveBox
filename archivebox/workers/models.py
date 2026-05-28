@@ -214,14 +214,19 @@ class BaseModelWithStateMachine(models.Model, MachineMixin):
                 return self.is_paused
             self.STATE = paused_state
             self.RETRY_AT = RETRY_AT_MAX
-            updated = type(self).objects.filter(pk=self.pk).exclude(
-                **{self.state_field_name + "__in": [*self.FINAL_STATES, paused_state]},
-            ).update(
-                **{
-                    self.state_field_name: paused_state,
-                    self.retry_at_field_name: RETRY_AT_MAX,
-                    "modified_at": timezone.now(),
-                },
+            updated = (
+                type(self)
+                .objects.filter(pk=self.pk)
+                .exclude(
+                    **{self.state_field_name + "__in": [*self.FINAL_STATES, paused_state]},
+                )
+                .update(
+                    **{
+                        self.state_field_name: paused_state,
+                        self.retry_at_field_name: RETRY_AT_MAX,
+                        "modified_at": timezone.now(),
+                    },
+                )
             )
             self.refresh_from_db()
             return updated == 1
@@ -243,15 +248,19 @@ class BaseModelWithStateMachine(models.Model, MachineMixin):
                 return self.STATE == self.StatusChoices.QUEUED
             self.STATE = self.StatusChoices.QUEUED
             self.RETRY_AT = when or timezone.now()
-            updated = type(self).objects.filter(
-                pk=self.pk,
-                **{self.state_field_name: paused_state},
-            ).update(
-                **{
-                    self.state_field_name: self.StatusChoices.QUEUED,
-                    self.retry_at_field_name: self.RETRY_AT,
-                    "modified_at": timezone.now(),
-                },
+            updated = (
+                type(self)
+                .objects.filter(
+                    pk=self.pk,
+                    **{self.state_field_name: paused_state},
+                )
+                .update(
+                    **{
+                        self.state_field_name: self.StatusChoices.QUEUED,
+                        self.retry_at_field_name: self.RETRY_AT,
+                        "modified_at": timezone.now(),
+                    },
+                )
             )
             self.refresh_from_db()
             return updated == 1

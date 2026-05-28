@@ -710,7 +710,7 @@ class ConfigEditorMixin(admin.ModelAdmin):
 
     def formfield_for_dbfield(
         self,
-        db_field: models.Field[object, object],
+        db_field: models.Field,
         request: HttpRequest,
         **kwargs: object,
     ) -> forms.Field | None:

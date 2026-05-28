@@ -11,8 +11,6 @@ from functools import cache
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from benedict import benedict
-
 from .permissions import SudoPermission, IS_ROOT, ARCHIVEBOX_USER, ARCHIVEBOX_GROUP
 
 if TYPE_CHECKING:
@@ -262,6 +260,7 @@ def get_or_create_working_lib_dir(autofix=True, quiet=False, config: "ArchiveBox
 def get_data_locations(config: "ArchiveBoxConfig | None" = None, **config_kwargs):
     from archivebox.config.constants import CONSTANTS
     from archivebox.config.common import get_config
+    from archivebox.misc.logging import AttrDict
 
     config = config or get_config(**config_kwargs)
     try:
@@ -269,7 +268,7 @@ def get_data_locations(config: "ArchiveBoxConfig | None" = None, **config_kwargs
     except Exception:
         tmp_dir = config.TMP_DIR
 
-    return benedict(
+    return AttrDict(
         {
             "DATA_DIR": {
                 "path": DATA_DIR.resolve(),
@@ -344,6 +343,7 @@ def get_data_locations(config: "ArchiveBoxConfig | None" = None, **config_kwargs
 def get_code_locations(config: "ArchiveBoxConfig | None" = None, **config_kwargs):
     from archivebox.config.constants import CONSTANTS
     from archivebox.config.common import get_config
+    from archivebox.misc.logging import AttrDict
 
     config = config or get_config(**config_kwargs)
     try:
@@ -353,7 +353,7 @@ def get_code_locations(config: "ArchiveBoxConfig | None" = None, **config_kwargs
 
     lib_bin_dir = lib_dir / "bin"
 
-    return benedict(
+    return AttrDict(
         {
             "PACKAGE_DIR": {
                 "path": (PACKAGE_DIR).resolve(),

@@ -156,7 +156,8 @@ def cli(ctx, help=False):
 
     # if the subcommand is in archive_commands or model_commands,
     # then we need to set up the django environment and check that we're in a valid data folder
-    if subcommand in ArchiveBoxGroup.archive_commands or subcommand in ArchiveBoxGroup.model_commands:
+    wants_help = any(arg in ("-h", "--help", "--version") for arg in sys.argv[1:])
+    if not wants_help and (subcommand in ArchiveBoxGroup.archive_commands or subcommand in ArchiveBoxGroup.model_commands):
         # print('SETUP DJANGO AND CHECK DATA FOLDER')
         try:
             if subcommand == "server":
@@ -171,7 +172,8 @@ def cli(ctx, help=False):
 
             setup_django()
             check_data_folder()
-            check_migrations(auto_apply=True)
+            if subcommand != "update":
+                check_migrations(auto_apply=True)
         except Exception as e:
             print(f"[red][X] Error setting up Django or checking data folder: {e}[/red]", file=sys.stderr)
             if subcommand not in ("manage", "shell"):  # not all management commands need django to be setup beforehand

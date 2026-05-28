@@ -2452,14 +2452,18 @@ class Process(ModelWithDeleteAfter, models.Model):
                 continue
 
             # If root is an active ArchiveBox command/orchestrator, keep it.
-            if root.process_type in (
-                cls.TypeChoices.ORCHESTRATOR,
-                cls.TypeChoices.SERVER,
-                cls.TypeChoices.UPDATE,
-                cls.TypeChoices.ADD,
-                cls.TypeChoices.SEARCH,
-                cls.TypeChoices.CLI,
-            ) and root.is_running:
+            if (
+                root.process_type
+                in (
+                    cls.TypeChoices.ORCHESTRATOR,
+                    cls.TypeChoices.SERVER,
+                    cls.TypeChoices.UPDATE,
+                    cls.TypeChoices.ADD,
+                    cls.TypeChoices.SEARCH,
+                    cls.TypeChoices.CLI,
+                )
+                and root.is_running
+            ):
                 continue
 
             proc.status = cls.StatusChoices.EXITED

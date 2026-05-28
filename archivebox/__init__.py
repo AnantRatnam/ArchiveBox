@@ -16,8 +16,6 @@ import sys
 from pathlib import Path
 from typing import Protocol, cast
 
-from abx_plugins import get_plugins_dir
-
 
 class _ReconfigurableStream(Protocol):
     def reconfigure(self, *, line_buffering: bool) -> object: ...
@@ -59,37 +57,64 @@ check_not_root()
 check_not_inside_source_dir()
 check_io_encoding()
 
-# Install monkey patches for third-party libraries
-from .misc.monkey_patches import *  # noqa
-
-# Plugin directories
-BUILTIN_PLUGINS_DIR = Path(get_plugins_dir()).resolve()
-USER_PLUGINS_DIR = (
-    Path(
-        os.environ.get("ARCHIVEBOX_USER_PLUGINS_DIR") or os.environ.get("USER_PLUGINS_DIR") or os.environ.get("DATA_DIR", os.getcwd()),
-    )
-    / "custom_plugins"
-)
-
-# These are kept for backwards compatibility with existing code
-# that checks for plugins. The new hook system uses discover_hooks()
-ALL_PLUGINS = {
-    "builtin": BUILTIN_PLUGINS_DIR,
-    "user": USER_PLUGINS_DIR,
-}
-LOADED_PLUGINS = ALL_PLUGINS
-
-# Setup basic config, constants, paths, and version
-from .config.constants import CONSTANTS  # noqa
-from .config.paths import PACKAGE_DIR, DATA_DIR  # noqa
 from .config.version import VERSION  # noqa
 
-# Set MACHINE_ID env var so hook scripts can use it
-os.environ.setdefault("MACHINE_ID", CONSTANTS.MACHINE_ID)
 
 __version__ = VERSION
 __author__ = "ArchiveBox"
 __license__ = "MIT"
+
+
+def __getattr__(name: str):
+    if name == "CONSTANTS":
+        from .config.constants import CONSTANTS
+
+        os.environ.setdefault("MACHINE_ID", CONSTANTS.MACHINE_ID)
+        return CONSTANTS
+    if name == "DATA_DIR":
+        from .config.paths import DATA_DIR
+
+        return DATA_DIR
+    if name == "VERSION":
+        return VERSION
+    if name in ("BUILTIN_PLUGINS_DIR", "USER_PLUGINS_DIR", "ALL_PLUGINS", "LOADED_PLUGINS"):
+        from abx_plugins import get_plugins_dir
+
+        builtin_plugins_dir = Path(get_plugins_dir()).resolve()
+        user_plugins_dir = (
+            Path(
+                os.environ.get("ARCHIVEBOX_USER_PLUGINS_DIR")
+                or os.environ.get("USER_PLUGINS_DIR")
+                or os.environ.get("DATA_DIR", os.getcwd()),
+            )
+            / "custom_plugins"
+        )
+        plugins = {
+            "builtin": builtin_plugins_dir,
+            "user": user_plugins_dir,
+        }
+        values = {
+            "BUILTIN_PLUGINS_DIR": builtin_plugins_dir,
+            "USER_PLUGINS_DIR": user_plugins_dir,
+            "ALL_PLUGINS": plugins,
+            "LOADED_PLUGINS": plugins,
+        }
+        return values[name]
+    raise AttributeError(name)
+
+
+__all__ = (
+    "ASCII_LOGO",
+    "ASCII_ICON",
+    "PACKAGE_DIR",
+    "DATA_DIR",
+    "CONSTANTS",
+    "VERSION",
+    "BUILTIN_PLUGINS_DIR",
+    "USER_PLUGINS_DIR",
+    "ALL_PLUGINS",
+    "LOADED_PLUGINS",
+)
 
 ASCII_ICON = """
 ██████████████████████████████████████████████████████████████████████████████████████████████████ 

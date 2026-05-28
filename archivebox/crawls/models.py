@@ -1455,7 +1455,12 @@ class CrawlMachine(BaseStateMachine):
     sealed = State(value=Crawl.StatusChoices.SEALED, final=True)
 
     # Tick Event (polled by workers)
-    tick = queued.to.itself(unless="can_start") | queued.to(started, cond="can_start") | started.to(sealed, cond="is_finished") | paused.to.itself()
+    tick = (
+        queued.to.itself(unless="can_start")
+        | queued.to(started, cond="can_start")
+        | started.to(sealed, cond="is_finished")
+        | paused.to.itself()
+    )
 
     # Manual event (triggered by last Snapshot sealing)
     seal = started.to(sealed)

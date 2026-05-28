@@ -7,7 +7,6 @@ import sys
 from collections import defaultdict
 from random import randint
 
-from benedict import benedict
 from rich.console import Console
 from rich.highlighter import Highlighter
 
@@ -19,6 +18,35 @@ STDERR = Console(stderr=True, width=32768, soft_wrap=True, force_terminal=True)
 IS_TTY = sys.stdout.isatty()
 
 
+class AttrDict(dict):
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+        self.update(*args, **kwargs)
+
+    @classmethod
+    def _wrap(cls, value):
+        if isinstance(value, dict) and not isinstance(value, AttrDict):
+            return cls(value)
+        if isinstance(value, list):
+            return [cls._wrap(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(cls._wrap(item) for item in value)
+        return value
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, self._wrap(value))
+
+    def update(self, *args, **kwargs):
+        for key, value in dict(*args, **kwargs).items():
+            self[key] = value
+
+    def __getattr__(self, key):
+        try:
+            return self[key]
+        except KeyError as err:
+            raise AttributeError(key) from err
+
+
 class RainbowHighlighter(Highlighter):
     def highlight(self, text):
         for index in range(len(text)):
@@ -28,7 +56,7 @@ class RainbowHighlighter(Highlighter):
 rainbow = RainbowHighlighter()
 
 
-DEFAULT_CLI_COLORS = benedict(
+DEFAULT_CLI_COLORS = AttrDict(
     {
         "reset": "\033[00;00m",
         "lightblue": "\033[01;30m",
@@ -41,7 +69,7 @@ DEFAULT_CLI_COLORS = benedict(
         "black": "\033[01;30m",
     },
 )
-ANSI = benedict({k: "" for k in DEFAULT_CLI_COLORS.keys()})
+ANSI = AttrDict({k: "" for k in DEFAULT_CLI_COLORS.keys()})
 
 COLOR_DICT = defaultdict(
     lambda: [(0, 0, 0), (0, 0, 0)],
@@ -60,7 +88,7 @@ COLOR_DICT = defaultdict(
 
 
 # Logging Helpers (DEPRECATED, use rich.print instead going forward)
-def stdout(*args, color: str | None = None, prefix: str = "", config: benedict | None = None) -> None:
+def stdout(*args, color: str | None = None, prefix: str = "", config: dict | None = None) -> None:
     ansi = DEFAULT_CLI_COLORS if (config or {}).get("USE_COLOR") else ANSI
 
     if color:
@@ -71,7 +99,7 @@ def stdout(*args, color: str | None = None, prefix: str = "", config: benedict |
     sys.stdout.write(prefix + "".join(strs))
 
 
-def stderr(*args, color: str | None = None, prefix: str = "", config: benedict | None = None) -> None:
+def stderr(*args, color: str | None = None, prefix: str = "", config: dict | None = None) -> None:
     ansi = DEFAULT_CLI_COLORS if (config or {}).get("USE_COLOR") else ANSI
 
     if color:
@@ -82,7 +110,7 @@ def stderr(*args, color: str | None = None, prefix: str = "", config: benedict |
     sys.stderr.write(prefix + "".join(strs))
 
 
-def hint(text: tuple[str, ...] | list[str] | str, prefix="    ", config: benedict | None = None) -> None:
+def hint(text: tuple[str, ...] | list[str] | str, prefix="    ", config: dict | None = None) -> None:
     ansi = DEFAULT_CLI_COLORS if (config or {}).get("USE_COLOR") else ANSI
 
     if isinstance(text, str):

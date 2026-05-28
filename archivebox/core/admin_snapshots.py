@@ -135,7 +135,7 @@ class SnapshotPermissionsListFilter(admin.SimpleListFilter):
             return queryset.filter(
                 Q(permissions=value)
                 | (Q(permissions__isnull=True) & Q(crawl__permissions=value))
-                | (Q(permissions__isnull=True) & Q(crawl__permissions__isnull=True) & persona_query)
+                | (Q(permissions__isnull=True) & Q(crawl__permissions__isnull=True) & persona_query),
             )
         return queryset
 
@@ -342,14 +342,20 @@ class SnapshotChangeList(SearchResultsChangeList):
         super().__init__(request, *args, **kwargs)
         resolver_name = getattr(getattr(request, "resolver_match", None), "url_name", "")
         self.embedded_changelist = request.GET.get("_embedded") == "crawl"
-        self.snapshot_is_grid_view = not self.embedded_changelist and (resolver_name == "grid" or request.path.rstrip("/").endswith("/grid"))
+        self.snapshot_is_grid_view = not self.embedded_changelist and (
+            resolver_name == "grid" or request.path.rstrip("/").endswith("/grid")
+        )
 
     def get_results(self, request):
         super().get_results(request)
         if request.GET.get("_embedded") == "crawl":
             self.full_result_count = self.result_count
         else:
-            self.full_result_count = self.model_admin.get_paginator(request, self.model._default_manager.all().order_by(), self.list_per_page).count
+            self.full_result_count = self.model_admin.get_paginator(
+                request,
+                self.model._default_manager.all().order_by(),
+                self.list_per_page,
+            ).count
         self.show_full_result_count = True
 
         snapshot_ids = [obj.pk for obj in self.result_list]
@@ -441,7 +447,16 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
     form = SnapshotAdminForm
     raw_id_fields = ("crawl", "parent_snapshot")
     list_select_related = ()
-    list_display = ("permissions_badge", "created_at", "preview_icon", "title_str", "tags_inline", "status_with_progress", "files", "size_with_stats")
+    list_display = (
+        "permissions_badge",
+        "created_at",
+        "preview_icon",
+        "title_str",
+        "tags_inline",
+        "status_with_progress",
+        "files",
+        "size_with_stats",
+    )
     list_display_links = ("created_at",)
     sort_fields = ("title_str", "created_at", "status", "crawl")
     readonly_fields = (
@@ -625,7 +640,11 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
             path("grid/", self.admin_site.admin_view(self.grid_view), name="grid"),
             path("search-stream/", self.admin_site.admin_view(self.search_stream_view), name="core_snapshot_search_stream"),
             path("<path:object_id>/redo-failed/", self.admin_site.admin_view(self.redo_failed_view), name="core_snapshot_redo_failed"),
-            path("<path:object_id>/set-permissions/", self.admin_site.admin_view(self.set_permissions_view), name="core_snapshot_set_permissions"),
+            path(
+                "<path:object_id>/set-permissions/",
+                self.admin_site.admin_view(self.set_permissions_view),
+                name="core_snapshot_set_permissions",
+            ),
         ]
         return custom_urls + urls
 

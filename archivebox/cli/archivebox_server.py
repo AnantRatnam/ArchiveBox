@@ -10,7 +10,6 @@ import rich_click as click
 from rich import print
 
 from archivebox.misc.util import docstring, enforce_types
-from archivebox.config.common import get_config
 
 
 @enforce_types
@@ -23,6 +22,7 @@ def server(
     nothreading: bool = False,
 ) -> None:
     """Run the ArchiveBox HTTP server"""
+    from archivebox.config.common import get_config
 
     config = get_config()
     runserver_args = list(runserver_args or (config.BIND_ADDR,))
@@ -32,10 +32,6 @@ def server(
 
         archivebox_init(quick=True)
         print()
-
-    from archivebox.misc.checks import check_data_folder
-
-    check_data_folder()
 
     run_in_debug = config.DEBUG or debug or reload
     if debug or reload:

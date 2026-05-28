@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 
 __package__ = "archivebox.cli"
 __command__ = "archivebox add"
@@ -11,17 +12,12 @@ from typing import TYPE_CHECKING
 
 import rich_click as click
 
-from django.utils import timezone
-from django.db.models import QuerySet
-
 from archivebox.misc.util import enforce_types, docstring
 from archivebox.misc.util import parse_filesize_to_bytes
-from archivebox import CONSTANTS
-from archivebox.config.permissions import USER, HOSTNAME
-from archivebox.config.common import get_config
 
 
 if TYPE_CHECKING:
+    from django.db.models import QuerySet
     from archivebox.crawls.models import Crawl
     from archivebox.core.models import Snapshot
 
@@ -66,7 +62,7 @@ def add(
     index_only: bool = False,
     bg: bool = False,
     created_by_id: int | None = None,
-) -> tuple["Crawl", QuerySet["Snapshot"]]:
+) -> tuple[Crawl, QuerySet[Snapshot]]:
     """Add a new URL or list of URLs to your archive.
 
     The flow is:
@@ -86,6 +82,10 @@ def add(
     crawl_max_size = parse_filesize_to_bytes(crawl_max_size)
     crawl_timeout = int(crawl_timeout or 0)
     snapshot_max_size = parse_filesize_to_bytes(snapshot_max_size)
+    from archivebox import CONSTANTS
+    from archivebox.config.permissions import USER, HOSTNAME
+    from archivebox.config.common import get_config
+
     config = get_config()
     crawl_max_concurrent_snapshots_override = crawl_max_concurrent_snapshots is not None
     if crawl_max_concurrent_snapshots is None:
@@ -112,6 +112,7 @@ def add(
     from archivebox.misc.logging_util import printable_filesize
     from archivebox.misc.system import get_dir_size
     from archivebox.services.runner import run_crawl
+    from django.utils import timezone
 
     created_by_id = created_by_id or get_or_create_system_user_pk()
     started_at = timezone.now()

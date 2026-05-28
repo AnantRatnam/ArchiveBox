@@ -56,7 +56,7 @@ class SearchResultsChangeList(ChangeList):
             and self.query
             and self.result_count == 0
             and get_search_mode_base(self.search_mode, config=getattr(request, "archivebox_config", None)) == "deep"
-            and self.search_mode_backend
+            and self.search_mode_backend,
         )
 
     def get_filters_params(self, params=None):

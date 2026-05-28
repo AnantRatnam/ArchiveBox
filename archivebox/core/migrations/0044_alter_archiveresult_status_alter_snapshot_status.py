@@ -4,20 +4,38 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('core', '0043_archiveresult_retry_at'),
+        ("core", "0043_archiveresult_retry_at"),
     ]
 
     operations = [
         migrations.AlterField(
-            model_name='archiveresult',
-            name='status',
-            field=models.CharField(choices=[('queued', 'Queued'), ('started', 'Started'), ('paused', 'Paused'), ('backoff', 'Waiting to retry'), ('succeeded', 'Succeeded'), ('failed', 'Failed'), ('skipped', 'Skipped'), ('noresults', 'No Results')], db_index=True, default='queued', max_length=16),
+            model_name="archiveresult",
+            name="status",
+            field=models.CharField(
+                choices=[
+                    ("queued", "Queued"),
+                    ("started", "Started"),
+                    ("paused", "Paused"),
+                    ("backoff", "Waiting to retry"),
+                    ("succeeded", "Succeeded"),
+                    ("failed", "Failed"),
+                    ("skipped", "Skipped"),
+                    ("noresults", "No Results"),
+                ],
+                db_index=True,
+                default="queued",
+                max_length=16,
+            ),
         ),
         migrations.AlterField(
-            model_name='snapshot',
-            name='status',
-            field=models.CharField(choices=[('queued', 'Queued'), ('started', 'Started'), ('paused', 'Paused'), ('sealed', 'Sealed')], db_index=True, default='queued', max_length=15),
+            model_name="snapshot",
+            name="status",
+            field=models.CharField(
+                choices=[("queued", "Queued"), ("started", "Started"), ("paused", "Paused"), ("sealed", "Sealed")],
+                db_index=True,
+                default="queued",
+                max_length=15,
+            ),
         ),
     ]

@@ -448,7 +448,12 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         db_index=True,
         editable=False,
     )
-    output_size = models.BigIntegerField(default=0, db_index=True, editable=False, help_text="Total bytes of all ArchiveResult output files")
+    output_size = models.BigIntegerField(
+        default=0,
+        db_index=True,
+        editable=False,
+        help_text="Total bytes of all ArchiveResult output files",
+    )
     notes = models.TextField(blank=True, null=False, default="")
     # output_dir is computed via @cached_property from fs_version and get_storage_path_for_version()
 
@@ -3297,7 +3302,7 @@ class ArchiveResult(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, M
             rel_path = Path(stripped).expanduser().resolve(strict=False).relative_to(data_dir)
         except (OSError, ValueError):
             return raw_line
-        return f"{raw_line[: len(raw_line) - len(raw_line.lstrip())]}./{rel_path}{raw_line[len(raw_line.rstrip()):]}"
+        return f"{raw_line[: len(raw_line) - len(raw_line.lstrip())]}./{rel_path}{raw_line[len(raw_line.rstrip()) :]}"
 
     def output_str_for_display(self) -> str:
         return "\n".join(self._format_output_line_for_display(line) for line in str(self.output_str or "").splitlines())
@@ -3406,7 +3411,13 @@ class ArchiveResult(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, M
     def save(self, *args, **kwargs):
         is_new = self._state.adding
         update_fields = kwargs.get("update_fields")
-        refresh_snapshot_size = is_new or update_fields is None or "output_size" in update_fields or "snapshot" in update_fields or "snapshot_id" in update_fields
+        refresh_snapshot_size = (
+            is_new
+            or update_fields is None
+            or "output_size" in update_fields
+            or "snapshot" in update_fields
+            or "snapshot_id" in update_fields
+        )
         old_snapshot_id = None
         if refresh_snapshot_size and not is_new:
             old_snapshot_id = type(self).objects.filter(pk=self.pk).values_list("snapshot_id", flat=True).first()

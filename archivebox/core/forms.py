@@ -730,7 +730,9 @@ class AddLinkForm(PluginConfigFormMixin, forms.Form):
         self.fields["delete_after"].initial = default_config.DELETE_AFTER
 
         if self.is_bound:
-            selected_persona = persona_queryset.filter(name=str(self.data.get(self.add_prefix("persona")) or "")).first() or selected_persona
+            selected_persona = (
+                persona_queryset.filter(name=str(self.data.get(self.add_prefix("persona")) or "")).first() or selected_persona
+            )
         if self.can_override_crawl_config:
             self.build_plugin_groups(get_config(persona=selected_persona) if selected_persona else get_config())
         else:

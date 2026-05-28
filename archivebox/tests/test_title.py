@@ -4,7 +4,7 @@ import sys
 import pytest
 
 from archivebox.core.models import Snapshot
-from archivebox.tests.orm_helpers import use_archivebox_db
+from archivebox.tests.test_orm_helpers import use_archivebox_db
 from .conftest import _find_system_browser
 from .fixtures import disable_extractors_dict, process
 

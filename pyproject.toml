@@ -1,6 +1,6 @@
 [project]
 name = "archivebox"
-version = "0.9.33rc1"
+version = "0.9.33rc9"
 requires-python = ">=3.13"
 description = "Self-hosted internet archiving solution."
 authors = [{name = "Nick Sweeting", email = "pyproject.toml@archivebox.io"}]
@@ -65,7 +65,6 @@ dependencies = [
     ### Base Types
     "pydantic>=2.8.0",       # for: archivebox.api (django-ninja), archivebox.config (pydantic-settings), and archivebox.index.schema (pydantic)
     "pydantic-settings>=2.5.2", # for: archivebox.config
-    "python-benedict[io,parse]>=0.33.2", # for: dict replacement all over the codebase to allow .attr-style access
     "base32-crockford>=0.3.0", # for: encoding UUIDs in base32
     ### Static Typing
     "django-stubs>=5.0.4",   # for: vscode type hints on models and common django APIs
@@ -80,9 +79,9 @@ dependencies = [
     ### Extractor dependencies (optional binaries detected at runtime via shutil.which)
     ### Binary/Package Management
     "abxbus==2.5.7",          # EventBus API
-    "abxpkg>=1.11.22",        # for: detecting, versioning, and installing binaries via apt/brew/pip/npm
-    "abx-plugins>=1.11.25",  # shared ArchiveBox plugin package with Chrome/Puppeteer dependency wiring
-    "abx-dl>=1.11.28",       # shared ArchiveBox downloader package with blocking install preflight
+    "abxpkg>=1.11.33",        # for: detecting, versioning, and installing binaries via apt/brew/pip/npm
+    "abx-plugins>=1.11.39",  # shared ArchiveBox plugin package with Chrome/Puppeteer dependency wiring
+    "abx-dl>=1.11.39",       # shared ArchiveBox downloader package with blocking install preflight
     ### UUID7 backport for Python <3.14
     "uuid7>=0.1.0; python_version < '3.14'",  # provides the uuid_extensions module on Python 3.13
 ]

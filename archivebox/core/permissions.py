@@ -37,11 +37,7 @@ def _persona_ids_for_permissions(allowed_permissions: set[str]) -> list[str]:
 
     fallback_permissions = str(get_config(resolve_plugins=False).PERMISSIONS).strip().lower()
     personas = Persona.objects.only("id", "config")
-    return [
-        str(persona.id)
-        for persona in personas
-        if (persona.permissions or fallback_permissions) in allowed_permissions
-    ]
+    return [str(persona.id) for persona in personas if (persona.permissions or fallback_permissions) in allowed_permissions]
 
 
 def filter_personas_by_permissions(queryset: QuerySet, allowed_permissions: set[str]) -> QuerySet:

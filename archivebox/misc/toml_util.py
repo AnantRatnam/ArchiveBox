@@ -107,7 +107,6 @@ def better_toml_dump_str(val: Any) -> str:
 class CustomTOMLEncoder(toml.encoder.TomlEncoder):
     """
     Custom TomlEncoder to work around https://github.com/uiri/toml's many encoding bugs.
-    More info: https://github.com/fabiocaccamo/python-benedict/issues/439
     >>> toml.dumps(value, encoder=CustomTOMLEncoder())
     """
 

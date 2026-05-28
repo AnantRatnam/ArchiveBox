@@ -16,7 +16,7 @@ import pytest
 from archivebox.core.models import ArchiveResult, Snapshot
 from archivebox.crawls.models import Crawl
 from archivebox.machine.models import Process
-from archivebox.tests.orm_helpers import use_archivebox_db
+from archivebox.tests.test_orm_helpers import use_archivebox_db
 
 from .conftest import _find_system_browser
 
@@ -240,9 +240,9 @@ def _write_slow_snapshot_plugin(plugins_root, marker_dir):
                 "#!/usr/bin/env bash",
                 "set -euo pipefail",
                 f"marker_dir={str(marker_dir)!r}",
-                "mkdir -p \"$marker_dir\"",
-                "echo $$ >> \"$marker_dir/hook-pids.txt\"",
-                "touch \"$marker_dir/hook-started\"",
+                'mkdir -p "$marker_dir"',
+                'echo $$ >> "$marker_dir/hook-pids.txt"',
+                'touch "$marker_dir/hook-started"',
                 "trap 'touch \"$marker_dir/hook-stopped\"; exit 0' TERM INT HUP",
                 "while true; do sleep 1; done",
                 "",
@@ -284,7 +284,14 @@ def _wait_for_hook_runs(marker_dir: Path, count: int, *, timeout: float = 45.0) 
     raise AssertionError(f"timed out waiting for {count} slow hook runs, got {pids}")
 
 
-def _start_live_add(data_dir, env, *, url="https://example.com", max_urls="2", log_name="archivebox-add.log") -> tuple[subprocess.Popen[str], Path]:
+def _start_live_add(
+    data_dir,
+    env,
+    *,
+    url="https://example.com",
+    max_urls="2",
+    log_name="archivebox-add.log",
+) -> tuple[subprocess.Popen[str], Path]:
     log_path = data_dir / log_name
     log = log_path.open("w", encoding="utf-8")
     urls = [url] if isinstance(url, str) else url
@@ -588,7 +595,9 @@ def test_live_repeated_server_startups_take_over_cleanly(tmp_path, process):
         assert listener.stdout.count(f":{port} (LISTEN)") == 1
 
         previous_log_path = tmp_path / "server-chaos-3.log"
-        previous_takeovers = previous_log_path.read_text(encoding="utf-8", errors="replace").count("is now running the orchestrator and server")
+        previous_takeovers = previous_log_path.read_text(encoding="utf-8", errors="replace").count(
+            "is now running the orchestrator and server",
+        )
         _stop_process(servers[-1], signal.SIGTERM)
         _wait_for_log_count(previous_log_path, "is now running the orchestrator and server", previous_takeovers + 1, timeout=35)
         assert servers[3].poll() is None
@@ -651,7 +660,12 @@ def test_live_servers_in_different_data_dirs_do_not_interfere(tmp_path, process)
         first = None
         assert second.poll() is None, "stopping one DATA_DIR server must not stop another DATA_DIR server"
 
-        first_resumed = _start_server(first_data_dir, port=first_port, log_name="server-first-data-dir-resumed.log", env=_live_exit_env(first_data_dir))[0]
+        first_resumed = _start_server(
+            first_data_dir,
+            port=first_port,
+            log_name="server-first-data-dir-resumed.log",
+            env=_live_exit_env(first_data_dir),
+        )[0]
         assert second.poll() is None, "restarting one DATA_DIR server must not take over another DATA_DIR supervisor"
     finally:
         for proc in (first, first_resumed, second):
@@ -695,7 +709,12 @@ def test_live_add_update_jobs_survive_server_and_cli_owner_exits(tmp_path, proce
         assert _pid_is_alive(supervisor_pid_before)
         assert _supervisor_pid_from_log(server_log) == supervisor_pid_before
 
-        add_proc, add_log = _start_live_add(tmp_path, env, url=["https://example.com", "https://blog.sweeting.me"], log_name="archivebox-add-1.log")
+        add_proc, add_log = _start_live_add(
+            tmp_path,
+            env,
+            url=["https://example.com", "https://blog.sweeting.me"],
+            log_name="archivebox-add-1.log",
+        )
         _wait_for_hook_runs(marker_dir, 1)
         _wait_for_crawl_state(
             tmp_path,
@@ -716,12 +735,20 @@ def test_live_add_update_jobs_survive_server_and_cli_owner_exits(tmp_path, proce
         _wait_for_hook_runs(marker_dir, 2, timeout=60)
         _wait_for_crawl_state(
             tmp_path,
-            lambda state: any(crawl["status"] in (Crawl.StatusChoices.STARTED, Crawl.StatusChoices.QUEUED) for crawl in state["crawls"])
-            and any(result["plugin"] == "slow_exit" for result in state["results"]),
+            lambda state: (
+                any(crawl["status"] in (Crawl.StatusChoices.STARTED, Crawl.StatusChoices.QUEUED) for crawl in state["crawls"])
+                and any(result["plugin"] == "slow_exit" for result in state["results"])
+            ),
             timeout=30,
         )
 
-        add_proc2, add_log2 = _start_live_add(tmp_path, env, url="https://example.com/?exit-resume=2", max_urls="1", log_name="archivebox-add-2.log")
+        add_proc2, add_log2 = _start_live_add(
+            tmp_path,
+            env,
+            url="https://example.com/?exit-resume=2",
+            max_urls="1",
+            log_name="archivebox-add-2.log",
+        )
         _wait_for_hook_runs(marker_dir, 3, timeout=60)
         os.killpg(add_proc2.pid, signal.SIGTERM)
         os.kill(server2.pid, signal.SIGTERM)
@@ -736,7 +763,9 @@ def test_live_add_update_jobs_survive_server_and_cli_owner_exits(tmp_path, proce
         with use_archivebox_db(tmp_path):
             crawls = list(Crawl.objects.order_by("created_at").values_list("status", "retry_at"))
             snapshots = list(Snapshot.objects.order_by("created_at").values_list("url", "status", "retry_at"))
-            failed_results = list(ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.FAILED).values_list("plugin", "output_str"))
+            failed_results = list(
+                ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.FAILED).values_list("plugin", "output_str"),
+            )
         assert crawls
         assert snapshots
         assert not failed_results

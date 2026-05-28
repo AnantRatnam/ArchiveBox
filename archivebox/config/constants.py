@@ -17,10 +17,9 @@ import sys
 
 from pathlib import Path
 
-from benedict import benedict
 from platformdirs import user_config_path
 
-from archivebox.misc.logging import DEFAULT_CLI_COLORS
+from archivebox.misc.logging import AttrDict, DEFAULT_CLI_COLORS
 
 from .paths import (
     PACKAGE_DIR,
@@ -134,7 +133,7 @@ class ConstantsDict:
     # Config constants
     TIMEZONE: str = "UTC"
     DEFAULT_CLI_COLORS: dict[str, str] = DEFAULT_CLI_COLORS
-    DISABLED_CLI_COLORS: dict[str, str] = benedict({k: "" for k in DEFAULT_CLI_COLORS})
+    DISABLED_CLI_COLORS: dict[str, str] = AttrDict({k: "" for k in DEFAULT_CLI_COLORS})
 
     # Hard safety limits (seconds)
     MAX_HOOK_RUNTIME_SECONDS: int = 60 * 60 * 12  # 12 hours
@@ -291,14 +290,9 @@ class ConstantsDict:
         # so it behaves like a dict[key] == dict.key or object attr
         return getattr(cls, key)
 
-    @classmethod
-    def __benedict__(cls):
-        # when casting to benedict, only include uppercase keys that don't start with an underscore
-        return benedict({key: value for key, value in cls.__dict__.items() if key.isupper() and not key.startswith("_")})
-
 
 CONSTANTS = ConstantsDict
-CONSTANTS_CONFIG = CONSTANTS.__benedict__()
+CONSTANTS_CONFIG = AttrDict({key: value for key, value in CONSTANTS.__dict__.items() if key.isupper() and not key.startswith("_")})
 
 # add all key: values to globals() for easier importing, e.g.:
 # from archivebox.config.constants import IS_ROOT, PERSONAS_DIR, ...

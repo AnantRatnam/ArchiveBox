@@ -35,7 +35,14 @@ def ensure_single_orchestrator(*, data_dir: str | Path, takeover: bool, reason: 
     return start_worker(supervisor, RUNNER_WORKER)
 
 
-def wait_until_replaced_or_signal(command, *, process_type: str, data_dir: str | Path, url: str | None = None, interval: float = 2.0) -> None:
+def wait_until_replaced_or_signal(
+    command,
+    *,
+    process_type: str,
+    data_dir: str | Path,
+    url: str | None = None,
+    interval: float = 2.0,
+) -> None:
     while command_is_newest(command, process_type=process_type, data_dir=data_dir, url=url):
         command.heartbeat()
         time.sleep(interval)

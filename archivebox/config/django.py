@@ -41,6 +41,11 @@ def setup_django(check_db=False, in_memory_db=False) -> None:
         # TODO: figure out why CLI entrypoints with init_pending are running this twice sometimes
         return
 
+    # Third-party patches are only needed once Django/apps are about to load.
+    # Keeping them out of archivebox.__init__ avoids paying Django/Daphne setup
+    # cost for cheap CLI startup paths like `archivebox <cmd> --help`.
+    import archivebox.misc.monkey_patches  # noqa: F401
+
     from archivebox.config.permissions import IS_ROOT, ARCHIVEBOX_USER, ARCHIVEBOX_GROUP, SudoPermission
 
     # if running as root, chown the data dir to the archivebox user to make sure it's accessible to the archivebox user
