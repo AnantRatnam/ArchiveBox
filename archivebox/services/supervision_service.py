@@ -160,8 +160,10 @@ def standby_until_runtime_stack_needed(command, *, data_dir: str | Path, interva
         if not announced:
             owner = runtime_stack_owner(data_dir=data_dir)
             owner_pid = owner.pid if owner else "unknown"
-            owner_type = owner.process_type if owner else "unknown"
-            rprint(f"[yellow][*] Standing by; ArchiveBox {owner_type} pid={owner_pid} owns the runtime stack.[/yellow]")
+            rprint(
+                "[yellow][*] Runner is now owned by newer archivebox process "
+                f"pid={owner_pid}, processing will continue there and will resume here if the other process is stopped and work still remains[/yellow]",
+            )
             announced = True
         command.heartbeat()
         time.sleep(interval)

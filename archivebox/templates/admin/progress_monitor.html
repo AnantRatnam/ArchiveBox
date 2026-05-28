@@ -203,7 +203,7 @@
     #progress-monitor .screencast-frame {
         display: block;
         width: 100%;
-        aspect-ratio: 16 / 10;
+        height: 310px;
         background: #010409;
         color: #6e7681;
         text-decoration: none;
@@ -211,8 +211,11 @@
     }
     #progress-monitor .screencast-frame img {
         display: block;
-        width: 100%;
-        height: 100%;
+        width: 120%;
+        height: auto;
+        min-height: 100%;
+        max-width: none;
+        margin-left: -10%;
         object-fit: cover;
         object-position: top center;
     }
@@ -923,6 +926,9 @@
         #progress-monitor .screencast-panel {
             width: 100%;
             align-self: stretch;
+        }
+        #progress-monitor .screencast-frame {
+            height: 300px;
         }
         #progress-monitor .crawl-header {
             display: grid;

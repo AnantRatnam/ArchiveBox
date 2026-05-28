@@ -1208,11 +1208,17 @@ def run_snapshot_maintenance(snapshot_id: str) -> bool:
     snapshot.write_index_jsonl()
     snapshot.write_json_details()
     snapshot.write_html_details()
+    print(
+        f"[runner] Snapshot {str(snapshot.id)[-12:]} maintenance complete "
+        f"status={snapshot.status} fs_version={snapshot.fs_version} queued_results={'yes' if has_queued_results else 'no'}",
+        flush=True,
+    )
     return True
 
 
 def run_due_crawl(crawl, *, lock_seconds: int) -> bool:
     if crawl.is_paused:
+        print(f"[runner] Crawl {str(crawl.id)[-12:]} paused; skipping until resumed", flush=True)
         return True
     if crawl.status in (crawl.StatusChoices.QUEUED, crawl.StatusChoices.STARTED):
         from archivebox.core.models import Snapshot
@@ -1268,14 +1274,17 @@ def run_due_crawl(crawl, *, lock_seconds: int) -> bool:
             return True
         if not crawl.claim_processing_lock(lock_seconds=lock_seconds):
             return False
+        print(f"[runner] Crawl {str(crawl.id)[-12:]} running status={crawl.status} snapshots={snapshot_count}", flush=True)
         run_crawl(str(crawl.id), process_discovered_snapshots_inline=True)
         return True
 
     if crawl.status == crawl.StatusChoices.SEALED:
+        print(f"[runner] Crawl {str(crawl.id)[-12:]} sealed; clearing retry tick", flush=True)
         crawl.retry_at = None
         crawl.save(update_fields=["retry_at", "modified_at"])
         return True
 
+    print(f"[runner] Crawl {str(crawl.id)[-12:]} status={crawl.status}; clearing retry tick", flush=True)
     crawl.retry_at = None
     crawl.save(update_fields=["retry_at", "modified_at"])
     return True
@@ -1287,6 +1296,7 @@ def run_due_snapshot(snapshot, *, lock_seconds: int) -> bool:
     if snapshot.is_paused:
         selected_plugins = queued_plugins_for_snapshot(str(snapshot.id))
         if snapshot.fs_migration_needed and Snapshot.claim_for_worker(snapshot, lock_seconds=lock_seconds):
+            print(f"[runner] Snapshot {str(snapshot.id)[-12:]} paused maintenance fs_version={snapshot.fs_version}", flush=True)
             run_snapshot_maintenance(str(snapshot.id))
             if not selected_plugins:
                 # No targeted plugin rows remain, so put paused snapshots back
@@ -1307,6 +1317,10 @@ def run_due_snapshot(snapshot, *, lock_seconds: int) -> bool:
         if not Snapshot.claim_for_worker(snapshot, lock_seconds=lock_seconds):
             return False
         try:
+            print(
+                f"[runner] Snapshot {str(snapshot.id)[-12:]} paused targeted plugins={','.join(selected_plugins)} url={snapshot.url}",
+                flush=True,
+            )
             # Explicit maintenance, e.g. `archivebox update --index-only`, may
             # need to run search/index hooks for a paused snapshot. That should
             # not resume the crawl or make unrelated queued work runnable, so
@@ -1333,9 +1347,17 @@ def run_due_snapshot(snapshot, *, lock_seconds: int) -> bool:
             # migration. Run the filesystem/json save path before queued search
             # backfill rows so both maintenance streams stay ordered without
             # changing Snapshot.status away from SEALED.
+            print(
+                f"[runner] Snapshot {str(snapshot.id)[-12:]} sealed maintenance fs_version={snapshot.fs_version} url={snapshot.url}",
+                flush=True,
+            )
             return run_snapshot_maintenance(str(snapshot.id))
         selected_plugins = queued_plugins_for_snapshot(str(snapshot.id))
         if selected_plugins:
+            print(
+                f"[runner] Snapshot {str(snapshot.id)[-12:]} sealed targeted plugins={','.join(selected_plugins)} url={snapshot.url}",
+                flush=True,
+            )
             run_crawl(
                 str(snapshot.crawl_id),
                 snapshot_ids=[str(snapshot.id)],
@@ -1348,11 +1370,13 @@ def run_due_snapshot(snapshot, *, lock_seconds: int) -> bool:
     if snapshot.status == Snapshot.StatusChoices.STARTED:
         _reset_count, running_count = reset_abandoned_snapshot_results(snapshot)
         if running_count:
+            print(f"[runner] Snapshot {str(snapshot.id)[-12:]} still has {running_count} running ArchiveResults", flush=True)
             snapshot.update_and_requeue(retry_at=timezone.now() + timedelta(seconds=ACTIVE_STATE_LEASE_SECONDS))
             return True
 
     if not snapshot.claim_processing_lock(lock_seconds=lock_seconds):
         return False
+    print(f"[runner] Snapshot {str(snapshot.id)[-12:]} running status={snapshot.status} url={snapshot.url}", flush=True)
     run_crawl(
         str(snapshot.crawl_id),
         snapshot_ids=[str(snapshot.id)],

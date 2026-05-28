@@ -156,6 +156,7 @@ RUNNER_WORKER = {
     "command": _shell_join([sys.executable, "-m", "archivebox", "run", "--daemon"]),
     "autostart": "false",
     "autorestart": "true",
+    "environment": 'PYTHONUNBUFFERED="1",COLUMNS="200"',
     "stopasgroup": "true",
     "killasgroup": "true",
     "stopwaitsecs": "30",
@@ -693,15 +694,37 @@ def start_worker(supervisor, daemon, lazy=False):
 def run_runner_worker(args: list[str], *, name: str = "worker_runner_once") -> int:
     supervisor = get_or_create_supervisord_process(daemonize=False)
     worker = RUNNER_ONCE_WORKER(args, name=name)
+    log_path = Path(worker["stdout_logfile"])
+    if not log_path.is_absolute():
+        log_path = CONSTANTS.DATA_DIR / log_path
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.touch()
+    log_handle = log_path.open()
+    log_handle.seek(0, 2)
     sync_supervisord_workers(supervisor, [(worker, False)], prune=False)
     final_states = {"STOPPED", "EXITED", "FATAL", "UNKNOWN"}
-    while True:
-        proc = get_worker(supervisor, name)
-        if proc is None:
-            return 1
-        if proc["statename"] in final_states:
-            return int(proc.get("exitstatus") or 0) if proc["statename"] == "EXITED" else 1
-        time.sleep(0.5)
+    try:
+        while True:
+            while True:
+                line = log_handle.readline()
+                if not line:
+                    break
+                sys.stdout.write(line)
+                sys.stdout.flush()
+            proc = get_worker(supervisor, name)
+            if proc is None:
+                return 1
+            if proc["statename"] in final_states:
+                while True:
+                    line = log_handle.readline()
+                    if not line:
+                        break
+                    sys.stdout.write(line)
+                    sys.stdout.flush()
+                return int(proc.get("exitstatus") or 0) if proc["statename"] == "EXITED" else 1
+            time.sleep(0.5)
+    finally:
+        log_handle.close()
 
 
 def get_worker(supervisor, daemon_name):
