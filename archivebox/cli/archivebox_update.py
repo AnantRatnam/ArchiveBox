@@ -304,7 +304,16 @@ def update(
                         print_combined_stats(stats_combined)
 
                     if do_run_until_idle:
-                        print("[*] Phase 3: Running queued/interrupted crawl work until idle...")
+                        # Filesystem migration is maintenance on existing
+                        # Snapshot rows: Snapshot.save() moves archive/<ts> to
+                        # the current output_dir and preserves the lifecycle
+                        # status. Drain those retry_at ticks before queuing
+                        # search backfill below. Otherwise the sealed/paused
+                        # runner branch correctly sees queued ArchiveResult
+                        # rows first, runs the targeted plugins, and may leave
+                        # the fs_version maintenance tick hidden behind that
+                        # plugin work until another update pass.
+                        print("[*] Phase 3: Running filesystem maintenance until idle...")
                         from archivebox.cli.archivebox_run import run_runner, run_snapshot_worker
 
                         if is_filtered_update:
@@ -315,7 +324,7 @@ def update(
                                 if exit_code != 0:
                                     raise SystemExit(exit_code)
                         else:
-                            exit_code = run_runner(daemon=False, maintenance_only=migrate_only)
+                            exit_code = run_runner(daemon=False, maintenance_only=True)
                             if exit_code != 0:
                                 raise SystemExit(exit_code)
                         ran_post_migrate_runner = True
@@ -352,6 +361,13 @@ def update(
                         touched_snapshot_ids.update(stats.get("snapshot_ids", []))
 
                 if do_run_until_idle and (do_index or not ran_post_migrate_runner):
+                    # Search/index backfill intentionally queues targeted
+                    # ArchiveResult rows without reopening sealed/paused
+                    # snapshots. This second runner pass drains those plugin
+                    # rows after filesystem maintenance has had its own turn.
+                    # For a normal unfiltered `archivebox update`, keep the
+                    # historical final pass broad enough to resume genuinely
+                    # queued/interrupted crawl work after maintenance is done.
                     print("[*] Phase 3: Running queued/interrupted crawl work until idle...")
                     from archivebox.cli.archivebox_run import run_runner, run_snapshot_worker
 

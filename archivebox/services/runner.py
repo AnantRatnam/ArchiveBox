@@ -1192,16 +1192,18 @@ def run_snapshot_maintenance(snapshot_id: str) -> bool:
     snapshot = Snapshot.objects.select_related("crawl", "crawl__created_by").filter(id=snapshot_id).first()
     if snapshot is None:
         return False
-    if snapshot.archiveresult_set.filter(status=ArchiveResult.StatusChoices.QUEUED).exists():
-        return False
 
-    # retry_at is the universal "tick me" signal. For already-sealed snapshots,
-    # a tick with no queued ArchiveResults is maintenance-only: run normal
-    # save/write side effects like lazy fs migration/json rewriting, then clear
-    # retry_at. Paused snapshots do not reach this helper while search/index
-    # plugin rows are queued; run_due_snapshot restores their paused scheduler
-    # marker after the targeted plugin rows finish.
-    snapshot.retry_at = None
+    has_queued_results = snapshot.archiveresult_set.filter(status=ArchiveResult.StatusChoices.QUEUED).exists()
+    # retry_at is the scheduler signal for both lifecycle work and targeted
+    # maintenance. Filesystem migration/json rewriting is independent from
+    # queued ArchiveResult rows, so run it whenever this helper is called.
+    # The only thing queued rows change is the next scheduler value:
+    # - no queued rows left: clear retry_at because maintenance is done
+    # - queued rows remain: leave the Snapshot due so the sealed/paused runner
+    #   branch can process those targeted plugin rows on the next tick
+    # This avoids reopening final/paused snapshots while also avoiding stranded
+    # queued ArchiveResults that have no independent scheduler.
+    snapshot.retry_at = timezone.now() if has_queued_results else None
     snapshot.save(update_fields=["retry_at", "modified_at"])
     snapshot.write_index_jsonl()
     snapshot.write_json_details()
@@ -1284,9 +1286,17 @@ def run_due_snapshot(snapshot, *, lock_seconds: int) -> bool:
 
     if snapshot.is_paused:
         selected_plugins = queued_plugins_for_snapshot(str(snapshot.id))
+        if snapshot.fs_migration_needed and Snapshot.claim_for_worker(snapshot, lock_seconds=lock_seconds):
+            run_snapshot_maintenance(str(snapshot.id))
+            if not selected_plugins:
+                # No targeted plugin rows remain, so put paused snapshots back
+                # behind the indefinite retry_at marker. If queued plugin rows
+                # do remain, run_snapshot_maintenance kept retry_at due so the
+                # next tick can process them and the finally block below will
+                # restore the paused marker after that targeted work completes.
+                snapshot.restore_paused_scheduler_marker()
+            return True
         if not selected_plugins:
-            if snapshot.fs_migration_needed and Snapshot.claim_for_worker(snapshot, lock_seconds=lock_seconds):
-                run_snapshot_maintenance(str(snapshot.id))
             # Paused is a real lifecycle state; retry_at=MAX is only the
             # orchestrator selection marker. If a direct maintenance/update
             # command bumps retry_at on a paused snapshot but there are no
@@ -1318,6 +1328,12 @@ def run_due_snapshot(snapshot, *, lock_seconds: int) -> bool:
         if not Snapshot.claim_for_worker(snapshot, lock_seconds=lock_seconds):
             return False
         snapshot.refresh_from_db()
+        if snapshot.fs_migration_needed:
+            # Final snapshots can still need maintenance after an old data-dir
+            # migration. Run the filesystem/json save path before queued search
+            # backfill rows so both maintenance streams stay ordered without
+            # changing Snapshot.status away from SEALED.
+            return run_snapshot_maintenance(str(snapshot.id))
         selected_plugins = queued_plugins_for_snapshot(str(snapshot.id))
         if selected_plugins:
             run_crawl(
