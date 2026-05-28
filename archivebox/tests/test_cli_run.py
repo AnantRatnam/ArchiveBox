@@ -582,7 +582,7 @@ class TestRecoverOrchestratorState:
         assert crawl.status == Crawl.StatusChoices.SEALED
         assert crawl.retry_at is None
 
-    def test_recover_orchestrator_state_raises_on_stale_active_crawl(self):
+    def test_recover_orchestrator_state_reschedules_stale_active_crawl_without_owner(self):
         from datetime import timedelta
 
         from django.utils import timezone
@@ -600,8 +600,13 @@ class TestRecoverOrchestratorState:
         )
         Crawl.objects.filter(id=crawl.id).update(modified_at=old, retry_at=old)
 
-        with pytest.raises(RuntimeError, match="Stuck crawl invariant violated"):
-            recover_orchestrator_state()
+        recovered = recover_orchestrator_state()
+
+        crawl.refresh_from_db()
+        assert recovered["stale_active_crawls_unlocked"] == 1
+        assert crawl.status == Crawl.StatusChoices.QUEUED
+        assert crawl.retry_at is not None
+        assert crawl.retry_at > old
 
     def test_recover_orchestrator_state_unlocks_started_snapshot_without_running_result(self):
         from archivebox.base_models.models import get_or_create_system_user_pk
@@ -1345,7 +1350,7 @@ class TestRecoverOrchestratorStateRedFailureModes:
         assert crawl.status == Crawl.StatusChoices.STARTED
         assert crawl.retry_at == future
 
-    def test_recovery_raises_stale_due_crawl_even_with_recent_unrelated_process_path_containing_crawl_id(self):
+    def test_recovery_reschedules_stale_due_crawl_even_with_unrelated_process_path_containing_crawl_id(self):
         from datetime import timedelta
 
         from django.utils import timezone
@@ -1376,8 +1381,13 @@ class TestRecoverOrchestratorStateRedFailureModes:
             ended_at=timezone.now(),
         )
 
-        with pytest.raises(RuntimeError, match="Stuck crawl invariant violated"):
-            recover_orchestrator_state()
+        recovered = recover_orchestrator_state()
+
+        crawl.refresh_from_db()
+        assert recovered["stale_active_crawls_unlocked"] == 1
+        assert crawl.status == Crawl.StatusChoices.QUEUED
+        assert crawl.retry_at is not None
+        assert crawl.retry_at > old
 
     def test_recovery_does_not_crash_on_invalid_utf8_process_logs(self, tmp_path):
         from datetime import timedelta

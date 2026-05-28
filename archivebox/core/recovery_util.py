@@ -30,6 +30,7 @@ def recover_orchestrator_state(*, include_chrome: bool = False) -> dict[str, int
         "unlocked_crawls": 0,
         "sealed_queued_snapshots": 0,
         "sealed_queued_crawls": 0,
+        "stale_active_crawls_unlocked": 0,
     }
 
     any_archiveresults = ArchiveResult.objects.filter(snapshot_id=OuterRef("pk"))
@@ -144,23 +145,21 @@ def recover_orchestrator_state(*, include_chrome: bool = False) -> dict[str, int
         .filter(has_recent_snapshot=False, has_recent_archiveresult=False, has_recent_archiveresult_process=False)
         .order_by("modified_at")[:10]
     )
-    stale_crawl_messages = []
+    stale_crawl_ids = []
     for crawl in stale_crawls:
         if not Process.objects.filter(
             pwd__contains=str(crawl.id),
             status=Process.StatusChoices.RUNNING,
             modified_at__gt=stuck_cutoff,
         ).exists():
-            stale_crawl_messages.append(
-                f"{crawl.id} status={crawl.status} retry_at={crawl.retry_at} modified_at={crawl.modified_at}",
-            )
-    if stale_crawl_messages:
-        recovery_console.print(
-            "[red]❌ Orchestrator recovery found stuck active crawl invariant violation; refusing to continue.[/red]",
-        )
-        raise RuntimeError(
-            "Stuck crawl invariant violated: active crawls had no crawl/snapshot/result/process changes for >12hr: "
-            + "; ".join(stale_crawl_messages),
+            stale_crawl_ids.append(crawl.id)
+    if stale_crawl_ids:
+        # A stale due Crawl without a running owner is recoverable startup
+        # state, not a fatal invariant. Keep status intact and only renew the
+        # scheduler lease so the runner can continue through the normal queue.
+        cleaned["stale_active_crawls_unlocked"] = Crawl.objects.filter(id__in=stale_crawl_ids).update(
+            retry_at=now,
+            modified_at=now,
         )
 
     running_archiveresults = ArchiveResult.objects.filter(
@@ -333,6 +332,7 @@ def recover_orchestrator_state(*, include_chrome: bool = False) -> dict[str, int
         "unlocked_snapshots": "unlocked started Snapshot row(s) whose owner process was gone",
         "sealed_crawls": "sealed started Crawl row(s) with no active Snapshots",
         "unlocked_crawls": "unlocked started Crawl row(s) with pending child Snapshots",
+        "stale_active_crawls_unlocked": "rescheduled stale active Crawl row(s) with no running owner",
     }
     error_recoveries = {
         "queued_crawls_unlocked": "repaired queued Crawl row(s) with retry_at=NULL",
