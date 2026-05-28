@@ -146,6 +146,9 @@ def HostRoutingMiddleware(get_response):
     )
 
     def middleware(request):
+        if request.path in {"/health", "/health/"}:
+            return get_response(request)
+
         request_host = (request.get_host() or "").lower()
         config = getattr(request, "archivebox_config", None)
         if config is None:
