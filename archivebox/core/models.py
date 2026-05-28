@@ -13,8 +13,9 @@ from urllib.parse import urlparse
 
 from statemachine import State, registry
 
-from django.db import models
-from django.db.models import Q, QuerySet
+from django.db import models, transaction
+from django.db.models import Q, QuerySet, Sum
+from django.db.models.fields.json import KT
 from django.utils.functional import cached_property
 from django.utils.text import slugify
 from django.utils import timezone
@@ -27,7 +28,7 @@ from django.utils.safestring import mark_safe
 
 from archivebox.config import CONSTANTS
 from archivebox.config.common import get_config
-from archivebox.misc.system import get_dir_size, atomic_write
+from archivebox.misc.system import atomic_write
 from archivebox.misc.util import (
     MAX_URL_LENGTH,
     parse_date,
@@ -53,7 +54,7 @@ from archivebox.base_models.models import (
     ModelWithHealthStats,
     get_or_create_system_user_pk,
 )
-from archivebox.workers.models import ModelWithStateMachine, BaseStateMachine
+from archivebox.workers.models import RETRY_AT_MAX, ModelWithStateMachine, BaseStateMachine
 from archivebox.workers.tasks import bg_archive_snapshot
 from archivebox.crawls.models import Crawl
 from archivebox.machine.models import Binary
@@ -147,6 +148,101 @@ class SnapshotTag(models.Model):
 
 class SnapshotQuerySet(models.QuerySet):
     """Custom QuerySet for Snapshot model with export methods that persist through .filter() etc."""
+
+    def paged_iterator(self, chunk_size: int = 500):
+        """
+        Iterate snapshots using bounded keyset pages instead of one streaming cursor.
+
+        Django's iterator(chunk_size=...) still keeps a single SQLite SELECT
+        cursor open until the full queryset is exhausted. That is fine for
+        read-only exports, but update/migration code does filesystem work and
+        writes while iterating; a long-lived read cursor there can stretch lock
+        waits across thousands of rows. This respects the queryset's existing
+        filters, order_by(), select_related(), and prefetch_related() state; if
+        no ordering is defined, it falls back to primary-key order.
+        """
+        pk_field = self.model._meta.pk.name
+        raw_ordering = tuple(self.query.order_by or self.model._meta.ordering or (pk_field,))
+
+        if any(not isinstance(term, str) or term == "?" for term in raw_ordering):
+            offset = 0
+            while True:
+                batch = list(self[offset : offset + chunk_size])
+                if not batch:
+                    break
+                yield from batch
+                offset += chunk_size
+            return
+
+        ordering = []
+        for term in raw_ordering:
+            descending = term.startswith("-")
+            field_name = term[1:] if descending else term
+            if field_name == "pk":
+                field_name = pk_field
+            ordering.append(f"-{field_name}" if descending else field_name)
+
+        ordered_field_names = [term[1:] if term.startswith("-") else term for term in ordering]
+        try:
+            if any(self.model._meta.get_field(field_name).null for field_name in ordered_field_names):
+                offset = 0
+                while True:
+                    batch = list(self[offset : offset + chunk_size])
+                    if not batch:
+                        break
+                    yield from batch
+                    offset += chunk_size
+                return
+        except Exception:
+            offset = 0
+            while True:
+                batch = list(self[offset : offset + chunk_size])
+                if not batch:
+                    break
+                yield from batch
+                offset += chunk_size
+            return
+
+        unique_field_names = {pk_field, *(field.name for field in self.model._meta.fields if getattr(field, "unique", False))}
+        if not any(field_name in unique_field_names for field_name in ordered_field_names):
+            offset = 0
+            while True:
+                batch = list(self[offset : offset + chunk_size])
+                if not batch:
+                    break
+                yield from batch
+                offset += chunk_size
+            return
+
+        last_values = None
+        value_field_names = tuple(dict.fromkeys([*ordered_field_names, pk_field]))
+        while True:
+            batch_qs = self.order_by(*ordering)
+            if last_values is not None:
+                page_filter = models.Q()
+                for idx, term in enumerate(ordering):
+                    descending = term.startswith("-")
+                    field_name = term[1:] if descending else term
+                    prefix = {ordered_field_names[i]: last_values[i] for i in range(idx)}
+                    comparison = "lt" if descending else "gt"
+                    page_filter |= models.Q(**prefix, **{f"{field_name}__{comparison}": last_values[idx]})
+                batch_qs = batch_qs.filter(page_filter)
+
+            batch_rows = list(batch_qs.values_list(*value_field_names)[:chunk_size])
+            if not batch_rows:
+                break
+
+            pk_idx = value_field_names.index(pk_field)
+            snapshot_ids = [row[pk_idx] for row in batch_rows]
+            snapshots_by_id = {snapshot.pk: snapshot for snapshot in self.filter(pk__in=snapshot_ids).order_by()}
+
+            for row in batch_rows:
+                snapshot_id = row[pk_idx]
+                snapshot = snapshots_by_id.get(snapshot_id)
+                if snapshot is not None:
+                    yield snapshot
+
+            last_values = batch_rows[-1][: len(ordered_field_names)]
 
     # =========================================================================
     # Filtering Methods
@@ -345,6 +441,14 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         default=ModelWithStateMachine.StatusChoices.QUEUED,
     )
     config = models.JSONField(default=dict, null=False, blank=False, editable=True)
+    permissions = models.GeneratedField(
+        expression=KT("config__PERMISSIONS"),
+        output_field=models.CharField(max_length=16, null=True),
+        db_persist=True,
+        db_index=True,
+        editable=False,
+    )
+    output_size = models.BigIntegerField(default=0, db_index=True, editable=False, help_text="Total bytes of all ArchiveResult output files")
     notes = models.TextField(blank=True, null=False, default="")
     # output_dir is computed via @cached_property from fs_version and get_storage_path_for_version()
 
@@ -388,6 +492,69 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
 
     def __str__(self):
         return f"[{self.id}] {self.url[:64]}"
+
+    def update_and_requeue(self, **kwargs) -> bool:
+        """
+        Update this Snapshot through the shared retry_at ownership path.
+
+        Any non-final Snapshot work means the parent Crawl must also be visible
+        to the runner. Keep that invariant here so CLI/admin callers do not
+        hand-edit the parent Crawl state every time they retry a hook.
+        """
+        updated = super().update_and_requeue(**kwargs)
+        if not updated:
+            return False
+
+        next_status = kwargs.get("status", self.status)
+        if next_status not in (self.StatusChoices.QUEUED, self.StatusChoices.STARTED) or not self.crawl_id:
+            return True
+
+        crawl = self.crawl
+        crawl_status = crawl.StatusChoices.STARTED if crawl.status == crawl.StatusChoices.STARTED else crawl.StatusChoices.QUEUED
+        crawl.update_and_requeue(
+            status=crawl_status,
+            retry_at=kwargs.get("retry_at") or timezone.now(),
+        )
+        return True
+
+    def queue_for_extraction(self, *, when=None) -> bool:
+        """Queue this Snapshot for the runner using the normal state path."""
+        return self.update_and_requeue(
+            status=self.StatusChoices.QUEUED,
+            retry_at=when or timezone.now(),
+            current_step=0,
+        )
+
+    def pause(self, *, save: bool = True) -> bool:
+        paused = super().pause(save=save)
+        if paused and self.pk:
+            ArchiveResult.pause_queryset(self.archiveresult_set.all())
+        return paused
+
+    def resume(self, *, when: datetime | None = None, save: bool = True) -> bool:
+        resumed = super().resume(when=when, save=save)
+        if resumed and self.pk:
+            ArchiveResult.resume_queryset(self.archiveresult_set.all(), when=when)
+        return resumed
+
+    def restore_paused_scheduler_marker(self) -> None:
+        """
+        Keep explicit maintenance from accidentally resuming paused snapshots.
+
+        Targeted jobs such as `archivebox update --index-only` may bump
+        retry_at so the orchestrator can run only queued search ArchiveResult
+        rows. After that maintenance pass, the lifecycle must remain PAUSED and
+        retry_at must go back to MAX until a real resume transition happens.
+        """
+        type(self).objects.filter(pk=self.pk, status=self.StatusChoices.PAUSED).update(
+            retry_at=RETRY_AT_MAX,
+            modified_at=timezone.now(),
+        )
+
+    def cancel(self) -> None:
+        self.status = self.StatusChoices.SEALED
+        self.retry_at = None
+        self.save(update_fields=["status", "retry_at", "modified_at"])
 
     def get_delete_after_config_value(self):
         return get_config(snapshot=self).DELETE_AFTER
@@ -1989,22 +2156,7 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
 
     @cached_property
     def archive_size(self):
-        if hasattr(self, "output_size_sum"):
-            return int(self.output_size_sum or 0)
-
-        prefetched_results = None
-        if hasattr(self, "_prefetched_objects_cache"):
-            prefetched_results = self._prefetched_objects_cache.get("archiveresult_set")
-        if prefetched_results:
-            return sum(result.output_size or result.output_size_from_files() for result in prefetched_results)
-
-        stats = self.archiveresult_set.aggregate(result_count=models.Count("id"), total_size=models.Sum("output_size"))
-        if stats["result_count"]:
-            return int(stats["total_size"] or 0)
-        try:
-            return get_dir_size(self.output_dir)[0]
-        except Exception:
-            return 0
+        return int(self.output_size or 0)
 
     def save_tags(self, tags: Iterable[str] = ()) -> None:
         tags_id = [Tag.objects.get_or_create(name=tag)[0].pk for tag in tags if tag.strip()]
@@ -2245,9 +2397,11 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         update_fields = []
 
         if queue_for_extraction:
-            snapshot.status = Snapshot.StatusChoices.QUEUED
+            if snapshot.status != Snapshot.StatusChoices.PAUSED:
+                snapshot.status = Snapshot.StatusChoices.QUEUED
+                update_fields.append("status")
             snapshot.retry_at = timezone.now()
-            update_fields.extend(["status", "retry_at"])
+            update_fields.append("retry_at")
 
         # Update additional fields if provided
         for field_name in ("depth", "parent_snapshot_id", "crawl_id", "bookmarked_at", "created_at", "downloaded_at"):
@@ -2384,6 +2538,7 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
             ],
         )
         legacy_result_count = retryable_results.filter(hook_name="").count()
+        now = timezone.now()
         count = retryable_results.exclude(hook_name="").update(
             status=ArchiveResult.StatusChoices.QUEUED,
             output_str="",
@@ -2393,19 +2548,11 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
             output_mimetypes="",
             start_ts=None,
             end_ts=None,
+            modified_at=now,
         )
 
         if count + legacy_result_count > 0:
-            self.status = self.StatusChoices.QUEUED
-            self.retry_at = timezone.now()
-            self.current_step = 0  # Reset to step 0 for retry
-            self.save(update_fields=["status", "retry_at", "current_step", "modified_at"])
-
-            crawl = self.crawl
-            if crawl.status != crawl.StatusChoices.STARTED:
-                crawl.status = crawl.StatusChoices.QUEUED
-            crawl.retry_at = timezone.now()
-            crawl.save(update_fields=["status", "retry_at", "modified_at"])
+            self.queue_for_extraction(when=now)
 
         return count + legacy_result_count
 
@@ -2961,13 +3108,21 @@ class SnapshotMachine(BaseStateMachine):
     # States
     queued = State(value=Snapshot.StatusChoices.QUEUED, initial=True)
     started = State(value=Snapshot.StatusChoices.STARTED)
+    paused = State(value=Snapshot.StatusChoices.PAUSED)
     sealed = State(value=Snapshot.StatusChoices.SEALED, final=True)
 
     # Tick Event (polled by workers)
-    tick = queued.to.itself(unless="can_start") | queued.to(started, cond="can_start") | started.to(sealed, cond="is_finished")
+    tick = (
+        queued.to.itself(unless="can_start")
+        | queued.to(started, cond="can_start")
+        | started.to(sealed, cond="is_finished")
+        | paused.to.itself()
+    )
 
     # Manual event (can also be triggered by last ArchiveResult finishing)
     seal = started.to(sealed)
+    pause_requested = queued.to(paused) | started.to(paused)
+    resume_requested = paused.to(queued)
 
     snapshot: Snapshot
 
@@ -2986,6 +3141,13 @@ class SnapshotMachine(BaseStateMachine):
             status=Snapshot.StatusChoices.QUEUED,
         )
 
+    @paused.enter
+    def enter_paused(self):
+        self.snapshot.update_and_requeue(
+            retry_at=RETRY_AT_MAX,
+            status=Snapshot.StatusChoices.PAUSED,
+        )
+
     @started.enter
     def enter_started(self):
         """Just mark as started. The shared runner creates ArchiveResults and runs hooks."""
@@ -2995,8 +3157,6 @@ class SnapshotMachine(BaseStateMachine):
 
     @sealed.enter
     def enter_sealed(self):
-        import sys
-
         # Clean up background hooks
         self.snapshot.cleanup()
 
@@ -3005,19 +3165,19 @@ class SnapshotMachine(BaseStateMachine):
             status=Snapshot.StatusChoices.SEALED,
         )
 
-        print(f"[cyan]  ✅ SnapshotMachine.enter_sealed() - sealed {self.snapshot.url}[/cyan]", file=sys.stderr)
-
         # Check if this is the last snapshot for the parent crawl - if so, seal the crawl
         if self.snapshot.crawl:
             crawl = self.snapshot.crawl
             remaining_active = Snapshot.objects.filter(
                 crawl=crawl,
-                status__in=[Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED],
+                status__in=[
+                    Snapshot.StatusChoices.QUEUED,
+                    Snapshot.StatusChoices.STARTED,
+                    Snapshot.StatusChoices.PAUSED,
+                ],
             ).count()
 
             if remaining_active == 0 and crawl.status == crawl.StatusChoices.STARTED:
-                print(f"[cyan]🔒 All snapshots sealed for crawl {crawl.id}, sealing crawl[/cyan]", file=sys.stderr)
-                # Seal the parent crawl
                 cast(Any, crawl).sm.seal()
 
 
@@ -3025,6 +3185,7 @@ class ArchiveResult(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, M
     class StatusChoices(models.TextChoices):
         QUEUED = "queued", "Queued"
         STARTED = "started", "Started"
+        PAUSED = "paused", "Paused"
         BACKOFF = "backoff", "Waiting to retry"
         SUCCEEDED = "succeeded", "Succeeded"
         FAILED = "failed", "Failed"
@@ -3053,6 +3214,7 @@ class ArchiveResult(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, M
             "noresults": cls.StatusChoices.NORESULTS,
             "queued": cls.StatusChoices.QUEUED,
             "started": cls.StatusChoices.STARTED,
+            "paused": cls.StatusChoices.PAUSED,
             "backoff": cls.StatusChoices.BACKOFF,
         }.get(str(status or "").strip().lower(), cls.StatusChoices.FAILED)
 
@@ -3100,6 +3262,7 @@ class ArchiveResult(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, M
     end_ts = models.DateTimeField(default=None, null=True, blank=True)
 
     status = models.CharField(max_length=16, choices=StatusChoices.choices, default=StatusChoices.QUEUED, db_index=True)
+    retry_at = models.DateTimeField(default=None, null=True, blank=True, db_index=True)
     notes = models.TextField(blank=True, null=False, default="")
     # output_dir is computed via @property from snapshot.output_dir / plugin
 
@@ -3122,6 +3285,22 @@ class ArchiveResult(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, M
 
     def __str__(self):
         return f"[{self.id}] {self.snapshot.url[:64]} -> {self.plugin}"
+
+    @staticmethod
+    def _format_output_line_for_display(line: str) -> str:
+        raw_line = str(line or "")
+        stripped = raw_line.strip()
+        if not stripped or "://" in stripped or not stripped.startswith(("/", "~/")):
+            return raw_line
+        try:
+            data_dir = CONSTANTS.DATA_DIR.expanduser().resolve(strict=False)
+            rel_path = Path(stripped).expanduser().resolve(strict=False).relative_to(data_dir)
+        except (OSError, ValueError):
+            return raw_line
+        return f"{raw_line[: len(raw_line) - len(raw_line.lstrip())]}./{rel_path}{raw_line[len(raw_line.rstrip()):]}"
+
+    def output_str_for_display(self) -> str:
+        return "\n".join(self._format_output_line_for_display(line) for line in str(self.output_str or "").splitlines())
 
     def get_delete_after_config_value(self):
         return get_config(archiveresult=self).DELETE_AFTER
@@ -3225,6 +3404,13 @@ class ArchiveResult(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, M
             return None
 
     def save(self, *args, **kwargs):
+        is_new = self._state.adding
+        update_fields = kwargs.get("update_fields")
+        refresh_snapshot_size = is_new or update_fields is None or "output_size" in update_fields or "snapshot" in update_fields or "snapshot_id" in update_fields
+        old_snapshot_id = None
+        if refresh_snapshot_size and not is_new:
+            old_snapshot_id = type(self).objects.filter(pk=self.pk).values_list("snapshot_id", flat=True).first()
+
         update_fields = kwargs.get("update_fields")
         if self.delete_at is None:
             self.set_delete_at_from_config()
@@ -3234,6 +3420,9 @@ class ArchiveResult(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, M
         # Skip ModelWithOutputDir.save() to avoid creating index.json in plugin directories
         # Call the Django Model.save() directly instead
         models.Model.save(self, *args, **kwargs)
+        if refresh_snapshot_size:
+            snapshot_ids = {snapshot_id for snapshot_id in (old_snapshot_id, self.snapshot_id) if snapshot_id}
+            transaction.on_commit(lambda: type(self).refresh_snapshot_output_sizes(snapshot_ids))
 
         # if is_new:
         #     from archivebox.misc.logging_util import log_worker_event
@@ -3249,6 +3438,19 @@ class ArchiveResult(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, M
         #             'status': self.status,
         #         },
         #     )
+
+    def delete(self, *args, **kwargs):
+        snapshot_id = self.snapshot_id
+        deleted = super().delete(*args, **kwargs)
+        if snapshot_id:
+            transaction.on_commit(lambda: type(self).refresh_snapshot_output_sizes({snapshot_id}))
+        return deleted
+
+    @staticmethod
+    def refresh_snapshot_output_sizes(snapshot_ids):
+        for snapshot_id in snapshot_ids:
+            total_size = ArchiveResult.objects.filter(snapshot_id=snapshot_id).aggregate(total_size=Sum("output_size"))["total_size"] or 0
+            Snapshot.objects.filter(pk=snapshot_id).update(output_size=total_size)
 
     @cached_property
     def snapshot_dir(self):
@@ -3267,6 +3469,7 @@ class ArchiveResult(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, M
 
     def reset_for_retry(self, *, save: bool = True) -> None:
         self.status = self.StatusChoices.QUEUED
+        self.retry_at = None
         self.output_str = ""
         self.output_json = None
         self.output_files = {}
@@ -3278,6 +3481,7 @@ class ArchiveResult(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, M
             self.save(
                 update_fields=[
                     "status",
+                    "retry_at",
                     "output_str",
                     "output_json",
                     "output_files",
@@ -3288,6 +3492,48 @@ class ArchiveResult(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, M
                     "modified_at",
                 ],
             )
+
+    @property
+    def is_paused(self) -> bool:
+        return self.status == self.StatusChoices.PAUSED
+
+    @classmethod
+    def pause_queryset(cls, queryset) -> int:
+        return queryset.exclude(status__in=[*cls.FINAL_STATES, cls.StatusChoices.PAUSED]).update(
+            status=cls.StatusChoices.PAUSED,
+            retry_at=RETRY_AT_MAX,
+            modified_at=timezone.now(),
+        )
+
+    @classmethod
+    def resume_queryset(cls, queryset, *, when: datetime | None = None) -> int:
+        return queryset.filter(status=cls.StatusChoices.PAUSED).update(
+            status=cls.StatusChoices.QUEUED,
+            retry_at=when or timezone.now(),
+            modified_at=timezone.now(),
+        )
+
+    def pause(self, *, save: bool = True) -> bool:
+        if self.status in self.FINAL_STATES:
+            return False
+        if self.is_paused:
+            return False
+        self.status = self.StatusChoices.PAUSED
+        self.retry_at = RETRY_AT_MAX
+        if save:
+            self.pause_queryset(type(self).objects.filter(pk=self.pk))
+            self.refresh_from_db()
+        return True
+
+    def resume(self, *, when: datetime | None = None, save: bool = True) -> bool:
+        if not self.is_paused:
+            return False
+        self.status = self.StatusChoices.QUEUED
+        self.retry_at = when or timezone.now()
+        if save:
+            self.resume_queryset(type(self).objects.filter(pk=self.pk), when=self.retry_at)
+            self.refresh_from_db()
+        return True
 
     @property
     def plugin_module(self) -> Any | None:
@@ -3370,7 +3616,7 @@ class ArchiveResult(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, M
             return False
 
         snapshot_dir = Path(snapshot_dir or self.snapshot.output_dir)
-        exclude_names = {"stdout.log", "stderr.log", "process.pid", "hook.pid", "listener.pid", "cmd.sh"}
+        exclude_names = {"stdout.log", "stderr.log", "process.pid", "hook.pid", "listener.pid"}
         output_files: dict[str, dict[str, Any]] = {}
         mime_sizes: dict[str, int] = defaultdict(int)
         total_size = 0
@@ -3505,7 +3751,7 @@ class ArchiveResult(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, M
         plugin_name: str | None = None,
         output_file_map: dict[str, dict[str, Any]] | None = None,
     ) -> str | None:
-        ignored = {"stdout.log", "stderr.log", "hook.pid", "listener.pid", "cmd.sh"}
+        ignored = {"stdout.log", "stderr.log", "hook.pid", "listener.pid"}
         candidates = [
             path
             for path in output_file_paths
@@ -3731,15 +3977,14 @@ class ArchiveResult(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, M
             self.save()
             return
 
-        # Read and parse JSONL output from stdout.log
-        stdout_file = plugin_dir / "stdout.log"
         records = []
         process = self.process_record
         if process:
             records = extract_records_from_process(process)
 
         if not records:
-            stdout = stdout_file.read_text() if stdout_file.exists() else ""
+            stdout_file = plugin_dir / "stdout.log"
+            stdout = stdout_file.read_text(errors="replace") if stdout_file.exists() else ""
             records = Process.parse_records_from_text(stdout)
 
         # Find ArchiveResult record and update status/output from it
@@ -3785,7 +4030,7 @@ class ArchiveResult(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, M
                 self.output_str = "Hook did not output ArchiveResult record"
 
         # Walk filesystem and populate output_files, output_size, output_mimetypes
-        exclude_names = {"stdout.log", "stderr.log", "process.pid", "hook.pid", "listener.pid", "cmd.sh"}
+        exclude_names = {"stdout.log", "stderr.log", "process.pid", "hook.pid", "listener.pid"}
         mime_sizes = defaultdict(int)
         total_size = 0
         output_files = {}

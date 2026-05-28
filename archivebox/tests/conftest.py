@@ -144,6 +144,14 @@ def isolate_test_runtime(tmp_path, monkeypatch):
     original_popen = subprocess.Popen
     os.chdir(tmp_path)
 
+    def reset_machine_model_caches() -> None:
+        import archivebox.machine.models as machine_models
+
+        machine_models._CURRENT_MACHINE = None
+        machine_models._CURRENT_INTERFACE = None
+        machine_models._CURRENT_PROCESS = None
+        machine_models._CURRENT_BINARIES.clear()
+
     def guarded_chdir(path: os.PathLike[str] | str) -> None:
         _assert_not_repo_path(Path(path), label="cwd")
         original_chdir(path)
@@ -163,10 +171,12 @@ def isolate_test_runtime(tmp_path, monkeypatch):
     os.environ.pop("USERS_DIR", None)
     os.environ.pop("CRAWL_DIR", None)
     os.environ.pop("SNAP_DIR", None)
+    reset_machine_model_caches()
     try:
         _assert_safe_runtime_paths(cwd=Path.cwd(), env=os.environ)
         yield
     finally:
+        reset_machine_model_caches()
         original_chdir(original_cwd)
         os.environ.clear()
         os.environ.update(original_env)
@@ -325,7 +335,7 @@ def wait_for_archive_outputs(
                 rel_path = candidate.relative_to(snapshot_dir)
                 if rel_path.parts and rel_path.parts[0] == 'responses':
                     continue
-                if rel_path.name in {"stdout.log", "stderr.log", "cmd.sh"}:
+                if rel_path.name in {"stdout.log", "stderr.log"}:
                     continue
                 output_rel = str(rel_path)
                 break
@@ -436,7 +446,6 @@ def real_archive_with_example(tmp_path_factory, request):
             "--set",
             "LISTEN_HOST=archivebox.localhost:8000",
             "PUBLIC_INDEX=True",
-            "PUBLIC_SNAPSHOTS=True",
             "PUBLIC_ADD_VIEW=True",
         ],
         cwd=tmp_path,

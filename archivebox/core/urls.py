@@ -24,6 +24,7 @@ from archivebox.core.views import (
     AddView,
     WebAddView,
     HealthCheckView,
+    live_progress_screencast_frame_view,
     live_progress_view,
 )
 
@@ -69,6 +70,11 @@ urlpatterns = [
     path("accounts/login/", RedirectView.as_view(url="/admin/login/")),
     path("accounts/logout/", RedirectView.as_view(url="/admin/logout/")),
     path("accounts/", include("django.contrib.auth.urls")),
+    re_path(
+        r"^admin/live-progress/screencast/(?P<snapshot_id>[0-9a-fA-F-]{8,36})\.jpg$",
+        archivebox_admin.admin_view(live_progress_screencast_frame_view),
+        name="live_progress_screencast_frame",
+    ),
     path("admin/live-progress/", archivebox_admin.admin_view(live_progress_view), name="live_progress"),
     path("admin/", archivebox_admin.urls),
     path("api/", include("archivebox.api.urls"), name="api"),

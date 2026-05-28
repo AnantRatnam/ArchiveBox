@@ -25,18 +25,6 @@ class CoreConfig(AppConfig):
         if "makemigrations" not in sys.argv:
             from archivebox.core import models  # noqa: F401
 
-        pidfile = os.environ.get("ARCHIVEBOX_RUNSERVER_PIDFILE")
-        if pidfile:
-            should_write_pid = True
-            if os.environ.get("ARCHIVEBOX_AUTORELOAD") == "1":
-                should_write_pid = os.environ.get(DJANGO_AUTORELOAD_ENV) == "true"
-            if should_write_pid:
-                try:
-                    with open(pidfile, "w") as handle:
-                        handle.write(str(os.getpid()))
-                except Exception:
-                    pass
-
         def _should_prepare_runtime() -> bool:
             if os.environ.get("ARCHIVEBOX_RUNSERVER") == "1":
                 if os.environ.get("ARCHIVEBOX_AUTORELOAD") == "1":
@@ -45,6 +33,13 @@ class CoreConfig(AppConfig):
             return False
 
         if _should_prepare_runtime():
-            from archivebox.machine.models import Machine
+            from archivebox.config import CONSTANTS
+            from archivebox.machine.models import Process
 
-            Machine.current()
+            Process.current().mark_running(
+                process_type=Process.TypeChoices.WORKER,
+                worker_type="worker_runserver",
+                pwd=str(CONSTANTS.DATA_DIR),
+                url=os.environ.get("ARCHIVEBOX_RUNSERVER_BIND_URL") or "",
+                timeout=0,
+            )

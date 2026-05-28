@@ -5,8 +5,14 @@ Verify update drains old dirs, reconciles DB, and queues snapshots.
 """
 
 import os
-import sqlite3
 import subprocess
+
+import pytest
+
+from archivebox.core.models import Snapshot
+from archivebox.tests.orm_helpers import use_archivebox_db
+
+pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def test_update_runs_successfully_on_empty_archive(tmp_path, process):
@@ -88,10 +94,8 @@ def test_update_preserves_snapshot_count(tmp_path, process, disable_extractors_d
     )
 
     # Count before update
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    count_before = c.execute("SELECT COUNT(*) FROM core_snapshot").fetchone()[0]
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        count_before = Snapshot.objects.count()
 
     assert count_before == 1
 
@@ -104,10 +108,8 @@ def test_update_preserves_snapshot_count(tmp_path, process, disable_extractors_d
     )
 
     # Count after update
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    count_after = c.execute("SELECT COUNT(*) FROM core_snapshot").fetchone()[0]
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        count_after = Snapshot.objects.count()
 
     # Snapshot count should remain the same
     assert count_after == count_before
@@ -135,10 +137,8 @@ def test_update_seals_migrated_snapshots(tmp_path, process, disable_extractors_d
     assert result.returncode == 0
 
     # Check that snapshot remains archived instead of being queued for a full re-crawl.
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    status, retry_at = c.execute("SELECT status, retry_at FROM core_snapshot").fetchone()
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        status, retry_at = Snapshot.objects.values_list("status", "retry_at").get()
 
     assert status == "sealed"
     assert retry_at is None

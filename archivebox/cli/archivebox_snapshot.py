@@ -35,8 +35,7 @@ from collections.abc import Iterable
 
 import rich_click as click
 from rich import print as rprint
-from django.db.models import Case, IntegerField, Q, Sum, When
-from django.db.models.functions import Coalesce
+from django.db.models import Case, IntegerField, Q, QuerySet, When
 
 from archivebox.cli.cli_utils import apply_filters
 
@@ -179,26 +178,17 @@ def create_snapshots(
 # =============================================================================
 
 
-def list_snapshots(
+def build_snapshot_queryset(
+    *,
     status: str | None = None,
     url__icontains: str | None = None,
     url__istartswith: str | None = None,
     tag: str | None = None,
     crawl_id: str | None = None,
-    limit: int | None = None,
     sort: str | None = None,
-    csv: str | None = None,
-    with_headers: bool = False,
     search: str | None = None,
     query: str | None = None,
-) -> int:
-    """
-    List Snapshots as JSONL with optional filters.
-
-    Exit codes:
-        0: Success (even if no results)
-    """
-    from archivebox.misc.jsonl import write_record
+) -> QuerySet:
     from archivebox.core.models import Snapshot
     from archivebox.search import (
         get_default_search_mode,
@@ -207,24 +197,17 @@ def list_snapshots(
         query_search_index,
     )
 
-    if with_headers and not csv:
-        rprint("[red]--with-headers requires --csv[/red]", file=sys.stderr)
-        return 2
-
-    is_tty = sys.stdout.isatty() and not csv
-
     queryset = Snapshot.objects.order_by("-created_at")
+    queryset = apply_filters(
+        queryset,
+        {
+            "status": status,
+            "url__icontains": url__icontains,
+            "url__istartswith": url__istartswith,
+            "crawl_id": crawl_id,
+        },
+    )
 
-    # Apply filters
-    filter_kwargs = {
-        "status": status,
-        "url__icontains": url__icontains,
-        "url__istartswith": url__istartswith,
-        "crawl_id": crawl_id,
-    }
-    queryset = apply_filters(queryset, filter_kwargs)
-
-    # Tag filter requires special handling (M2M)
     if tag:
         queryset = queryset.filter(tags__name__iexact=tag)
 
@@ -265,6 +248,48 @@ def list_snapshots(
     if sort:
         queryset = queryset.order_by(sort)
 
+    return queryset
+
+
+def list_snapshots(
+    status: str | None = None,
+    url__icontains: str | None = None,
+    url__istartswith: str | None = None,
+    tag: str | None = None,
+    crawl_id: str | None = None,
+    limit: int | None = None,
+    sort: str | None = None,
+    csv: str | None = None,
+    with_headers: bool = False,
+    search: str | None = None,
+    query: str | None = None,
+) -> int:
+    """
+    List Snapshots as JSONL with optional filters.
+
+    Exit codes:
+        0: Success (even if no results)
+    """
+    from archivebox.misc.jsonl import write_record
+    from archivebox.core.models import Snapshot
+
+    if with_headers and not csv:
+        rprint("[red]--with-headers requires --csv[/red]", file=sys.stderr)
+        return 2
+
+    is_tty = sys.stdout.isatty() and not csv
+
+    queryset = build_snapshot_queryset(
+        status=status,
+        url__icontains=url__icontains,
+        url__istartswith=url__istartswith,
+        tag=tag,
+        crawl_id=crawl_id,
+        sort=sort,
+        search=search,
+        query=query,
+    )
+
     if not is_tty:
         if limit:
             limited_ids = list(queryset.values_list("id", flat=True)[:limit])
@@ -273,7 +298,7 @@ def list_snapshots(
                 output_field=IntegerField(),
             )
             queryset = Snapshot.objects.filter(id__in=limited_ids).order_by(preserved_order)
-        queryset = queryset.annotate(output_size_sum=Coalesce(Sum("archiveresult__output_size"), 0)).prefetch_related("tags")
+        queryset = queryset.prefetch_related("tags")
     elif limit:
         queryset = queryset[:limit]
 

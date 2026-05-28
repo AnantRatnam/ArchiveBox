@@ -4,23 +4,26 @@
 import json
 import os
 import subprocess
-import sqlite3
 import time
 from pathlib import Path
 
 import pytest
+
+from archivebox.core.models import ArchiveResult, Snapshot
+from archivebox.crawls.models import Crawl
+from archivebox.machine.models import Process
+from archivebox.tests.orm_helpers import use_archivebox_db
+
+pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def wait_for_db_condition(timeout, condition, interval=0.5):
     deadline = time.time() + timeout
     while time.time() < deadline:
         if os.path.exists("index.sqlite3"):
-            conn = sqlite3.connect("index.sqlite3")
-            try:
-                if condition(conn.cursor()):
+            with use_archivebox_db("."):
+                if condition():
                     return True
-            finally:
-                conn.close()
         time.sleep(interval)
     return False
 
@@ -87,11 +90,12 @@ def test_background_hooks_dont_block_parser_extractors(tmp_path, process, recurs
 
     assert wait_for_db_condition(
         timeout=120,
-        condition=lambda c: (
-            c.execute(
-                "SELECT COUNT(*) FROM core_archiveresult WHERE plugin LIKE 'parse_%_urls' AND status IN ('started', 'succeeded', 'failed')",
-            ).fetchone()[0]
-            > 0
+        condition=lambda: (
+            ArchiveResult.objects.filter(
+                plugin__startswith="parse_",
+                plugin__endswith="_urls",
+                status__in=("started", "succeeded", "failed"),
+            ).exists()
         ),
     ), "Parser extractors never progressed beyond queued status"
     stdout, stderr = stop_process(proc)
@@ -101,21 +105,19 @@ def test_background_hooks_dont_block_parser_extractors(tmp_path, process, recurs
     if stdout:
         print(f"\n=== STDOUT (last 2000 chars) ===\n{stdout[-2000:]}\n=== END STDOUT ===\n")
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-
-    snapshots = c.execute("SELECT url, depth, status FROM core_snapshot").fetchall()
-    bg_hooks = c.execute(
-        "SELECT plugin, status FROM core_archiveresult WHERE plugin IN ('favicon', 'consolelog', 'ssl', 'responses', 'redirects', 'staticfile') ORDER BY plugin",
-    ).fetchall()
-    parser_extractors = c.execute(
-        "SELECT plugin, status FROM core_archiveresult WHERE plugin LIKE 'parse_%_urls' ORDER BY plugin",
-    ).fetchall()
-    all_extractors = c.execute(
-        "SELECT plugin, status FROM core_archiveresult ORDER BY plugin",
-    ).fetchall()
-
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        snapshots = list(Snapshot.objects.values_list("url", "depth", "status"))
+        bg_hooks = list(
+            ArchiveResult.objects.filter(plugin__in=("favicon", "consolelog", "ssl", "responses", "redirects", "staticfile"))
+            .order_by("plugin")
+            .values_list("plugin", "status"),
+        )
+        parser_extractors = list(
+            ArchiveResult.objects.filter(plugin__startswith="parse_", plugin__endswith="_urls")
+            .order_by("plugin")
+            .values_list("plugin", "status"),
+        )
+        all_extractors = list(ArchiveResult.objects.order_by("plugin").values_list("plugin", "status"))
 
     assert len(snapshots) > 0, (
         f"Should have created snapshot after Crawl hooks finished. "
@@ -167,14 +169,13 @@ def test_parser_extractors_emit_snapshot_jsonl(tmp_path, process, recursive_test
     )
     assert result.returncode == 0, result.stderr
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-
-    parse_html = c.execute(
-        "SELECT id, status, output_str FROM core_archiveresult WHERE plugin LIKE '%parse_html_urls' ORDER BY id LIMIT 1",
-    ).fetchone()
-
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        parse_html = (
+            ArchiveResult.objects.filter(plugin__endswith="parse_html_urls")
+            .order_by("id")
+            .values_list("id", "status", "output_str")
+            .first()
+        )
 
     if parse_html:
         status = parse_html[1]
@@ -222,9 +223,9 @@ def test_recursive_crawl_creates_child_snapshots(tmp_path, process, recursive_te
         ["archivebox", "add", "--depth=1", "--plugins=wget,parse_html_urls", recursive_test_site["root_url"]],
         env=env,
         timeout=120,
-        condition=lambda c: (
-            c.execute("SELECT COUNT(*) FROM core_snapshot WHERE depth = 0").fetchone()[0] >= 1
-            and c.execute("SELECT COUNT(*) FROM core_snapshot WHERE depth = 1").fetchone()[0] >= len(recursive_test_site["child_urls"])
+        condition=lambda: (
+            Snapshot.objects.filter(depth=0).count() >= 1
+            and Snapshot.objects.filter(depth=1).count() >= len(recursive_test_site["child_urls"])
         ),
     )
 
@@ -233,29 +234,29 @@ def test_recursive_crawl_creates_child_snapshots(tmp_path, process, recursive_te
     if stdout:
         print(f"\n=== STDOUT (last 2000 chars) ===\n{stdout[-2000:]}\n=== END STDOUT ===\n")
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-
-    all_snapshots = c.execute("SELECT url, depth FROM core_snapshot").fetchall()
-    root_snapshot = c.execute(
-        "SELECT id, url, depth, parent_snapshot_id FROM core_snapshot WHERE depth = 0 ORDER BY created_at LIMIT 1",
-    ).fetchone()
-    child_snapshots = c.execute(
-        "SELECT id, url, depth, parent_snapshot_id FROM core_snapshot WHERE depth = 1",
-    ).fetchall()
-    crawl = c.execute(
-        "SELECT id, max_depth FROM crawls_crawl ORDER BY created_at DESC LIMIT 1",
-    ).fetchone()
-    parser_status = c.execute(
-        "SELECT plugin, status FROM core_archiveresult WHERE snapshot_id = ? AND plugin LIKE 'parse_%_urls'",
-        (root_snapshot[0] if root_snapshot else "",),
-    ).fetchall()
-    started_extractors = c.execute(
-        "SELECT plugin, status FROM core_archiveresult WHERE snapshot_id = ? AND status = 'started'",
-        (root_snapshot[0] if root_snapshot else "",),
-    ).fetchall()
-
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        all_snapshots = list(Snapshot.objects.values_list("url", "depth"))
+        root_snapshot = (
+            Snapshot.objects.filter(depth=0)
+            .order_by("created_at")
+            .values_list("id", "url", "depth", "parent_snapshot_id")
+            .first()
+        )
+        child_snapshots = list(Snapshot.objects.filter(depth=1).values_list("id", "url", "depth", "parent_snapshot_id"))
+        crawl = Crawl.objects.order_by("-created_at").values_list("id", "max_depth").first()
+        parser_status = list(
+            ArchiveResult.objects.filter(
+                snapshot_id=root_snapshot[0] if root_snapshot else None,
+                plugin__startswith="parse_",
+                plugin__endswith="_urls",
+            ).values_list("plugin", "status"),
+        )
+        started_extractors = list(
+            ArchiveResult.objects.filter(
+                snapshot_id=root_snapshot[0] if root_snapshot else None,
+                status="started",
+            ).values_list("plugin", "status"),
+        )
 
     assert root_snapshot is not None, f"Root snapshot should exist at depth=0. All snapshots: {all_snapshots}"
     root_id = root_snapshot[0]
@@ -283,32 +284,26 @@ def test_recursive_crawl_respects_depth_limit(tmp_path, process, disable_extract
         ["archivebox", "add", "--depth=1", "--plugins=wget,parse_html_urls", recursive_test_site["root_url"]],
         env=env,
         timeout=120,
-        condition=lambda c: (
-            c.execute("SELECT COUNT(*) FROM core_snapshot WHERE depth = 0").fetchone()[0] >= 1
-            and c.execute("SELECT COUNT(*) FROM core_snapshot WHERE depth = 1").fetchone()[0] >= len(recursive_test_site["child_urls"])
-            and c.execute(
-                "SELECT COUNT(DISTINCT ar.snapshot_id) "
-                "FROM core_archiveresult ar "
-                "JOIN core_snapshot s ON s.id = ar.snapshot_id "
-                "WHERE s.depth = 1 "
-                "AND ar.plugin LIKE 'parse_%_urls' "
-                "AND ar.status IN ('started', 'succeeded', 'failed')",
-            ).fetchone()[0]
+        condition=lambda: (
+            Snapshot.objects.filter(depth=0).count() >= 1
+            and Snapshot.objects.filter(depth=1).count() >= len(recursive_test_site["child_urls"])
+            and ArchiveResult.objects.filter(
+                snapshot__depth=1,
+                plugin__startswith="parse_",
+                plugin__endswith="_urls",
+                status__in=("started", "succeeded", "failed"),
+            )
+            .values("snapshot_id")
+            .distinct()
+            .count()
             >= len(recursive_test_site["child_urls"])
         ),
     )
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-
-    max_depth_found = c.execute(
-        "SELECT MAX(depth) FROM core_snapshot",
-    ).fetchone()[0]
-    depth_counts = c.execute(
-        "SELECT depth, COUNT(*) FROM core_snapshot GROUP BY depth ORDER BY depth",
-    ).fetchall()
-
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        depths = list(Snapshot.objects.values_list("depth", flat=True))
+        max_depth_found = max(depths) if depths else None
+        depth_counts = [(depth, Snapshot.objects.filter(depth=depth).count()) for depth in sorted(set(depths))]
 
     assert max_depth_found is not None, "Should have at least one snapshot"
     assert max_depth_found <= 1, f"Max depth should not exceed 1, got {max_depth_found}. Depth distribution: {depth_counts}"
@@ -352,18 +347,13 @@ def test_recursive_crawl_respects_max_urls(tmp_path, process, disable_extractors
 
     assert result.returncode == 0, result.stderr
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
+    with use_archivebox_db(tmp_path):
+        crawl_obj = Crawl.objects.order_by("-created_at").first()
+        crawl = (crawl_obj.max_depth, crawl_obj.config["CRAWL_MAX_URLS"]) if crawl_obj else None
+        snapshot_rows = list(Snapshot.objects.order_by("depth", "url").values_list("url", "depth", "parent_snapshot_id"))
+        depth_counts = {depth: Snapshot.objects.filter(depth=depth).count() for depth in set(Snapshot.objects.values_list("depth", flat=True))}
 
-    crawl = c.execute(
-        "SELECT max_depth, max_urls, json_extract(config, '$.CRAWL_MAX_URLS') FROM crawls_crawl ORDER BY created_at DESC LIMIT 1",
-    ).fetchone()
-    snapshot_rows = c.execute("SELECT url, depth, parent_snapshot_id FROM core_snapshot ORDER BY depth, url").fetchall()
-    depth_counts = dict(c.execute("SELECT depth, COUNT(*) FROM core_snapshot GROUP BY depth ORDER BY depth").fetchall())
-
-    conn.close()
-
-    assert crawl == (2, 4, 4)
+    assert crawl == (2, 4)
     assert len(snapshot_rows) == 4
     assert depth_counts.get(0, 0) == 1
     assert depth_counts.get(1, 0) == 3
@@ -401,18 +391,16 @@ def test_recursive_crawl_depth_two_writes_real_outputs_and_process_records(tmp_p
         ["archivebox", "add", "--depth=2", "--plugins=wget,parse_html_urls", recursive_test_site["root_url"]],
         env=env,
         timeout=180,
-        condition=lambda c: (
-            c.execute("SELECT COUNT(*) FROM core_snapshot WHERE depth = 0").fetchone()[0] >= 1
-            and c.execute("SELECT COUNT(*) FROM core_snapshot WHERE depth = 1").fetchone()[0] >= len(recursive_test_site["child_urls"])
-            and c.execute("SELECT COUNT(*) FROM core_snapshot WHERE depth = 2").fetchone()[0] >= len(recursive_test_site["deep_urls"])
-            and c.execute(
-                "SELECT COUNT(*) "
-                "FROM core_archiveresult ar "
-                "JOIN core_snapshot s ON s.id = ar.snapshot_id "
-                "WHERE ar.plugin LIKE 'parse_%_urls' "
-                "AND s.depth IN (0, 1) "
-                "AND ar.status IN ('started', 'succeeded', 'failed', 'skipped', 'noresults')",
-            ).fetchone()[0]
+        condition=lambda: (
+            Snapshot.objects.filter(depth=0).count() >= 1
+            and Snapshot.objects.filter(depth=1).count() >= len(recursive_test_site["child_urls"])
+            and Snapshot.objects.filter(depth=2).count() >= len(recursive_test_site["deep_urls"])
+            and ArchiveResult.objects.filter(
+                plugin__startswith="parse_",
+                plugin__endswith="_urls",
+                snapshot__depth__in=(0, 1),
+                status__in=("started", "succeeded", "failed", "skipped", "noresults"),
+            ).count()
             >= 2
         ),
     )
@@ -422,41 +410,33 @@ def test_recursive_crawl_depth_two_writes_real_outputs_and_process_records(tmp_p
     if stdout:
         print(f"\n=== STDOUT (last 2000 chars) ===\n{stdout[-2000:]}\n=== END STDOUT ===\n")
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-
-    depth_counts = dict(c.execute("SELECT depth, COUNT(*) FROM core_snapshot GROUP BY depth ORDER BY depth").fetchall())
-    crawl = c.execute("SELECT id, max_depth FROM crawls_crawl ORDER BY created_at DESC LIMIT 1").fetchone()
-    root_snapshot = c.execute(
-        "SELECT id, url, depth, parent_snapshot_id FROM core_snapshot WHERE depth = 0 ORDER BY created_at LIMIT 1",
-    ).fetchone()
-    child_rows = c.execute(
-        "SELECT id, url, parent_snapshot_id FROM core_snapshot WHERE depth = 1",
-    ).fetchall()
-    deep_rows = c.execute(
-        "SELECT id, url, parent_snapshot_id FROM core_snapshot WHERE depth = 2",
-    ).fetchall()
-    parser_results = c.execute(
-        "SELECT s.url, s.depth, ar.plugin, ar.status, ar.output_files, ar.output_size "
-        "FROM core_archiveresult ar "
-        "JOIN core_snapshot s ON s.id = ar.snapshot_id "
-        "WHERE ar.plugin LIKE 'parse_%_urls' "
-        "ORDER BY s.depth, s.url",
-    ).fetchall()
-    wget_results = c.execute(
-        "SELECT s.url, s.depth, ar.status, ar.output_files, ar.output_size "
-        "FROM core_archiveresult ar "
-        "JOIN core_snapshot s ON s.id = ar.snapshot_id "
-        "WHERE ar.plugin = 'wget' "
-        "ORDER BY s.depth, s.url",
-    ).fetchall()
-    process_rows = c.execute(
-        "SELECT process_type, worker_type, status, exit_code, pwd, cmd "
-        "FROM machine_process "
-        "WHERE process_type = 'hook' "
-        "ORDER BY created_at",
-    ).fetchall()
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        depths = list(Snapshot.objects.values_list("depth", flat=True))
+        depth_counts = {depth: Snapshot.objects.filter(depth=depth).count() for depth in sorted(set(depths))}
+        crawl = Crawl.objects.order_by("-created_at").values_list("id", "max_depth").first()
+        root_snapshot = (
+            Snapshot.objects.filter(depth=0)
+            .order_by("created_at")
+            .values_list("id", "url", "depth", "parent_snapshot_id")
+            .first()
+        )
+        child_rows = list(Snapshot.objects.filter(depth=1).values_list("id", "url", "parent_snapshot_id"))
+        deep_rows = list(Snapshot.objects.filter(depth=2).values_list("id", "url", "parent_snapshot_id"))
+        parser_results = list(
+            ArchiveResult.objects.filter(plugin__startswith="parse_", plugin__endswith="_urls")
+            .order_by("snapshot__depth", "snapshot__url")
+            .values_list("snapshot__url", "snapshot__depth", "plugin", "status", "output_files", "output_size"),
+        )
+        wget_results = list(
+            ArchiveResult.objects.filter(plugin="wget")
+            .order_by("snapshot__depth", "snapshot__url")
+            .values_list("snapshot__url", "snapshot__depth", "status", "output_files", "output_size"),
+        )
+        process_rows = list(
+            Process.objects.filter(process_type="hook")
+            .order_by("created_at")
+            .values_list("process_type", "worker_type", "status", "exit_code", "pwd", "cmd"),
+        )
 
     assert crawl is not None
     assert crawl[1] == 2
@@ -509,14 +489,7 @@ def test_crawl_snapshot_has_parent_snapshot_field(tmp_path, process, disable_ext
     """Test that Snapshot model has parent_snapshot field."""
     os.chdir(tmp_path)
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-
-    # Check schema for parent_snapshot_id column
-    schema = c.execute("PRAGMA table_info(core_snapshot)").fetchall()
-    conn.close()
-
-    column_names = [col[1] for col in schema]
+    column_names = {field.column for field in Snapshot._meta.local_fields}
 
     assert "parent_snapshot_id" in column_names, f"Snapshot table should have parent_snapshot_id column. Columns: {column_names}"
 
@@ -525,14 +498,7 @@ def test_snapshot_depth_field_exists(tmp_path, process, disable_extractors_dict)
     """Test that Snapshot model has depth field."""
     os.chdir(tmp_path)
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-
-    # Check schema for depth column
-    schema = c.execute("PRAGMA table_info(core_snapshot)").fetchall()
-    conn.close()
-
-    column_names = [col[1] for col in schema]
+    column_names = {field.column for field in Snapshot._meta.local_fields}
 
     assert "depth" in column_names, f"Snapshot table should have depth column. Columns: {column_names}"
 
@@ -548,24 +514,13 @@ def test_root_snapshot_has_depth_zero(tmp_path, process, disable_extractors_dict
         ["archivebox", "add", "--depth=1", "--plugins=wget,parse_html_urls", recursive_test_site["root_url"]],
         env=env,
         timeout=120,
-        condition=lambda c: (
-            c.execute(
-                "SELECT COUNT(*) FROM core_snapshot WHERE url = ?",
-                (recursive_test_site["root_url"],),
-            ).fetchone()[0]
-            >= 1
+        condition=lambda: (
+            Snapshot.objects.filter(url=recursive_test_site["root_url"]).count() >= 1
         ),
     )
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-
-    snapshot = c.execute(
-        "SELECT id, depth FROM core_snapshot WHERE url = ? ORDER BY created_at LIMIT 1",
-        (recursive_test_site["root_url"],),
-    ).fetchone()
-
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        snapshot = Snapshot.objects.filter(url=recursive_test_site["root_url"]).order_by("created_at").values_list("id", "depth").first()
 
     assert snapshot is not None, "Root snapshot should be created"
     assert snapshot[1] == 0, f"Root snapshot should have depth=0, got {snapshot[1]}"
@@ -590,25 +545,25 @@ def test_archiveresult_worker_queue_filters_by_foreground_extractors(tmp_path, p
         ["archivebox", "add", "--plugins=favicon,wget,parse_html_urls", recursive_test_site["root_url"]],
         env=env,
         timeout=120,
-        condition=lambda c: (
-            c.execute(
-                "SELECT COUNT(*) FROM core_archiveresult WHERE plugin LIKE 'parse_%_urls' AND status IN ('started', 'succeeded', 'failed')",
-            ).fetchone()[0]
-            > 0
+        condition=lambda: (
+            ArchiveResult.objects.filter(
+                plugin__startswith="parse_",
+                plugin__endswith="_urls",
+                status__in=("started", "succeeded", "failed"),
+            ).exists()
         ),
     )
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-
-    bg_results = c.execute(
-        "SELECT plugin, status FROM core_archiveresult WHERE plugin IN ('favicon', 'consolelog', 'ssl', 'responses', 'redirects', 'staticfile') AND status IN ('started', 'succeeded', 'failed')",
-    ).fetchall()
-    parser_status = c.execute(
-        "SELECT plugin, status FROM core_archiveresult WHERE plugin LIKE 'parse_%_urls'",
-    ).fetchall()
-
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        bg_results = list(
+            ArchiveResult.objects.filter(
+                plugin__in=("favicon", "consolelog", "ssl", "responses", "redirects", "staticfile"),
+                status__in=("started", "succeeded", "failed"),
+            ).values_list("plugin", "status"),
+        )
+        parser_status = list(
+            ArchiveResult.objects.filter(plugin__startswith="parse_", plugin__endswith="_urls").values_list("plugin", "status"),
+        )
 
     if len(bg_results) > 0:
         parser_statuses = [status for _, status in parser_status]

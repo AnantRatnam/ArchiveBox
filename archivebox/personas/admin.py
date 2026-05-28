@@ -26,7 +26,7 @@ class PersonaAdmin(ConfigEditorMixin, BaseModelAdmin):
         (
             "Persona",
             {
-                "fields": ("name", "created_by"),
+                "fields": ("name", "created_by", "permissions"),
                 "classes": ("card", "persona-card-primary"),
             },
         ),

@@ -3,9 +3,14 @@
 
 import os
 import subprocess
-import sqlite3
 
 import pytest
+
+from archivebox.core.models import Snapshot
+from archivebox.crawls.models import Crawl
+from archivebox.tests.orm_helpers import use_archivebox_db
+
+pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def test_crawl_creates_crawl_object(tmp_path, process, disable_extractors_dict):
@@ -19,10 +24,8 @@ def test_crawl_creates_crawl_object(tmp_path, process, disable_extractors_dict):
         env=disable_extractors_dict,
     )
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    crawl = c.execute("SELECT id, max_depth FROM crawls_crawl ORDER BY created_at DESC LIMIT 1").fetchone()
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        crawl = Crawl.objects.order_by("-created_at").first()
 
     assert crawl is not None, "Crawl object should be created"
 
@@ -38,13 +41,11 @@ def test_crawl_depth_sets_max_depth_in_crawl(tmp_path, process, disable_extracto
         env=disable_extractors_dict,
     )
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    crawl = c.execute("SELECT max_depth FROM crawls_crawl ORDER BY created_at DESC LIMIT 1").fetchone()
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        crawl = Crawl.objects.order_by("-created_at").first()
 
     assert crawl is not None
-    assert crawl[0] == 2, "Crawl max_depth should match --depth=2"
+    assert crawl.max_depth == 2, "Crawl max_depth should match --depth=2"
 
 
 def test_crawl_creates_snapshot_for_url(tmp_path, process, disable_extractors_dict):
@@ -58,13 +59,8 @@ def test_crawl_creates_snapshot_for_url(tmp_path, process, disable_extractors_di
         env=disable_extractors_dict,
     )
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    snapshot = c.execute(
-        "SELECT url FROM core_snapshot WHERE url = ?",
-        ("https://example.com",),
-    ).fetchone()
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        snapshot = Snapshot.objects.filter(url="https://example.com").first()
 
     assert snapshot is not None, "Snapshot should be created for input URL"
 
@@ -80,23 +76,13 @@ def test_crawl_links_snapshot_to_crawl(tmp_path, process, disable_extractors_dic
         env=disable_extractors_dict,
     )
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-
-    # Get the crawl ID
-    crawl = c.execute("SELECT id FROM crawls_crawl ORDER BY created_at DESC LIMIT 1").fetchone()
-    assert crawl is not None
-    crawl_id = crawl[0]
-
-    # Check snapshot has correct crawl_id
-    snapshot = c.execute(
-        "SELECT crawl_id FROM core_snapshot WHERE url = ?",
-        ("https://example.com",),
-    ).fetchone()
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        crawl = Crawl.objects.order_by("-created_at").first()
+        assert crawl is not None
+        snapshot = Snapshot.objects.filter(url="https://example.com").first()
 
     assert snapshot is not None
-    assert snapshot[0] == crawl_id, "Snapshot should be linked to Crawl"
+    assert snapshot.crawl_id == crawl.id, "Snapshot should be linked to Crawl"
 
 
 def test_crawl_multiple_urls_creates_multiple_snapshots(tmp_path, process, disable_extractors_dict):
@@ -116,12 +102,9 @@ def test_crawl_multiple_urls_creates_multiple_snapshots(tmp_path, process, disab
         env=disable_extractors_dict,
     )
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    urls = c.execute("SELECT url FROM core_snapshot ORDER BY url").fetchall()
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        urls = list(Snapshot.objects.order_by("url").values_list("url", flat=True))
 
-    urls = [u[0] for u in urls]
     assert "https://example.com" in urls
     assert "https://iana.org" in urls
 
@@ -141,10 +124,8 @@ def test_crawl_from_file_creates_snapshot(tmp_path, process, disable_extractors_
         env=disable_extractors_dict,
     )
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    snapshot = c.execute("SELECT url FROM core_snapshot").fetchone()
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        snapshot = Snapshot.objects.first()
 
     # Should create at least one snapshot (the source file or the URL)
     assert snapshot is not None, "Should create at least one snapshot"
@@ -161,13 +142,11 @@ def test_crawl_persists_input_urls_on_crawl(tmp_path, process, disable_extractor
         env=disable_extractors_dict,
     )
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    crawl_urls = c.execute("SELECT urls FROM crawls_crawl ORDER BY created_at DESC LIMIT 1").fetchone()
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        crawl = Crawl.objects.order_by("-created_at").first()
 
-    assert crawl_urls is not None, "Crawl should be created for crawl input"
-    assert "https://example.com" in crawl_urls[0], "Crawl should persist input URLs"
+    assert crawl is not None, "Crawl should be created for crawl input"
+    assert "https://example.com" in crawl.urls, "Crawl should persist input URLs"
 
 
 class TestCrawlCLI:

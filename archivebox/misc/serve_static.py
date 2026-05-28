@@ -93,7 +93,7 @@ def _resolve_archive_path(document_root: str | Path, rel_path: str) -> tuple[Pat
 
 def _cache_policy(config=None, **config_kwargs) -> str:
     config = config or get_config(resolve_plugins=False, **config_kwargs)
-    return "public" if config.PUBLIC_SNAPSHOTS else "private"
+    return "private" if config.PERMISSIONS == "private" else "public"
 
 
 def _render_mhtml_preview_document(filename: str, output_path: str) -> str:

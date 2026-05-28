@@ -104,14 +104,17 @@ def get_matching_tags(
     return queryset
 
 
-def add_snapshot_counts(tags: list[Tag]) -> None:
+def add_snapshot_counts(tags: list[Tag], snapshot_queryset: QuerySet[Snapshot] | None = None) -> None:
     tag_ids = [tag.pk for tag in tags]
     if not tag_ids:
         return
 
+    queryset = SnapshotTag.objects.filter(tag_id__in=tag_ids)
+    if snapshot_queryset is not None:
+        queryset = queryset.filter(snapshot_id__in=snapshot_queryset.values("id"))
     counts = {
         row["tag_id"]: row["num_snapshots"]
-        for row in SnapshotTag.objects.filter(tag_id__in=tag_ids).values("tag_id").annotate(num_snapshots=Count("snapshot_id"))
+        for row in queryset.values("tag_id").annotate(num_snapshots=Count("snapshot_id"))
     }
     for tag in tags:
         tag.num_snapshots = counts.get(tag.pk, 0)

@@ -2,7 +2,6 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from django.db import connection
 
 
 from abx_dl.events import ArchiveResultEvent, BinaryRequestEvent, ProcessEvent, ProcessStartedEvent
@@ -14,8 +13,9 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def _cleanup_machine_process_rows() -> None:
-    with connection.cursor() as cursor:
-        cursor.execute("DELETE FROM machine_process")
+    from archivebox.machine.models import Process
+
+    Process.objects.all().delete()
 
 
 def _create_snapshot():

@@ -21,7 +21,6 @@ class TestProcessRuntimePaths(unittest.TestCase):
         self.assertEqual(process.runtime_dir, expected_dir)
         self.assertEqual(process.stdout_file, expected_dir / "stdout.log")
         self.assertEqual(process.stderr_file, expected_dir / "stderr.log")
-        self.assertEqual(process.pid_file, expected_dir / "process.pid")
 
     def test_non_hook_processes_keep_runtime_files_in_pwd(self):
         process = Process(
@@ -34,4 +33,3 @@ class TestProcessRuntimePaths(unittest.TestCase):
         self.assertEqual(process.runtime_dir, expected_dir)
         self.assertEqual(process.stdout_file, expected_dir / "stdout.log")
         self.assertEqual(process.stderr_file, expected_dir / "stderr.log")
-        self.assertEqual(process.pid_file, expected_dir / "process.pid")

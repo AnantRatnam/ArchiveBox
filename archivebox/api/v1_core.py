@@ -11,8 +11,7 @@ from typing import Union, Any, Annotated
 from datetime import datetime, time
 
 from django.db import transaction
-from django.db.models import Model, Q, Sum
-from django.db.models.functions import Coalesce
+from django.db.models import Model, Q
 from django.http import HttpRequest, HttpResponse
 from django.http.multipartparser import MultiPartParser, MultiPartParserError
 from django.core.exceptions import ValidationError
@@ -29,6 +28,7 @@ from ninja.pagination import paginate, PaginationBase
 from ninja.errors import HttpError
 
 from archivebox.core.models import Snapshot, ArchiveResult, Tag
+from archivebox.core.permissions import public_snapshots_queryset
 from archivebox.api.auth import auth_using_token
 from archivebox.config.common import get_config
 from archivebox.core.host_utils import build_web_url
@@ -671,7 +671,7 @@ class SnapshotSchema(Schema):
 
     @staticmethod
     def resolve_archive_size(obj):
-        return int(getattr(obj, "output_size_sum", obj.archive_size) or 0)
+        return int(obj.archive_size or 0)
 
     @staticmethod
     def resolve_output_size(obj):
@@ -689,6 +689,7 @@ class SnapshotSchema(Schema):
 
 
 class SnapshotUpdateSchema(Schema):
+    action: str | None = None
     status: str | None = None
     retry_at: datetime | None = None
     tags: list[str] | None = None
@@ -766,7 +767,6 @@ def _filter_snapshots_for_rss(
         )
         .filter(bookmarked_at__lte=before_dt)
     )
-
     crawl_id = crawl_id.strip()
     if crawl_id:
         queryset = queryset.filter(crawl__id__icontains=crawl_id)
@@ -854,7 +854,7 @@ class SnapshotFilterSchema(FilterSchema):
 def get_snapshots(request: HttpRequest, filters: Query[SnapshotFilterSchema], with_archiveresults: bool = False):
     """List all Snapshot entries matching these filters."""
     setattr(request, "with_archiveresults", with_archiveresults)
-    queryset = Snapshot.objects.annotate(output_size_sum=Coalesce(Sum("archiveresult__output_size"), 0))
+    queryset = Snapshot.objects.all()
     return filters.filter(queryset).distinct()
 
 
@@ -880,7 +880,7 @@ def get_snapshots_rss(
 def get_snapshot(request: HttpRequest, snapshot_id: str, with_archiveresults: bool = True):
     """Get a specific Snapshot by id."""
     setattr(request, "with_archiveresults", with_archiveresults)
-    queryset = Snapshot.objects.annotate(output_size_sum=Coalesce(Sum("archiveresult__output_size"), 0))
+    queryset = Snapshot.objects.all()
     try:
         return queryset.get(_uuid_ref_query("id", snapshot_id) | Q(timestamp__startswith=snapshot_id))
     except Snapshot.DoesNotExist:
@@ -963,7 +963,23 @@ def patch_snapshot(request: HttpRequest, snapshot_id: str, data: SnapshotUpdateS
 
     payload = data.dict(exclude_unset=True)
     update_fields = ["modified_at"]
+    action = payload.pop("action", None)
     tags = payload.pop("tags", None)
+
+    if action:
+        if action == "pause":
+            snapshot.pause()
+            setattr(request, "with_archiveresults", False)
+            return snapshot
+        if action in ("resume", "unpause"):
+            snapshot.resume()
+            setattr(request, "with_archiveresults", False)
+            return snapshot
+        if action == "cancel":
+            snapshot.cancel()
+            setattr(request, "with_archiveresults", False)
+            return snapshot
+        raise HttpError(400, f"Invalid action: {action}")
 
     if "status" in payload:
         if payload["status"] not in Snapshot.StatusChoices.values:
@@ -980,7 +996,10 @@ def patch_snapshot(request: HttpRequest, snapshot_id: str, data: SnapshotUpdateS
     if tags is not None:
         snapshot.save_tags(normalize_tag_list(tags))
 
-    snapshot.save(update_fields=update_fields)
+    if payload.get("status") == Snapshot.StatusChoices.SEALED:
+        snapshot.cancel()
+    else:
+        snapshot.save(update_fields=update_fields)
     setattr(request, "with_archiveresults", False)
     return snapshot
 
@@ -1164,6 +1183,40 @@ class TagSnapshotResponseSchema(Schema):
     tag_name: str
 
 
+def _get_snapshot_for_tag_edit(snapshot_ref: str) -> Snapshot:
+    snapshot_ref = str(snapshot_ref or "").strip().lower()
+    if not snapshot_ref:
+        raise HttpError(400, "Snapshot id is required")
+
+    snapshot_qs = Snapshot.objects.only("id")
+    is_full_uuid = len(snapshot_ref.replace("-", "")) == 32 and all(char in "0123456789abcdef-" for char in snapshot_ref)
+    if is_full_uuid:
+        try:
+            return snapshot_qs.get(pk=snapshot_ref)
+        except (Snapshot.DoesNotExist, ValueError):
+            pass
+
+    if len(snapshot_ref) >= 14:
+        try:
+            return snapshot_qs.get(timestamp=snapshot_ref)
+        except Snapshot.DoesNotExist:
+            pass
+        except Snapshot.MultipleObjectsReturned:
+            snapshot = snapshot_qs.filter(timestamp=snapshot_ref).first()
+            if snapshot is not None:
+                return snapshot
+
+    try:
+        return snapshot_qs.get(Q(id__startswith=snapshot_ref) | Q(timestamp__startswith=snapshot_ref))
+    except Snapshot.DoesNotExist:
+        raise HttpError(404, "Snapshot not found") from None
+    except Snapshot.MultipleObjectsReturned:
+        snapshot = snapshot_qs.filter(Q(id__startswith=snapshot_ref) | Q(timestamp__startswith=snapshot_ref)).first()
+        if snapshot is None:
+            raise HttpError(404, "Snapshot not found")
+        return snapshot
+
+
 @router.get("/tags/search/", response=TagSearchResponseSchema, url_name="search_tags")
 def search_tags(
     request: HttpRequest,
@@ -1195,10 +1248,7 @@ def search_tags(
 
 
 def _public_tag_listing_enabled() -> bool:
-    config = get_config()
-    if config.PUBLIC_SNAPSHOTS_LIST is not None:
-        return config.PUBLIC_SNAPSHOTS_LIST
-    return config.PUBLIC_INDEX
+    return get_config().PUBLIC_INDEX
 
 
 def _request_has_tag_autocomplete_access(request: HttpRequest) -> bool:
@@ -1223,8 +1273,13 @@ def tags_autocomplete(request: HttpRequest, q: str = ""):
     if not _request_has_tag_autocomplete_access(request):
         raise HttpError(401, "Authentication required")
 
-    tags = list(get_matching_tags(q, with_snapshot_counts=False)[: 50 if not q else 20])
-    add_snapshot_counts(tags)
+    public_only = not getattr(request.user, "is_authenticated", False) and not getattr(request, "_api_token", None)
+    queryset = get_matching_tags(q, with_snapshot_counts=False)
+    public_snapshots = public_snapshots_queryset(Snapshot.objects.all())
+    if public_only:
+        queryset = queryset.filter(snapshot_set__id__in=public_snapshots.values("id")).distinct()
+    tags = list(queryset[: 50 if not q else 20])
+    add_snapshot_counts(tags, snapshot_queryset=public_snapshots if public_only else None)
 
     return {
         "tags": [{"id": tag.pk, "name": tag.name, "num_snapshots": getattr(tag, "num_snapshots", 0)} for tag in tags],
@@ -1308,19 +1363,7 @@ def tag_snapshots_export(request: HttpRequest, tag_id: int):
 @router.post("/tags/add-to-snapshot/", response=TagSnapshotResponseSchema, url_name="tags_add_to_snapshot")
 def tags_add_to_snapshot(request: HttpRequest, data: TagSnapshotRequestSchema):
     """Add a tag to a snapshot. Creates the tag if it doesn't exist."""
-    # Get the snapshot
-    try:
-        snapshot = Snapshot.objects.get(
-            Q(id__startswith=data.snapshot_id) | Q(timestamp__startswith=data.snapshot_id),
-        )
-    except Snapshot.DoesNotExist:
-        raise HttpError(404, "Snapshot not found")
-    except Snapshot.MultipleObjectsReturned:
-        snapshot = Snapshot.objects.filter(
-            Q(id__startswith=data.snapshot_id) | Q(timestamp__startswith=data.snapshot_id),
-        ).first()
-        if snapshot is None:
-            raise HttpError(404, "Snapshot not found")
+    snapshot = _get_snapshot_for_tag_edit(data.snapshot_id)
 
     # Get or create the tag
     if data.tag_name:
@@ -1352,19 +1395,7 @@ def tags_add_to_snapshot(request: HttpRequest, data: TagSnapshotRequestSchema):
 @router.post("/tags/remove-from-snapshot/", response=TagSnapshotResponseSchema, url_name="tags_remove_from_snapshot")
 def tags_remove_from_snapshot(request: HttpRequest, data: TagSnapshotRequestSchema):
     """Remove a tag from a snapshot."""
-    # Get the snapshot
-    try:
-        snapshot = Snapshot.objects.get(
-            Q(id__startswith=data.snapshot_id) | Q(timestamp__startswith=data.snapshot_id),
-        )
-    except Snapshot.DoesNotExist:
-        raise HttpError(404, "Snapshot not found")
-    except Snapshot.MultipleObjectsReturned:
-        snapshot = Snapshot.objects.filter(
-            Q(id__startswith=data.snapshot_id) | Q(timestamp__startswith=data.snapshot_id),
-        ).first()
-        if snapshot is None:
-            raise HttpError(404, "Snapshot not found")
+    snapshot = _get_snapshot_for_tag_edit(data.snapshot_id)
 
     # Get the tag
     if data.tag_id:

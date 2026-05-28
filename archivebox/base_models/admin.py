@@ -117,7 +117,7 @@ class KeyValueWidget(forms.Widget):
         config_meta_json = json.dumps(config_options)
 
         html = f'''
-        <div id="{widget_id}_container" class="key-value-editor" style="max-width: 700px;">
+        <div id="{widget_id}_container" class="key-value-editor" style="width: 100%; max-width: none;">
             <datalist id="{widget_id}_keys">
                 {datalist_options}
             </datalist>
@@ -606,7 +606,7 @@ class KeyValueWidget(forms.Widget):
                         var newRow = document.createElement('div');
                         newRow.className = 'key-value-row';
                         newRow.style.cssText = 'margin-bottom: 6px;';
-                        newRow.innerHTML = '<div style="display: flex; gap: 8px; align-items: center;">' +
+                        newRow.innerHTML = '<div class="kv-inputs" style="display: flex; gap: 8px; align-items: center;">' +
                             '<input type="text" class="kv-key" placeholder="KEY" list="{widget_id}_keys" ' +
                             'style="flex: 1; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; font-family: monospace; font-size: 12px;">' +
                             '<input type="text" class="kv-value" placeholder="value" ' +
@@ -672,7 +672,7 @@ class KeyValueWidget(forms.Widget):
     def _render_row(self, widget_id: str, key: str, value: str) -> str:
         return f'''
             <div class="key-value-row" style="margin-bottom: 6px;">
-                <div style="display: flex; gap: 8px; align-items: center;">
+                <div class="kv-inputs" style="display: flex; gap: 8px; align-items: center;">
                     <input type="text" class="kv-key" value="{self._escape(key)}" placeholder="KEY" list="{widget_id}_keys"
                            style="flex: 1; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; font-family: monospace; font-size: 12px;">
                     <input type="text" class="kv-value" value="{self._escape(value)}" placeholder="value"

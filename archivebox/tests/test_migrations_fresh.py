@@ -6,12 +6,20 @@ Tests that fresh installations work correctly with the current schema.
 """
 
 import shutil
-import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
+from django.db.migrations.recorder import MigrationRecorder
+
+from archivebox.core.models import ArchiveResult, Snapshot, Tag
+from archivebox.crawls.models import Crawl
+from archivebox.tests.orm_helpers import use_archivebox_db
+
 from .migrations_helpers import run_archivebox
+
+pytestmark = pytest.mark.django_db(transaction=True)
 
 
 class TestFreshInstall(unittest.TestCase):
@@ -59,20 +67,9 @@ class TestFreshInstall(unittest.TestCase):
             result = run_archivebox(work_dir, ["add", "--index-only", "https://example.com"])
             self.assertEqual(result.returncode, 0, f"Add command failed: {result.stderr}")
 
-            conn = sqlite3.connect(str(work_dir / "index.sqlite3"))
-            cursor = conn.cursor()
-
-            # Verify a Crawl was created
-            cursor.execute("SELECT COUNT(*) FROM crawls_crawl")
-            crawl_count = cursor.fetchone()[0]
-            self.assertGreaterEqual(crawl_count, 1, "No Crawl was created")
-
-            # Verify at least one snapshot was created
-            cursor.execute("SELECT COUNT(*) FROM core_snapshot")
-            snapshot_count = cursor.fetchone()[0]
-            self.assertGreaterEqual(snapshot_count, 1, "No Snapshot was created")
-
-            conn.close()
+            with use_archivebox_db(work_dir):
+                self.assertGreaterEqual(Crawl.objects.count(), 1, "No Crawl was created")
+                self.assertGreaterEqual(Snapshot.objects.count(), 1, "No Snapshot was created")
 
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)
@@ -106,11 +103,8 @@ class TestFreshInstall(unittest.TestCase):
             result = run_archivebox(work_dir, ["init"])
             self.assertEqual(result.returncode, 0, f"Init failed: {result.stderr}")
 
-            conn = sqlite3.connect(str(work_dir / "index.sqlite3"))
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM django_migrations")
-            count = cursor.fetchone()[0]
-            conn.close()
+            with use_archivebox_db(work_dir):
+                count = MigrationRecorder.Migration.objects.count()
 
             # Should have many migrations applied
             self.assertGreater(count, 10, f"Expected >10 migrations, got {count}")
@@ -126,11 +120,10 @@ class TestFreshInstall(unittest.TestCase):
             result = run_archivebox(work_dir, ["init"])
             self.assertEqual(result.returncode, 0, f"Init failed: {result.stderr}")
 
-            conn = sqlite3.connect(str(work_dir / "index.sqlite3"))
-            cursor = conn.cursor()
-            cursor.execute("SELECT name FROM django_migrations WHERE app='core' ORDER BY name")
-            migrations = [row[0] for row in cursor.fetchall()]
-            conn.close()
+            with use_archivebox_db(work_dir):
+                migrations = list(
+                    MigrationRecorder.Migration.objects.filter(app="core").order_by("name").values_list("name", flat=True),
+                )
 
             self.assertIn("0001_initial", migrations)
 
@@ -149,11 +142,7 @@ class TestSchemaIntegrity(unittest.TestCase):
             result = run_archivebox(work_dir, ["init"])
             self.assertEqual(result.returncode, 0, f"Init failed: {result.stderr}")
 
-            conn = sqlite3.connect(str(work_dir / "index.sqlite3"))
-            cursor = conn.cursor()
-            cursor.execute("PRAGMA table_info(core_snapshot)")
-            columns = {row[1] for row in cursor.fetchall()}
-            conn.close()
+            columns = {field.column for field in Snapshot._meta.local_fields}
 
             required = {"id", "url", "timestamp", "title", "status", "created_at", "modified_at"}
             for col in required:
@@ -170,11 +159,7 @@ class TestSchemaIntegrity(unittest.TestCase):
             result = run_archivebox(work_dir, ["init"])
             self.assertEqual(result.returncode, 0, f"Init failed: {result.stderr}")
 
-            conn = sqlite3.connect(str(work_dir / "index.sqlite3"))
-            cursor = conn.cursor()
-            cursor.execute("PRAGMA table_info(core_archiveresult)")
-            columns = {row[1] for row in cursor.fetchall()}
-            conn.close()
+            columns = {field.column for field in ArchiveResult._meta.local_fields}
 
             required = {"id", "snapshot_id", "plugin", "status", "created_at", "modified_at"}
             for col in required:
@@ -191,11 +176,7 @@ class TestSchemaIntegrity(unittest.TestCase):
             result = run_archivebox(work_dir, ["init"])
             self.assertEqual(result.returncode, 0, f"Init failed: {result.stderr}")
 
-            conn = sqlite3.connect(str(work_dir / "index.sqlite3"))
-            cursor = conn.cursor()
-            cursor.execute("PRAGMA table_info(core_tag)")
-            columns = {row[1] for row in cursor.fetchall()}
-            conn.close()
+            columns = {field.column for field in Tag._meta.local_fields}
 
             required = {"id", "name"}
             for col in required:
@@ -212,11 +193,7 @@ class TestSchemaIntegrity(unittest.TestCase):
             result = run_archivebox(work_dir, ["init"])
             self.assertEqual(result.returncode, 0, f"Init failed: {result.stderr}")
 
-            conn = sqlite3.connect(str(work_dir / "index.sqlite3"))
-            cursor = conn.cursor()
-            cursor.execute("PRAGMA table_info(crawls_crawl)")
-            columns = {row[1] for row in cursor.fetchall()}
-            conn.close()
+            columns = {field.column for field in Crawl._meta.local_fields}
 
             required = {"id", "urls", "status", "created_at", "created_by_id"}
             for col in required:
@@ -247,20 +224,11 @@ class TestMultipleSnapshots(unittest.TestCase):
             result = run_archivebox(work_dir, ["add", "--index-only", "https://example.org"])
             self.assertEqual(result.returncode, 0, f"Add 2 failed: {result.stderr}")
 
-            conn = sqlite3.connect(str(work_dir / "index.sqlite3"))
-            cursor = conn.cursor()
-
-            # Verify snapshots were created
-            cursor.execute("SELECT COUNT(*) FROM core_snapshot")
-            snapshot_count = cursor.fetchone()[0]
+            with use_archivebox_db(work_dir):
+                snapshot_count = Snapshot.objects.count()
+                crawl_count = Crawl.objects.count()
             self.assertEqual(snapshot_count, 2, f"Expected 2 snapshots, got {snapshot_count}")
-
-            # Verify crawls were created (one per add call)
-            cursor.execute("SELECT COUNT(*) FROM crawls_crawl")
-            crawl_count = cursor.fetchone()[0]
             self.assertEqual(crawl_count, 2, f"Expected 2 Crawls, got {crawl_count}")
-
-            conn.close()
 
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)
@@ -276,16 +244,10 @@ class TestMultipleSnapshots(unittest.TestCase):
             result = run_archivebox(work_dir, ["add", "--index-only", "https://example.com"])
             self.assertEqual(result.returncode, 0, f"Add failed: {result.stderr}")
 
-            conn = sqlite3.connect(str(work_dir / "index.sqlite3"))
-            cursor = conn.cursor()
-
-            # Check that snapshot has a crawl_id
-            cursor.execute("SELECT crawl_id FROM core_snapshot WHERE url = 'https://example.com'")
-            row = cursor.fetchone()
+            with use_archivebox_db(work_dir):
+                row = Snapshot.objects.filter(url="https://example.com").values_list("crawl_id", flat=True).first()
             self.assertIsNotNone(row, "Snapshot not found")
-            self.assertIsNotNone(row[0], "Snapshot should have a crawl_id")
-
-            conn.close()
+            self.assertIsNotNone(row, "Snapshot should have a crawl_id")
 
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)

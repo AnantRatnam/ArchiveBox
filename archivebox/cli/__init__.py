@@ -165,15 +165,13 @@ def cli(ctx, help=False):
                     os.environ["ARCHIVEBOX_RUNSERVER"] = "1"
                     if "--reload" in sys.argv:
                         os.environ["ARCHIVEBOX_AUTORELOAD"] = "1"
-                        from archivebox.config.common import get_config
-
-                        os.environ["ARCHIVEBOX_RUNSERVER_PIDFILE"] = str(get_config().TMP_DIR / "runserver.pid")
 
             from archivebox.config.django import setup_django
-            from archivebox.misc.checks import check_data_folder
+            from archivebox.misc.checks import check_data_folder, check_migrations
 
             setup_django()
             check_data_folder()
+            check_migrations(auto_apply=True)
         except Exception as e:
             print(f"[red][X] Error setting up Django or checking data folder: {e}[/red]", file=sys.stderr)
             if subcommand not in ("manage", "shell"):  # not all management commands need django to be setup beforehand

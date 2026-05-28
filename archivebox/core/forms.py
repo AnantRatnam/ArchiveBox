@@ -1,7 +1,9 @@
 __package__ = "archivebox.core"
 
 import json
+import re
 from collections.abc import Iterable, Mapping
+from decimal import Decimal, InvalidOperation, ROUND_CEILING
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +15,7 @@ from taggit.utils import edit_string_for_tags, parse_tags
 from archivebox.base_models.admin import KeyValueWidget
 from archivebox.crawls.schedule_utils import validate_schedule
 from archivebox.config.common import get_config, parse_delete_after
+from archivebox.core.permissions import PERMISSIONS_CHOICES, PERMISSIONS_PUBLIC, filter_personas_by_permissions, is_admin_user
 from archivebox.core.widgets import TagEditorWidget, URLFiltersWidget
 from archivebox.hooks import get_plugins, discover_plugin_configs, get_plugin_icon
 from archivebox.personas.models import Persona
@@ -146,6 +149,7 @@ HIDDEN_PLUGIN_CONFIG_UI_PLUGINS = {
     "search_backend_sqlite",
     "ssl",
 }
+TIMEOUT_INPUT_PATTERN = r"(0|[1-9][0-9]*|[0-9]+(?:\.[0-9]+)?\s*(?:s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours))"
 
 
 def get_plugin_choices():
@@ -509,6 +513,13 @@ class AddLinkForm(PluginConfigFormMixin, forms.Form):
         widget=forms.Textarea(
             attrs={
                 "data-url-regex": URL_REGEX.pattern,
+                "placeholder": (
+                    "Enter URLs to archive, as one per line, CSV, JSON, or embedded in text "
+                    "(e.g. markdown, HTML, etc.). Examples:\n"
+                    "https://example.com\n"
+                    "https://news.ycombinator.com,https://news.google.com\n"
+                    "[ArchiveBox](https://github.com/ArchiveBox/ArchiveBox)"
+                ),
             },
         ),
         required=True,
@@ -526,7 +537,7 @@ class AddLinkForm(PluginConfigFormMixin, forms.Form):
         widget=forms.RadioSelect(attrs={"class": "depth-selection"}),
     )
     max_urls = forms.IntegerField(
-        label="Max URLs",
+        label="Max crawl URLs",
         required=False,
         min_value=0,
         initial=0,
@@ -545,6 +556,29 @@ class AddLinkForm(PluginConfigFormMixin, forms.Form):
         widget=forms.TextInput(
             attrs={
                 "placeholder": "0 = unlimited, or e.g. 45mb / 1gb",
+            },
+        ),
+    )
+    crawl_timeout = forms.CharField(
+        label="Max crawl time",
+        required=False,
+        initial=0,
+        widget=forms.TextInput(
+            attrs={
+                "pattern": TIMEOUT_INPUT_PATTERN,
+                "title": "Use 0, integer seconds, or a duration like 1.5m or 1hr. Non-zero values must be greater than 10 seconds.",
+                "placeholder": "0, 300, 1.5m, or 1hr",
+            },
+        ),
+    )
+    timeout = forms.CharField(
+        label="Max subtask time",
+        required=False,
+        widget=forms.TextInput(
+            attrs={
+                "pattern": TIMEOUT_INPUT_PATTERN,
+                "title": "Use integer seconds or a duration like 1.5m or 1hr. Non-zero values must be greater than 10 seconds.",
+                "placeholder": "60, 1.5m, or 1hr",
             },
         ),
     )
@@ -569,7 +603,7 @@ class AddLinkForm(PluginConfigFormMixin, forms.Form):
         ),
     )
     crawl_max_concurrent_snapshots = forms.IntegerField(
-        label="Max concurrent snapshots",
+        label="Max in parallel",
         required=False,
         min_value=1,
         widget=forms.NumberInput(
@@ -657,6 +691,12 @@ class AddLinkForm(PluginConfigFormMixin, forms.Form):
         empty_label=None,
         to_field_name="name",
     )
+    permissions = forms.ChoiceField(
+        label="Permissions",
+        choices=PERMISSIONS_CHOICES,
+        initial="public",
+        required=True,
+    )
     index_only = forms.BooleanField(
         label="Index only dry run (add crawl but don't archive yet)",
         initial=False,
@@ -670,22 +710,44 @@ class AddLinkForm(PluginConfigFormMixin, forms.Form):
     )
 
     def __init__(self, *args, **kwargs):
+        self.request = kwargs.pop("request", None)
+        self.can_override_crawl_config = bool(self.request and is_admin_user(self.request))
         super().__init__(*args, **kwargs)
 
         default_persona = Persona.get_or_create_default()
-        default_config = get_config(persona=default_persona)
-        self.fields["persona"].queryset = Persona.objects.order_by("name")
-        self.fields["persona"].initial = default_persona.name
+        persona_queryset = Persona.objects.order_by("name")
+        if not self.can_override_crawl_config:
+            persona_queryset = filter_personas_by_permissions(persona_queryset, {PERMISSIONS_PUBLIC})
+        self.fields["persona"].queryset = persona_queryset
+
+        selected_persona = persona_queryset.filter(id=default_persona.id).first() or persona_queryset.first()
+        default_config = get_config(persona=selected_persona) if selected_persona else get_config()
+        if selected_persona:
+            self.fields["persona"].initial = selected_persona.name
+        self.fields["permissions"].initial = default_config.PERMISSIONS
+        self.fields["timeout"].initial = default_config.TIMEOUT
         self.fields["crawl_max_concurrent_snapshots"].initial = default_config.CRAWL_MAX_CONCURRENT_SNAPSHOTS
         self.fields["delete_after"].initial = default_config.DELETE_AFTER
 
-        selected_persona = default_persona
         if self.is_bound:
-            selected_persona = Persona.objects.filter(name=str(self.data.get(self.add_prefix("persona")) or "")).first() or default_persona
-        self.build_plugin_groups(get_config(persona=selected_persona))
+            selected_persona = persona_queryset.filter(name=str(self.data.get(self.add_prefix("persona")) or "")).first() or selected_persona
+        if self.can_override_crawl_config:
+            self.build_plugin_groups(get_config(persona=selected_persona) if selected_persona else get_config())
+        else:
+            all_plugins = get_plugins()
+            for field_name, *_rest, plugin_names in PLUGIN_GROUP_DEFINITIONS:
+                get_choice_field(self, field_name).choices = [(p, p) for p in all_plugins if p in plugin_names]
+            get_choice_field(self, "other_plugins").choices = [(p, p) for p in all_plugins]
+            self.plugin_groups = []
 
     def clean(self):
         cleaned_data = super().clean() or {}
+
+        if not self.can_override_crawl_config:
+            cleaned_data["plugins"] = []
+            cleaned_data["plugin_config"] = {}
+            cleaned_data["config"] = {}
+            return cleaned_data
 
         # Combine all plugin groups into single list
         all_selected_plugins = []
@@ -731,6 +793,7 @@ class AddLinkForm(PluginConfigFormMixin, forms.Form):
             "allowlist": "\n".join(Crawl.split_filter_patterns(value.get("allowlist", ""))),
             "denylist": "\n".join(Crawl.split_filter_patterns(value.get("denylist", ""))),
             "same_domain_only": bool(value.get("same_domain_only")),
+            "subpaths_only": bool(value.get("subpaths_only")),
         }
 
     def clean_max_urls(self):
@@ -747,6 +810,37 @@ class AddLinkForm(PluginConfigFormMixin, forms.Form):
             raise forms.ValidationError(str(err))
         if value < 0:
             raise forms.ValidationError("Max crawl size must be 0 or a positive number of bytes.")
+        return value
+
+    def clean_crawl_timeout(self):
+        return self._clean_timeout_seconds(self.cleaned_data.get("crawl_timeout"), "Max crawl time", blank_value=0)
+
+    def clean_timeout(self):
+        return self._clean_timeout_seconds(self.cleaned_data.get("timeout"), "Max subtask time", blank_value=None)
+
+    def _clean_timeout_seconds(self, raw_value, field_label: str, *, blank_value):
+        raw_value = str(raw_value or "").strip().lower()
+        if not raw_value:
+            return blank_value
+        if raw_value.isdigit():
+            value = int(raw_value)
+        else:
+            match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)", raw_value)
+            if not match:
+                raise forms.ValidationError(f"{field_label} must be seconds or a duration like 1.5m or 1hr.")
+            amount_str, unit = match.groups()
+            try:
+                amount = Decimal(amount_str)
+            except InvalidOperation as err:
+                raise forms.ValidationError(f"{field_label} must be seconds or a duration like 1.5m or 1hr.") from err
+            multiplier = 1
+            if unit in {"m", "min", "mins", "minute", "minutes"}:
+                multiplier = 60
+            elif unit in {"h", "hr", "hrs", "hour", "hours"}:
+                multiplier = 60 * 60
+            value = int((amount * multiplier).to_integral_value(rounding=ROUND_CEILING))
+        if 0 < value <= 10:
+            raise forms.ValidationError(f"{field_label} must be 0 or greater than 10 seconds.")
         return value
 
     def clean_snapshot_max_size(self):

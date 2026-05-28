@@ -5,8 +5,14 @@ Verify extract re-runs extractors on existing snapshots.
 """
 
 import os
-import sqlite3
 import subprocess
+
+import pytest
+
+from archivebox.core.models import Snapshot
+from archivebox.tests.orm_helpers import use_archivebox_db
+
+pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def test_extract_runs_on_existing_snapshots(tmp_path, process, disable_extractors_dict):
@@ -43,10 +49,8 @@ def test_extract_preserves_snapshot_count(tmp_path, process, disable_extractors_
         env=disable_extractors_dict,
     )
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    count_before = c.execute("SELECT COUNT(*) FROM core_snapshot").fetchone()[0]
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        count_before = Snapshot.objects.count()
 
     # Run extract
     subprocess.run(
@@ -56,9 +60,7 @@ def test_extract_preserves_snapshot_count(tmp_path, process, disable_extractors_
         timeout=30,
     )
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    count_after = c.execute("SELECT COUNT(*) FROM core_snapshot").fetchone()[0]
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        count_after = Snapshot.objects.count()
 
     assert count_after == count_before

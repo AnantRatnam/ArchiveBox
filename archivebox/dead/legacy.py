@@ -1,3 +1,4 @@
+# ruff: noqa
 """
 Legacy archive import utilities.
 

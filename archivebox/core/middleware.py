@@ -104,7 +104,7 @@ def CacheControlMiddleware(get_response):
                 if config is None:
                     config = get_config(resolve_plugins=False)
                     request.archivebox_config = config
-                policy = "public" if config.PUBLIC_SNAPSHOTS else "private"
+                policy = "private" if config.PERMISSIONS == "private" else "public"
                 response["Cache-Control"] = f"{policy}, max-age=60, stale-while-revalidate=300"
                 # print('Set Cache-Control header to', response['Cache-Control'])
         return response

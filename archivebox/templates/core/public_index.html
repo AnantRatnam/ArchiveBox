@@ -34,23 +34,90 @@
         margin: 0;
     }
 
+    .public-search-input {
+        position: relative;
+        display: grid;
+        grid-template-columns: 46px minmax(0, 1fr);
+        align-items: center;
+        flex: 1 1 420px;
+        min-width: 220px;
+        height: 34px;
+        border: 1px solid #cbd5e1;
+        border-radius: 7px;
+        background: #fff;
+        overflow: hidden;
+    }
+
+    .public-search-addon {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 2px;
+        box-sizing: border-box;
+        width: 46px;
+        height: 100%;
+        padding: 0;
+        border-right: 1px solid #e2e8f0;
+        background: #f8fafc;
+        cursor: pointer;
+    }
+
     .public-snapshot-toolbar label.search-icon {
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        width: 24px;
-        height: 24px;
+        width: 16px;
+        height: 16px;
         margin: 0;
         opacity: 0.65;
     }
 
+    .public-search-mode-select {
+        appearance: none;
+        -webkit-appearance: none;
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: 46px;
+        min-width: 46px;
+        max-width: 46px;
+        height: 100%;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: #111827;
+        font-size: 14px;
+        opacity: 1;
+        outline: 0;
+        text-indent: -9999px;
+        cursor: pointer;
+        z-index: 3;
+    }
+
+    .public-search-mode-select option {
+        background: #ffffff;
+        color: #111827;
+        font-size: 14px;
+        line-height: 1.4;
+        text-indent: 0;
+    }
+
+    .public-search-addon .search-mode-caret {
+        color: #64748b;
+        font-size: 10px;
+        line-height: 1;
+        pointer-events: none;
+        transform: translateY(1px);
+    }
+
     .public-snapshot-toolbar #searchbar {
-        flex: 1 1 320px;
+        width: 100%;
         min-width: 180px;
-        height: 34px;
+        height: 100%;
+        box-sizing: border-box;
         padding: 6px 10px;
-        border: 1px solid #cbd5e1;
-        border-radius: 7px;
+        border: 0;
+        border-radius: 0;
         font-size: 13px;
     }
 
@@ -59,40 +126,6 @@
         margin: 0;
         padding: 0 14px;
         border-radius: 7px;
-    }
-
-    .public-search-modes {
-        display: inline-flex;
-        align-items: center;
-        gap: 2px;
-        padding: 2px;
-        border: 1px solid #dbe3ee;
-        border-radius: 8px;
-        background: #f8fafc;
-        white-space: nowrap;
-    }
-
-    .public-search-modes label {
-        display: inline-flex;
-        align-items: center;
-        gap: 5px;
-        margin: 0;
-        padding: 5px 8px;
-        border-radius: 6px;
-        color: #475569;
-        font-size: 12px;
-        line-height: 1;
-        cursor: pointer;
-    }
-
-    .public-search-modes label:has(input:checked) {
-        background: #fff;
-        color: #0f172a;
-        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
-    }
-
-    .public-search-modes input {
-        margin: 0;
     }
 
     .public-snapshot-count {
@@ -340,6 +373,23 @@
         color: #cbd5e1;
     }
 
+    .public-search-empty {
+        padding: 28px 18px;
+        color: #475569;
+        text-align: center;
+        background: #f8fafc;
+    }
+
+    .public-search-empty code {
+        display: inline-block;
+        margin-left: 4px;
+        padding: 2px 6px;
+        border-radius: 5px;
+        background: #e2e8f0;
+        color: #0f172a;
+        font-size: 12px;
+    }
+
     .public-pagination {
         margin: 18px 0 0;
         text-align: center;
@@ -365,9 +415,9 @@
             align-self: flex-start;
         }
 
-        .public-search-modes {
-            flex-wrap: wrap;
-            white-space: normal;
+        .public-search-input {
+            width: 100%;
+            flex-basis: auto;
         }
     }
 </style>
@@ -388,14 +438,19 @@
     <div class="public-snapshot-list">
         <div class="public-snapshot-toolbar">
             <form id="changelist-search" action="{{ request.path }}" method="get">
-                <label class="search-icon" for="searchbar"><img src="/static/admin/img/search.svg" alt="Search"></label>
-                <input type="text" size="40" name="q" value="{{ request.GET.q }}" id="searchbar" autofocus placeholder="Search title, URL, tags, timestamp, or content...">
-                <input type="submit" value="Search">
-                <span class="public-search-modes">
-                    <label><input type="radio" name="search_mode" value="meta"{% if search_mode == "meta" %} checked{% endif %}> Meta</label>
-                    <label><input type="radio" name="search_mode" value="contents"{% if search_mode == "contents" %} checked{% endif %}> Contents</label>
-                    <label><input type="radio" name="search_mode" value="deep"{% if search_mode == "deep" %} checked{% endif %}> Deep</label>
+                <span class="public-search-input">
+                    <span class="public-search-addon">
+                        <label class="search-icon" for="searchbar"><img src="/static/admin/img/search.svg" alt="Search"></label>
+                        <select name="search_mode" class="public-search-mode-select" aria-label="Search mode">
+                            {% for option in search_mode_options %}
+                            <option value="{{ option.value }}"{% if search_mode == option.value %} selected{% endif %}>{{ option.label }}</option>
+                            {% endfor %}
+                        </select>
+                        <span class="search-mode-caret" aria-hidden="true">▾</span>
+                    </span>
+                    <input type="text" size="40" name="q" value="{{ request.GET.q }}" id="searchbar" autofocus placeholder="Search title, URL, tags, timestamp, or content...">
                 </span>
+                <input type="submit" value="Search">
             </form>
             <div class="public-snapshot-count">
                 {{ page_obj.start_index }}-{{ page_obj.end_index }} of {{ page_obj.paginator.count }}
@@ -418,6 +473,17 @@
                 <tbody>
                     {% for link in object_list %}
                         {% include 'index_row.html' with link=link %}
+                    {% empty %}
+                        <tr>
+                            <td colspan="7" class="public-search-empty">
+                                {% if show_search_index_hint %}
+                                    0 results from deep: {{ search_backend_label }}. If this looks wrong, the search index may need to be updated:
+                                    <code>archivebox update --index-only</code>
+                                {% else %}
+                                    No snapshots found.
+                                {% endif %}
+                            </td>
+                        </tr>
                     {% endfor %}
                 </tbody>
             </table>
@@ -442,4 +508,26 @@
             </span>
         </div>
     </div>
+    <script>
+        (function() {
+            const storageKey = 'archivebox-admin-search-mode'
+            const params = new URLSearchParams(window.location.search)
+            document.querySelectorAll('.public-search-mode-select').forEach(function(select) {
+                const values = Array.from(select.options).map(option => option.value)
+                const stored = localStorage.getItem(storageKey)
+                if (!params.has('search_mode') && values.includes(stored)) {
+                    select.value = stored
+                    if ((params.get('q') || '').trim()) {
+                        params.set('search_mode', stored)
+                        params.delete('page')
+                        window.location.replace(window.location.pathname + '?' + params.toString() + window.location.hash)
+                        return
+                    }
+                }
+                select.addEventListener('change', function() {
+                    localStorage.setItem(storageKey, select.value)
+                })
+            })
+        })()
+    </script>
 {% endblock %}

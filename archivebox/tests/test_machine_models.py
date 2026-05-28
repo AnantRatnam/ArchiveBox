@@ -529,7 +529,7 @@ class TestProcessCurrent(TestCase):
         """runner_watch should be classified as a worker, not the orchestrator itself."""
         old_argv = sys.argv
         try:
-            sys.argv = ["archivebox", "manage", "runner_watch", "--pidfile=/tmp/runserver.pid"]
+            sys.argv = ["archivebox", "manage", "runner_watch", "--bind-url=http://127.0.0.1:8000"]
             result = Process._detect_process_type()
             self.assertEqual(result, Process.TypeChoices.WORKER)
         finally:

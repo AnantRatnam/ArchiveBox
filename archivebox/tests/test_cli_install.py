@@ -5,9 +5,17 @@ Verify install detects and records binary dependencies in DB.
 """
 
 import os
-import sqlite3
 import subprocess
 from pathlib import Path
+
+import pytest
+
+from archivebox.core.models import Snapshot
+from archivebox.crawls.models import Crawl
+from archivebox.machine.models import Binary
+from archivebox.tests.orm_helpers import use_archivebox_db
+
+pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def test_install_runs_successfully(tmp_path, process):
@@ -34,17 +42,8 @@ def test_install_creates_binary_records_in_db(tmp_path, process):
         timeout=60,
     )
 
-    # Check that binary records were created
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-
-    # Check machine_binary table exists
-    tables = c.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='machine_binary'",
-    ).fetchall()
-    conn.close()
-
-    assert len(tables) == 1
+    with use_archivebox_db(tmp_path):
+        Binary.objects.count()
 
 
 def test_install_dry_run_does_not_install(tmp_path, process):
@@ -170,22 +169,14 @@ def test_install_updates_binary_table(tmp_path, process):
     output = result.stdout + result.stderr
     assert result.returncode == 0, output
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-
-    binary_counts = dict(
-        c.execute(
-            "SELECT status, COUNT(*) FROM machine_binary GROUP BY status",
-        ).fetchall(),
-    )
-    snapshot_count = c.execute("SELECT COUNT(*) FROM core_snapshot").fetchone()[0]
-    sealed_crawls = c.execute(
-        "SELECT COUNT(*) FROM crawls_crawl WHERE status='sealed'",
-    ).fetchone()[0]
-    installed_python = c.execute(
-        "SELECT COUNT(*) FROM machine_binary WHERE status='installed' AND name='python'",
-    ).fetchone()[0]
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        binary_counts = {
+            status: Binary.objects.filter(status=status).count()
+            for status in Binary.objects.values_list("status", flat=True).distinct()
+        }
+        snapshot_count = Snapshot.objects.count()
+        sealed_crawls = Crawl.objects.filter(status="sealed").count()
+        installed_python = Binary.objects.filter(status="installed", name="python").count()
 
     assert sealed_crawls == 0
     assert snapshot_count == 0

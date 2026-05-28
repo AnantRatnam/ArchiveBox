@@ -3,13 +3,16 @@
 
 import os
 import subprocess
-import sqlite3
 from archivebox.machine.models import Process
-from datetime import datetime
 from urllib.parse import urlparse
 import uuid
 
 import pytest
+
+from archivebox.core.models import Snapshot, Tag
+from archivebox.tests.orm_helpers import use_archivebox_db
+
+pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def test_snapshot_creates_snapshot_with_correct_url(tmp_path, process, disable_extractors_dict):
@@ -22,29 +25,14 @@ def test_snapshot_creates_snapshot_with_correct_url(tmp_path, process, disable_e
         env={**disable_extractors_dict, "DATA_DIR": str(tmp_path)},
     )
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    snapshot_row = c.execute(
-        "SELECT id, created_at, url, crawl_id FROM core_snapshot WHERE url = ?",
-        ("https://example.com",),
-    ).fetchone()
-    assert snapshot_row is not None
-    crawl_row = c.execute(
-        "SELECT id, created_at, urls, created_by_id FROM crawls_crawl WHERE id = ?",
-        (snapshot_row[3],),
-    ).fetchone()
-    assert crawl_row is not None
-    user_row = c.execute(
-        "SELECT username FROM auth_user WHERE id = ?",
-        (crawl_row[3],),
-    ).fetchone()
-    assert user_row is not None
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        snapshot = Snapshot.objects.select_related("crawl__created_by").get(url="https://example.com")
+        snapshot_id_raw = str(snapshot.id)
+        snapshot_date_str = snapshot.created_at.strftime("%Y%m%d")
+        snapshot_url = snapshot.url
+        username = snapshot.crawl.created_by.username
 
-    snapshot_id_raw, snapshot_created_at, snapshot_url, crawl_id = snapshot_row
     snapshot_id = str(uuid.UUID(snapshot_id_raw))
-    username = user_row[0]
-    snapshot_date_str = datetime.fromisoformat(snapshot_created_at).strftime("%Y%m%d")
     domain = urlparse(snapshot_url).hostname or "unknown"
 
     # Verify crawl symlink exists and is relative
@@ -75,12 +63,9 @@ def test_snapshot_multiple_urls_creates_multiple_records(tmp_path, process, disa
         env={**disable_extractors_dict, "DATA_DIR": str(tmp_path)},
     )
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    urls = c.execute("SELECT url FROM core_snapshot ORDER BY url").fetchall()
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        urls = list(Snapshot.objects.order_by("url").values_list("url", flat=True))
 
-    urls = [u[0] for u in urls]
     assert "https://example.com" in urls
     assert "https://iana.org" in urls
     assert len(urls) >= 2
@@ -102,33 +87,12 @@ def test_snapshot_tag_creates_tag_and_links_to_snapshot(tmp_path, process, disab
         env={**disable_extractors_dict, "DATA_DIR": str(tmp_path)},
     )
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-
-    # Verify tag was created
-    tag = c.execute("SELECT id, name FROM core_tag WHERE name = ?", ("mytesttag",)).fetchone()
-    assert tag is not None, "Tag 'mytesttag' should exist in core_tag"
-    tag_id = tag[0]
-
-    # Verify snapshot exists
-    snapshot = c.execute(
-        "SELECT id FROM core_snapshot WHERE url = ?",
-        ("https://example.com",),
-    ).fetchone()
-    assert snapshot is not None
-    snapshot_id = snapshot[0]
-
-    # Verify tag is linked to snapshot via join table
-    link = c.execute(
-        """
-        SELECT * FROM core_snapshot_tags
-        WHERE snapshot_id = ? AND tag_id = ?
-    """,
-        (snapshot_id, tag_id),
-    ).fetchone()
-    conn.close()
-
-    assert link is not None, "Tag should be linked to snapshot via core_snapshot_tags"
+    with use_archivebox_db(tmp_path):
+        tag = Tag.objects.filter(name="mytesttag").first()
+        assert tag is not None, "Tag 'mytesttag' should exist in core_tag"
+        snapshot = Snapshot.objects.filter(url="https://example.com").first()
+        assert snapshot is not None
+        assert snapshot.tags.filter(pk=tag.pk).exists(), "Tag should be linked to snapshot via core_snapshot_tags"
 
 
 def test_snapshot_jsonl_output_has_correct_structure(tmp_path, process, disable_extractors_dict):
@@ -168,18 +132,11 @@ def test_snapshot_with_tag_stores_tag_name(tmp_path, process, disable_extractors
         env={**disable_extractors_dict, "DATA_DIR": str(tmp_path)},
     )
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-
-    # Verify tag was created with correct name
-    tag = c.execute(
-        "SELECT name FROM core_tag WHERE name = ?",
-        ("customtag",),
-    ).fetchone()
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        tag = Tag.objects.filter(name="customtag").first()
 
     assert tag is not None
-    assert tag[0] == "customtag"
+    assert tag.name == "customtag"
 
 
 def test_snapshot_with_depth_sets_snapshot_depth(tmp_path, process, disable_extractors_dict):
@@ -198,13 +155,11 @@ def test_snapshot_with_depth_sets_snapshot_depth(tmp_path, process, disable_extr
         env={**disable_extractors_dict, "DATA_DIR": str(tmp_path)},
     )
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    snapshot = c.execute("SELECT depth FROM core_snapshot ORDER BY created_at DESC LIMIT 1").fetchone()
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        snapshot = Snapshot.objects.order_by("-created_at").first()
 
     assert snapshot is not None, "Snapshot should be created when depth is provided"
-    assert snapshot[0] == 1, "Snapshot depth should match --depth value"
+    assert snapshot.depth == 1, "Snapshot depth should match --depth value"
 
 
 def test_snapshot_allows_duplicate_urls_across_crawls(tmp_path, process, disable_extractors_dict):
@@ -223,13 +178,8 @@ def test_snapshot_allows_duplicate_urls_across_crawls(tmp_path, process, disable
         env={**disable_extractors_dict, "DATA_DIR": str(tmp_path)},
     )
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    count = c.execute(
-        "SELECT COUNT(*) FROM core_snapshot WHERE url = ?",
-        ("https://example.com",),
-    ).fetchone()[0]
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        count = Snapshot.objects.filter(url="https://example.com").count()
 
     assert count == 2, "Same URL should create separate snapshots across different crawls"
 

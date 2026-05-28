@@ -1,14 +1,19 @@
 __package__ = "archivebox.crawls"
 
+from copy import copy
+from urllib.parse import urlencode
+
 from django import forms
+from django.core.paginator import Paginator
 from django.http import JsonResponse, HttpRequest, HttpResponseNotAllowed
 from django.shortcuts import get_object_or_404, redirect
+from django.template.loader import render_to_string
 from django.urls import path, reverse
 from django.utils.html import escape, format_html, format_html_join
 from django.utils import timezone
 from django.utils.safestring import mark_safe
 from django.contrib import admin, messages
-from django.db.models import Count, IntegerField, OuterRef, Prefetch, Q, Subquery, Value
+from django.db.models import Case, CharField, Count, IntegerField, OuterRef, Prefetch, Q, Subquery, Value, When
 from django.db.models.functions import Coalesce
 
 
@@ -16,9 +21,12 @@ from django_object_actions import action
 
 from archivebox.base_models.admin import BaseModelAdmin, ConfigEditorMixin
 
+from archivebox.config.common import get_config
 from archivebox.core.models import Snapshot
-from archivebox.core.widgets import TagEditorWidget
+from archivebox.core.permissions import PERMISSIONS_PRIVATE, PERMISSIONS_PUBLIC, PERMISSIONS_UNLISTED
+from archivebox.core.widgets import TagEditorWidget, URLFiltersWidget
 from archivebox.crawls.models import Crawl, CrawlSchedule
+from archivebox.personas.models import Persona
 
 
 class MaxDepthListFilter(admin.SimpleListFilter):
@@ -35,24 +43,118 @@ class MaxDepthListFilter(admin.SimpleListFilter):
         return queryset
 
 
-def render_snapshots_list(snapshots_qs, limit=20, crawl=None):
+def render_snapshots_list(snapshots_qs, request=None, crawl=None, page_size=50, prefix="snapshots"):
     """Render a nice inline list view of snapshots with status, title, URL, and progress."""
 
-    snapshots = snapshots_qs.order_by("-created_at")[:limit].annotate(
+    query_param = f"{prefix}_q"
+    status_param = f"{prefix}_status"
+    page_param = f"{prefix}_page"
+    query = (request.GET.get(query_param, "") if request is not None else "").strip()
+    status_filter = (request.GET.get(status_param, "") if request is not None else "").strip()
+    valid_statuses = {choice[0] for choice in Snapshot.StatusChoices.choices}
+
+    filtered_qs = snapshots_qs
+    if query:
+        id_query = query.replace("-", "")
+        filtered_qs = filtered_qs.filter(Q(id__icontains=id_query) | Q(url__icontains=query) | Q(title__icontains=query))
+    if status_filter in valid_statuses:
+        filtered_qs = filtered_qs.filter(status=status_filter)
+
+    global_permissions = str(get_config(resolve_plugins=False).PERMISSIONS).strip().lower()
+    persona_ids_by_permissions = {
+        PERMISSIONS_PUBLIC: [],
+        PERMISSIONS_UNLISTED: [],
+        PERMISSIONS_PRIVATE: [],
+    }
+    for persona in Persona.objects.only("id", "permissions"):
+        persona_ids_by_permissions[persona.permissions or global_permissions].append(str(persona.id))
+
+    snapshots_qs = filtered_qs.order_by("-created_at").annotate(
         total_results=Count("archiveresult"),
         succeeded_results=Count("archiveresult", filter=Q(archiveresult__status="succeeded")),
         failed_results=Count("archiveresult", filter=Q(archiveresult__status="failed")),
         started_results=Count("archiveresult", filter=Q(archiveresult__status="started")),
         skipped_results=Count("archiveresult", filter=Q(archiveresult__status="skipped")),
+        snapshot_permissions=Case(
+            When(permissions=PERMISSIONS_PUBLIC, then=Value(PERMISSIONS_PUBLIC)),
+            When(permissions=PERMISSIONS_UNLISTED, then=Value(PERMISSIONS_UNLISTED)),
+            When(permissions=PERMISSIONS_PRIVATE, then=Value(PERMISSIONS_PRIVATE)),
+            When(crawl__permissions=PERMISSIONS_PUBLIC, then=Value(PERMISSIONS_PUBLIC)),
+            When(crawl__permissions=PERMISSIONS_UNLISTED, then=Value(PERMISSIONS_UNLISTED)),
+            When(crawl__permissions=PERMISSIONS_PRIVATE, then=Value(PERMISSIONS_PRIVATE)),
+            When(crawl__persona_id__in=persona_ids_by_permissions[PERMISSIONS_PUBLIC], then=Value(PERMISSIONS_PUBLIC)),
+            When(crawl__persona_id__in=persona_ids_by_permissions[PERMISSIONS_UNLISTED], then=Value(PERMISSIONS_UNLISTED)),
+            When(crawl__persona_id__in=persona_ids_by_permissions[PERMISSIONS_PRIVATE], then=Value(PERMISSIONS_PRIVATE)),
+            default=Value(global_permissions),
+            output_field=CharField(),
+        ),
     )
 
+    page_number = request.GET.get(page_param, 1) if request is not None else 1
+    paginator = Paginator(snapshots_qs, page_size)
+    page_obj = paginator.get_page(page_number)
+    snapshots = page_obj.object_list
+    total_count = paginator.count
+
+    def querystring(**updates):
+        if request is None:
+            return "#"
+        params = request.GET.copy()
+        for key, value in updates.items():
+            if value in (None, ""):
+                params.pop(key, None)
+            else:
+                params[key] = str(value)
+        return f"?{params.urlencode()}" if params else "?"
+
+    preserved_inputs = ""
+    if request is not None:
+        managed_params = {query_param, status_param, page_param}
+        preserved_inputs = "".join(
+            f'<input type="hidden" name="{escape(key)}" value="{escape(value)}">'
+            for key, values in request.GET.lists()
+            if key not in managed_params
+            for value in values
+        )
+
+    status_options = "".join(
+        f'<option value="{escape(value)}"{" selected" if status_filter == value else ""}>{escape(label)}</option>'
+        for value, label in Snapshot.StatusChoices.choices
+    )
+
+    controls = f"""
+        <div class="crawl-snapshots-toolbar" style="display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; padding: 10px 12px; background: #f8fafc; border-bottom: 1px solid #e2e8f0;">
+            <form method="get" style="display: flex; gap: 8px; align-items: center; flex: 1 1 540px; margin: 0;">
+                {preserved_inputs}
+                <input type="search" name="{query_param}" value="{escape(query)}" placeholder="Filter snapshots by title, URL, or ID"
+                       style="min-width: 260px; flex: 1 1 360px; padding: 7px 10px; border: 1px solid #cbd5e1; border-radius: 6px;">
+                <select name="{status_param}" style="max-width: 170px; padding: 7px 10px; border: 1px solid #cbd5e1; border-radius: 6px;">
+                    <option value="">All statuses</option>
+                    {status_options}
+                </select>
+                <input type="hidden" name="{page_param}" value="1">
+                <button type="submit" class="button" style="padding: 7px 12px;">Filter</button>
+                {f'<a href="{querystring(**{query_param: None, status_param: None, page_param: None})}" style="font-size: 12px; color: #64748b;">Clear</a>' if query or status_filter else ""}
+            </form>
+            <div style="font-size: 12px; color: #64748b; white-space: nowrap;">
+                {page_obj.start_index() if total_count else 0}-{page_obj.end_index() if total_count else 0} of {total_count}
+            </div>
+        </div>
+    """
+
     if not snapshots:
-        return mark_safe('<div style="color: #666; font-style: italic; padding: 8px 0;">No Snapshots yet...</div>')
+        return mark_safe(f"""
+            <div data-crawl-snapshots-list style="border: 1px solid #ddd; border-radius: 6px; overflow: hidden; max-width: 100%;">
+                {controls}
+                <div style="color: #666; font-style: italic; padding: 12px;">No Snapshots found.</div>
+            </div>
+        """)
 
     # Status colors matching Django admin and progress monitor
     status_colors = {
         "queued": ("#6c757d", "#f8f9fa"),  # gray
         "started": ("#856404", "#fff3cd"),  # amber
+        "paused": ("#1d4ed8", "#dbeafe"),  # blue
         "sealed": ("#155724", "#d4edda"),  # green
         "failed": ("#721c24", "#f8d7da"),  # red
     }
@@ -61,6 +163,17 @@ def render_snapshots_list(snapshots_qs, limit=20, crawl=None):
     for snapshot in snapshots:
         status = snapshot.status or "queued"
         color, bg = status_colors.get(status, ("#6c757d", "#f8f9fa"))
+        permissions = snapshot.snapshot_permissions
+        permission_icon = {
+            PERMISSIONS_PUBLIC: "👁",
+            PERMISSIONS_UNLISTED: "🔗",
+            PERMISSIONS_PRIVATE: "🔒",
+        }[permissions]
+        permission_fg, permission_bg = {
+            PERMISSIONS_PUBLIC: ("#047857", "#d1fae5"),
+            PERMISSIONS_UNLISTED: ("#1d4ed8", "#dbeafe"),
+            PERMISSIONS_PRIVATE: ("#991b1b", "#fee2e2"),
+        }[permissions]
 
         # Calculate progress
         total = snapshot.total_results
@@ -123,6 +236,9 @@ def render_snapshots_list(snapshots_qs, limit=20, crawl=None):
                                  font-size: 11px; font-weight: 500; text-transform: uppercase;
                                  color: {color}; background: {bg};">{status}</span>
                 </td>
+                <td style="padding: 6px 8px; white-space: nowrap; text-align: center;">
+                    <span title="{permissions}" style="display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border-radius:999px; font-size:12px; color:{permission_fg}; background:{permission_bg};">{permission_icon}</span>
+                </td>
                 <td style="padding: 6px 8px; white-space: nowrap;">
                     <a href="/{snapshot.archive_path}/" style="text-decoration: none;">
                         <img src="/{snapshot.archive_path}/favicon.ico"
@@ -158,23 +274,24 @@ def render_snapshots_list(snapshots_qs, limit=20, crawl=None):
             </tr>
         ''')
 
-    total_count = snapshots_qs.count()
-    footer = ""
-    if total_count > limit:
-        footer = f"""
-            <tr>
-                <td colspan="6" style="padding: 8px; text-align: center; color: #666; font-size: 12px; background: #f8f9fa;">
-                    Showing {limit} of {total_count} snapshots
-                </td>
-            </tr>
+    pagination = ""
+    if paginator.num_pages > 1:
+        pagination = f"""
+            <div style="display: flex; gap: 10px; align-items: center; justify-content: center; padding: 10px 12px; background: #f8fafc; border-top: 1px solid #e2e8f0; font-size: 12px;">
+                {"<a class='button' style='padding: 5px 10px;' href='" + querystring(**{page_param: page_obj.previous_page_number()}) + "'>Previous</a>" if page_obj.has_previous() else "<span style='color:#94a3b8;'>Previous</span>"}
+                <span style="color: #64748b;">Page {page_obj.number} of {paginator.num_pages}</span>
+                {"<a class='button' style='padding: 5px 10px;' href='" + querystring(**{page_param: page_obj.next_page_number()}) + "'>Next</a>" if page_obj.has_next() else "<span style='color:#94a3b8;'>Next</span>"}
+            </div>
         """
 
     return mark_safe(f"""
         <div data-crawl-snapshots-list style="border: 1px solid #ddd; border-radius: 6px; overflow: hidden; max-width: 100%;">
+            {controls}
             <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
                 <thead>
                     <tr style="background: #f5f5f5; border-bottom: 2px solid #ddd;">
                         <th style="padding: 8px; text-align: left; font-weight: 600; color: #333;">Status</th>
+                        <th style="padding: 8px 4px; text-align: center; font-weight: 600; color: #333; width: 22px;">🔒</th>
                         <th style="padding: 8px; text-align: left; font-weight: 600; color: #333; width: 24px;"></th>
                         <th style="padding: 8px; text-align: left; font-weight: 600; color: #333;">Title</th>
                         <th style="padding: 8px; text-align: left; font-weight: 600; color: #333;">URL</th>
@@ -187,9 +304,9 @@ def render_snapshots_list(snapshots_qs, limit=20, crawl=None):
                 </thead>
                 <tbody>
                     {"".join(rows)}
-                    {footer}
                 </tbody>
             </table>
+            {pagination}
         </div>
         {
         '''
@@ -260,117 +377,13 @@ def render_snapshots_list(snapshots_qs, limit=20, crawl=None):
     """)
 
 
-class URLFiltersWidget(forms.Widget):
-    def render(self, name, value, attrs=None, renderer=None):
-        value = value if isinstance(value, dict) else {}
-        widget_id = (attrs or {}).get("id", name)
-        allowlist = escape(value.get("allowlist", "") or "")
-        denylist = escape(value.get("denylist", "") or "")
-
-        return mark_safe(f'''
-            <div id="{widget_id}_container" style="min-width: 420px;">
-                <input type="hidden" name="{name}" value="">
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                    <div>
-                        <label for="{widget_id}_allowlist" style="display: block; font-weight: 600; margin-bottom: 4px;">Allowlist</label>
-                        <textarea id="{widget_id}_allowlist" name="{name}_allowlist" rows="3"
-                                  style="width: 100%; font-family: monospace; font-size: 12px;"
-                                  placeholder="example.com&#10;*.example.com">{allowlist}</textarea>
-                    </div>
-                    <div>
-                        <label for="{widget_id}_denylist" style="display: block; font-weight: 600; margin-bottom: 4px;">Denylist</label>
-                        <textarea id="{widget_id}_denylist" name="{name}_denylist" rows="3"
-                                  style="width: 100%; font-family: monospace; font-size: 12px;"
-                                  placeholder="static.example.com">{denylist}</textarea>
-                    </div>
-                </div>
-                <label style="display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; font-weight: 500;">
-                    <input type="checkbox" id="{widget_id}_same_domain_only" name="{name}_same_domain_only" value="1">
-                    Same domain only
-                </label>
-                <p style="color: #666; font-size: 11px; margin: 6px 0 0 0;">
-                    Enter domains, wildcards, or regex patterns. Denylist takes precedence over allowlist.
-                </p>
-                <script>
-                    (function() {{
-                        if (window.__archiveboxUrlFilterEditors && window.__archiveboxUrlFilterEditors['{widget_id}']) {{
-                            return;
-                        }}
-                        window.__archiveboxUrlFilterEditors = window.__archiveboxUrlFilterEditors || {{}};
-                        window.__archiveboxUrlFilterEditors['{widget_id}'] = true;
-
-                        var urlsField = document.getElementById('id_urls');
-                        var allowlistField = document.getElementById('{widget_id}_allowlist');
-                        var sameDomainOnly = document.getElementById('{widget_id}_same_domain_only');
-
-                        function extractUrl(line) {{
-                            var trimmed = (line || '').trim();
-                            if (!trimmed || trimmed.charAt(0) === '#') {{
-                                return '';
-                            }}
-                            if (trimmed.charAt(0) === '{{') {{
-                                try {{
-                                    var record = JSON.parse(trimmed);
-                                    return String(record.url || '').trim();
-                                }} catch (error) {{
-                                    return '';
-                                }}
-                            }}
-                            return trimmed;
-                        }}
-
-                        function syncAllowlistFromUrls() {{
-                            if (!urlsField || !allowlistField || !sameDomainOnly || !sameDomainOnly.checked) {{
-                                return;
-                            }}
-                            var domains = [];
-                            var seen = Object.create(null);
-                            urlsField.value.split(/\\n+/).forEach(function(line) {{
-                                var url = extractUrl(line);
-                                if (!url) {{
-                                    return;
-                                }}
-                                try {{
-                                    var parsed = new URL(url);
-                                    var domain = (parsed.hostname || '').toLowerCase();
-                                    if (domain && !seen[domain]) {{
-                                        seen[domain] = true;
-                                        domains.push(domain);
-                                    }}
-                                }} catch (error) {{
-                                    return;
-                                }}
-                            }});
-                            allowlistField.value = domains.join('\\n');
-                        }}
-
-                        if (sameDomainOnly) {{
-                            sameDomainOnly.addEventListener('change', syncAllowlistFromUrls);
-                        }}
-                        if (urlsField) {{
-                            urlsField.addEventListener('input', syncAllowlistFromUrls);
-                            urlsField.addEventListener('change', syncAllowlistFromUrls);
-                        }}
-                    }})();
-                </script>
-            </div>
-        ''')
-
-    def value_from_datadict(self, data, files, name):
-        return {
-            "allowlist": data.get(f"{name}_allowlist", ""),
-            "denylist": data.get(f"{name}_denylist", ""),
-            "same_domain_only": data.get(f"{name}_same_domain_only") in ("1", "on", "true"),
-        }
-
-
 class URLFiltersField(forms.Field):
-    widget = URLFiltersWidget
+    widget = URLFiltersWidget(source_selector="#id_urls")
 
     def to_python(self, value):
         if isinstance(value, dict):
             return value
-        return {"allowlist": "", "denylist": "", "same_domain_only": False}
+        return {"allowlist": "", "denylist": "", "same_domain_only": False, "subpaths_only": False}
 
 
 class CrawlAdminForm(forms.ModelForm):
@@ -416,6 +429,7 @@ class CrawlAdminForm(forms.ModelForm):
             "allowlist": config.get("URL_ALLOWLIST", ""),
             "denylist": config.get("URL_DENYLIST", ""),
             "same_domain_only": False,
+            "subpaths_only": False,
         }
 
     def clean_tags_editor(self):
@@ -439,16 +453,18 @@ class CrawlAdminForm(forms.ModelForm):
             "allowlist": "\n".join(Crawl.split_filter_patterns(value.get("allowlist", ""))),
             "denylist": "\n".join(Crawl.split_filter_patterns(value.get("denylist", ""))),
             "same_domain_only": bool(value.get("same_domain_only")),
+            "subpaths_only": bool(value.get("subpaths_only")),
         }
 
     def save(self, commit=True):
         instance = super().save(commit=False)
         instance.tags_str = self.cleaned_data.get("tags_editor", "")
-        url_filters = self.cleaned_data.get("url_filters") or {}
-        instance.set_url_filters(
-            url_filters.get("allowlist", ""),
-            url_filters.get("denylist", ""),
-        )
+        if f"{self.add_prefix('url_filters')}_allowlist" in self.data or f"{self.add_prefix('url_filters')}_denylist" in self.data:
+            url_filters = self.cleaned_data.get("url_filters") or {}
+            instance.set_url_filters(
+                url_filters.get("allowlist", ""),
+                url_filters.get("denylist", ""),
+            )
         if commit:
             instance.save()
             instance.apply_crawl_config_filters()
@@ -460,15 +476,16 @@ class CrawlAdminForm(forms.ModelForm):
 
 class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
     form = CrawlAdminForm
+    change_form_template = "admin/crawls/crawl/change_form.html"
     list_select_related = ()
     list_display = (
         "id",
         "created_at",
         "created_by",
         "max_depth",
-        "max_urls",
-        "crawl_max_size",
-        "snapshot_max_size",
+        "stop_reason_badge",
+        "pause_control",
+        "resume_control",
         "label",
         "notes",
         "urls_preview",
@@ -483,9 +500,6 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
         "created_at",
         "created_by",
         "max_depth",
-        "max_urls",
-        "crawl_max_size",
-        "snapshot_max_size",
         "label",
         "notes",
         "schedule_str",
@@ -496,9 +510,6 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
         "id",
         "created_by__username",
         "max_depth",
-        "max_urls",
-        "crawl_max_size",
-        "snapshot_max_size",
         "label",
         "notes",
         "schedule_id",
@@ -506,56 +517,33 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
         "urls",
     )
 
-    readonly_fields = ("created_at", "modified_at", "snapshots")
+    readonly_fields = ("created_at", "modified_at", "stop_reason_display")
 
     fieldsets = (
         (
             "URLs",
             {
-                "fields": ("urls",),
+                "fields": ("urls", "url_filters"),
                 "classes": ("card", "wide"),
             },
         ),
         (
-            "Info",
+            "Overview",
             {
-                "fields": ("label", "notes", "tags_editor"),
-                "classes": ("card",),
+                "fields": (
+                    ("label", "status", "retry_at", "schedule", "created_by", "created_at", "modified_at"),
+                    ("max_depth",),
+                    ("stop_reason_display",),
+                    ("notes", "tags_editor"),
+                ),
+                "classes": ("card", "wide", "crawl-admin-overview"),
             },
         ),
         (
-            "Settings",
+            "Config",
             {
-                "fields": (("max_depth", "max_urls", "crawl_max_size", "snapshot_max_size"), "url_filters", "config"),
-                "classes": ("card",),
-            },
-        ),
-        (
-            "Status",
-            {
-                "fields": ("status", "retry_at"),
-                "classes": ("card",),
-            },
-        ),
-        (
-            "Relations",
-            {
-                "fields": ("schedule", "created_by"),
-                "classes": ("card",),
-            },
-        ),
-        (
-            "Timestamps",
-            {
-                "fields": ("created_at", "modified_at"),
-                "classes": ("card",),
-            },
-        ),
-        (
-            "Snapshots",
-            {
-                "fields": ("snapshots",),
-                "classes": ("card", "wide"),
+                "fields": ("config",),
+                "classes": ("card", "wide", "crawl-admin-config"),
             },
         ),
     )
@@ -563,36 +551,26 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
         (
             "URLs",
             {
-                "fields": ("urls",),
+                "fields": ("urls", "url_filters"),
                 "classes": ("card", "wide"),
             },
         ),
         (
-            "Info",
+            "Overview",
             {
-                "fields": ("label", "notes", "tags_editor"),
-                "classes": ("card",),
+                "fields": (
+                    ("label", "status", "retry_at", "schedule", "created_by"),
+                    ("max_depth",),
+                    ("notes", "tags_editor"),
+                ),
+                "classes": ("card", "wide", "crawl-admin-overview"),
             },
         ),
         (
-            "Settings",
+            "Config",
             {
-                "fields": (("max_depth", "max_urls", "crawl_max_size", "snapshot_max_size"), "url_filters", "config"),
-                "classes": ("card",),
-            },
-        ),
-        (
-            "Status",
-            {
-                "fields": ("status", "retry_at"),
-                "classes": ("card",),
-            },
-        ),
-        (
-            "Relations",
-            {
-                "fields": ("schedule", "created_by"),
-                "classes": ("card",),
+                "fields": ("config",),
+                "classes": ("card", "wide", "crawl-admin-config"),
             },
         ),
     )
@@ -600,8 +578,12 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
     list_filter = (MaxDepthListFilter, "schedule", "created_by", "status", "retry_at")
     ordering = ["-created_at", "-retry_at"]
     list_per_page = 50
-    actions = ["delete_selected_batched"]
+    actions = ["pause_selected_crawls", "resume_selected_crawls", "delete_selected_batched"]
     change_actions = ["recrawl"]
+
+    class Media:
+        css = {"all": ("admin/crawls/crawl_change.css",)}
+        js = ("admin/crawls/crawl_admin.js",)
 
     def get_queryset(self, request):
         """Keep joins page-local while computing per-row snapshot counts in the page query."""
@@ -622,6 +604,20 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
                 ),
             )
         )
+
+    def change_view(self, request, object_id, form_url="", extra_context=None):
+        self.request = request
+        crawl = self.get_object(request, object_id)
+        extra_context = {
+            **(extra_context or {}),
+            "crawl_stop_reason": crawl.limit_stop_reason() if crawl else "",
+            "crawl_snapshots_changelist": self.snapshots_changelist(crawl) if crawl else "",
+        }
+        return super().change_view(request, object_id, form_url, extra_context)
+
+    def add_view(self, request, form_url="", extra_context=None):
+        self.request = request
+        return super().add_view(request, form_url, extra_context)
 
     def get_fieldsets(self, request, obj=None):
         return self.fieldsets if obj else self.add_fieldsets
@@ -658,6 +654,29 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
 
         messages.success(request, f"Successfully deleted {total} crawls ({deleted_count} total objects including related records).")
 
+    @admin.action(description="Pause selected crawls")
+    def pause_selected_crawls(self, request, queryset):
+        paused = 0
+        for crawl in queryset.exclude(status=Crawl.StatusChoices.SEALED).iterator(chunk_size=100):
+            paused += int(crawl.pause())
+        if paused:
+            messages.success(request, f"Paused {paused} crawl(s). The runner will stop scheduling new work on the next sweep.")
+        else:
+            messages.warning(request, "No active crawls were selected to pause.")
+
+    @admin.action(description="Resume selected crawls")
+    def resume_selected_crawls(self, request, queryset):
+        resumed = 0
+        for crawl in queryset.iterator(chunk_size=100):
+            if crawl.status == Crawl.StatusChoices.SEALED:
+                crawl.status = Crawl.StatusChoices.PAUSED
+                crawl.save(update_fields=["status", "modified_at"])
+            resumed += int(crawl.resume())
+        if resumed:
+            messages.success(request, f"Resumed {resumed} crawl(s). The runner will pick them up on the next sweep.")
+        else:
+            messages.warning(request, "No paused or sealed crawls were selected to resume.")
+
     @action(label="Recrawl", description="Create a new crawl with the same settings")
     def recrawl(self, request, obj):
         """Duplicate this crawl as a new crawl with the same URLs and settings."""
@@ -670,9 +689,6 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
         new_crawl = Crawl.objects.create(
             urls=obj.urls,
             max_depth=obj.max_depth,
-            max_urls=obj.max_urls,
-            crawl_max_size=obj.crawl_max_size,
-            snapshot_max_size=obj.snapshot_max_size,
             tags_str=obj.tags_str,
             config=obj.config,
             schedule=obj.schedule,
@@ -687,6 +703,39 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
 
         return redirect("admin:crawls_crawl_change", new_crawl.id)
 
+    @admin.display(description="Stop Reason")
+    def stop_reason_display(self, obj):
+        reason = obj.limit_stop_reason() if obj else ""
+        if not reason:
+            return mark_safe('<span class="crawl-stop-reason crawl-stop-reason--empty">None</span>')
+        return format_html('<span class="crawl-stop-reason">{}</span>', reason)
+
+    @admin.display(description="Stop Reason")
+    def stop_reason_badge(self, obj):
+        return self.stop_reason_display(obj)
+
+    @admin.display(description="Resume")
+    def resume_control(self, obj):
+        if obj.status != Crawl.StatusChoices.SEALED and not obj.is_paused:
+            return mark_safe('<span class="crawl-resume-muted">-</span>')
+        reason = "paused" if obj.is_paused else (obj.limit_stop_reason() or "sealed")
+        return format_html(
+            '<button type="button" class="button crawl-resume-row" data-crawl-id="{}" title="Resume crawl. Stop reason: {}">Resume</button>',
+            obj.pk,
+            reason,
+        )
+
+    @admin.display(description="Pause")
+    def pause_control(self, obj):
+        if obj.status == Crawl.StatusChoices.SEALED:
+            return mark_safe('<span class="crawl-resume-muted">-</span>')
+        if obj.is_paused:
+            return mark_safe('<span class="crawl-resume-muted">Paused</span>')
+        return format_html(
+            '<button type="button" class="button crawl-pause-row" data-crawl-id="{}" title="Pause crawl">Pause</button>',
+            obj.pk,
+        )
+
     def num_snapshots(self, obj):
         # Use cached annotation from get_queryset to avoid N+1
         count = getattr(obj, "num_snapshots_cached", None)
@@ -694,8 +743,40 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
             count = obj.snapshot_set.count()
         return count
 
-    def snapshots(self, obj):
-        return render_snapshots_list(obj.snapshot_set.all(), crawl=obj)
+    @admin.display(description="Snapshots")
+    def snapshots_changelist(self, obj):
+        request = getattr(self, "request", None)
+        snapshot_changelist = reverse("admin:core_snapshot_changelist")
+        scoped_params = {"crawl_id": str(obj.pk)}
+        full_url = f"{snapshot_changelist}?{urlencode(scoped_params)}"
+        if request is None:
+            return format_html('<a class="button" href="{}">Open snapshots changelist</a>', full_url)
+
+        snapshot_admin = self.admin_site._registry[Snapshot]
+        changelist_request = copy(request)
+        changelist_request.method = "GET"
+        changelist_request.path = snapshot_changelist
+        changelist_request.GET = request.GET.copy()
+        changelist_request.GET.update(
+            {
+                **scoped_params,
+                "_embedded": "crawl",
+                "per_page": "200",
+            },
+        )
+        changelist_request.POST = request.POST.copy()
+        changelist_request.POST.clear()
+
+        response = snapshot_admin.changelist_view(
+            changelist_request,
+            extra_context={"embedded_changelist": True},
+        )
+        context = {
+            **response.context_data,
+            "snapshot_changelist_url": full_url,
+            "crawl": obj,
+        }
+        return mark_safe(render_to_string("admin/crawls/crawl/snapshots_changelist.html", context, request=request))
 
     def delete_snapshot_view(self, request: HttpRequest, object_id: str, snapshot_id: str):
         if request.method != "POST":
@@ -832,6 +913,7 @@ class CrawlScheduleAdmin(BaseModelAdmin):
     actions = ["delete_selected"]
 
     def get_queryset(self, request):
+        self.request = request
         return (
             super()
             .get_queryset(request)
@@ -841,6 +923,10 @@ class CrawlScheduleAdmin(BaseModelAdmin):
                 snapshot_count=Count("crawl__snapshot_set", distinct=True),
             )
         )
+
+    def change_view(self, request, object_id, form_url="", extra_context=None):
+        self.request = request
+        return super().change_view(request, object_id, form_url, extra_context)
 
     def get_fieldsets(self, request, obj=None):
         if obj is None:
@@ -879,7 +965,7 @@ class CrawlScheduleAdmin(BaseModelAdmin):
 
     def snapshots(self, obj):
         crawl_ids = obj.crawl_set.values_list("pk", flat=True)
-        return render_snapshots_list(Snapshot.objects.filter(crawl_id__in=crawl_ids))
+        return render_snapshots_list(Snapshot.objects.filter(crawl_id__in=crawl_ids), request=getattr(self, "request", None), prefix="schedule_snapshots")
 
 
 def register_admin(admin_site):

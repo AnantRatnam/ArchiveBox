@@ -1,3 +1,4 @@
+# ruff: noqa
 """
 Folder utilities for ArchiveBox.
 

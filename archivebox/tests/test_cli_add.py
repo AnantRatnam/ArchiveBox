@@ -5,9 +5,16 @@ Verify add creates snapshots in DB, crawls, source files, and archive directorie
 """
 
 import os
-import sqlite3
 import subprocess
 from pathlib import Path
+
+import pytest
+
+from archivebox.core.models import Snapshot
+from archivebox.crawls.models import Crawl
+from archivebox.tests.orm_helpers import use_archivebox_db
+
+pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def _find_snapshot_dir(data_dir: Path, snapshot_id: str) -> Path | None:
@@ -35,13 +42,11 @@ def test_add_single_url_creates_snapshot_in_db(tmp_path, process, disable_extrac
 
     assert result.returncode == 0
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    snapshots = c.execute("SELECT url FROM core_snapshot").fetchall()
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        snapshots = list(Snapshot.objects.values_list("url", flat=True))
 
     assert len(snapshots) == 1
-    assert snapshots[0][0] == "https://example.com"
+    assert snapshots[0] == "https://example.com"
 
 
 def test_add_bg_creates_root_snapshot_rows_immediately(tmp_path, process, disable_extractors_dict):
@@ -55,14 +60,11 @@ def test_add_bg_creates_root_snapshot_rows_immediately(tmp_path, process, disabl
 
     assert result.returncode == 0
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    snapshots = c.execute("SELECT url, status FROM core_snapshot").fetchall()
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        snapshots = list(Snapshot.objects.values_list("url", "status"))
 
     assert len(snapshots) == 1
-    assert snapshots[0][0] == "https://example.com"
-    assert snapshots[0][1] == "queued"
+    assert snapshots[0] == ("https://example.com", "queued")
 
 
 def test_add_creates_crawl_record(tmp_path, process, disable_extractors_dict):
@@ -74,10 +76,8 @@ def test_add_creates_crawl_record(tmp_path, process, disable_extractors_dict):
         env=disable_extractors_dict,
     )
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    crawl_count = c.execute("SELECT COUNT(*) FROM crawls_crawl").fetchone()[0]
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        crawl_count = Crawl.objects.count()
 
     assert crawl_count == 1
 
@@ -112,15 +112,13 @@ def test_add_multiple_urls_single_command(tmp_path, process, disable_extractors_
 
     assert result.returncode == 0
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    snapshot_count = c.execute("SELECT COUNT(*) FROM core_snapshot").fetchone()[0]
-    urls = c.execute("SELECT url FROM core_snapshot ORDER BY url").fetchall()
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        snapshot_count = Snapshot.objects.count()
+        urls = list(Snapshot.objects.order_by("url").values_list("url", flat=True))
 
     assert snapshot_count == 2
-    assert urls[0][0] == "https://example.com"
-    assert urls[1][0] == "https://example.org"
+    assert urls[0] == "https://example.com"
+    assert urls[1] == "https://example.org"
 
 
 def test_add_from_file(tmp_path, process, disable_extractors_dict):
@@ -143,11 +141,9 @@ def test_add_from_file(tmp_path, process, disable_extractors_dict):
 
     assert result.returncode == 0
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    crawl_count = c.execute("SELECT COUNT(*) FROM crawls_crawl").fetchone()[0]
-    snapshot_count = c.execute("SELECT COUNT(*) FROM core_snapshot").fetchone()[0]
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        crawl_count = Crawl.objects.count()
+        snapshot_count = Snapshot.objects.count()
 
     # The file is parsed into two input URLs.
     assert crawl_count == 1
@@ -208,10 +204,8 @@ def test_add_with_tags(tmp_path, process, disable_extractors_dict):
         env=disable_extractors_dict,
     )
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    tags_str = c.execute("SELECT tags_str FROM crawls_crawl").fetchone()[0]
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        tags_str = Crawl.objects.values_list("tags_str", flat=True).get()
 
     # Tags are stored as a comma-separated string in crawl
     assert "test" in tags_str or "example" in tags_str
@@ -228,15 +222,11 @@ def test_add_records_selected_persona_on_crawl(tmp_path, process, disable_extrac
 
     assert result.returncode == 0
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    persona_id, default_persona = c.execute(
-        "SELECT persona_id, json_extract(config, '$.DEFAULT_PERSONA') FROM crawls_crawl LIMIT 1",
-    ).fetchone()
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        crawl = Crawl.objects.get()
 
-    assert persona_id
-    assert default_persona is None
+    assert crawl.persona_id
+    assert crawl.config.get("DEFAULT_PERSONA") is None
     assert (tmp_path / "personas" / "Default" / "chrome_profile").is_dir()
 
 
@@ -258,15 +248,11 @@ def test_add_records_url_filter_overrides_on_crawl(tmp_path, process, disable_ex
 
     assert result.returncode == 0
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    allowlist, denylist = c.execute(
-        "SELECT json_extract(config, '$.URL_ALLOWLIST'), json_extract(config, '$.URL_DENYLIST') FROM crawls_crawl LIMIT 1",
-    ).fetchone()
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        crawl = Crawl.objects.get()
 
-    assert allowlist == "example.com,*.example.com"
-    assert denylist == "static.example.com"
+    assert crawl.config["URL_ALLOWLIST"] == "example.com,*.example.com"
+    assert crawl.config["URL_DENYLIST"] == "static.example.com"
     assert (tmp_path / "personas" / "Default" / "chrome_extensions").is_dir()
 
 
@@ -292,11 +278,9 @@ def test_add_duplicate_url_creates_separate_crawls(tmp_path, process, disable_ex
         env=disable_extractors_dict,
     )
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    snapshot_count = c.execute("SELECT COUNT(*) FROM core_snapshot WHERE url='https://example.com'").fetchone()[0]
-    crawl_count = c.execute("SELECT COUNT(*) FROM crawls_crawl").fetchone()[0]
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        snapshot_count = Snapshot.objects.filter(url="https://example.com").count()
+        crawl_count = Crawl.objects.count()
 
     # Each add creates a new crawl with its own snapshot
     assert crawl_count == 2
@@ -334,10 +318,8 @@ def test_add_creates_snapshot_output_directory(tmp_path, process, disable_extrac
         env=disable_extractors_dict,
     )
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    snapshot_id = str(c.execute("SELECT id FROM core_snapshot").fetchone()[0])
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        snapshot_id = str(Snapshot.objects.values_list("id", flat=True).get())
 
     snapshot_dir = _find_snapshot_dir(tmp_path, snapshot_id)
     assert snapshot_dir is not None, f"Snapshot output directory not found for {snapshot_id}"
@@ -358,6 +340,7 @@ def test_add_help_shows_depth_and_tag_options(tmp_path, process):
     assert "--depth" in result.stdout
     assert "--max-urls" in result.stdout
     assert "--crawl-max-size" in result.stdout
+    assert "--crawl-timeout" in result.stdout
     assert "--snapshot-max-size" in result.stdout
     assert "--tag" in result.stdout
 
@@ -372,6 +355,7 @@ def test_add_records_max_url_and_size_limits_on_crawl(tmp_path, process, disable
             "--depth=1",
             "--max-urls=3",
             "--crawl-max-size=45mb",
+            "--crawl-timeout=120",
             "--snapshot-max-size=5mb",
             "https://example.com",
         ],
@@ -381,19 +365,15 @@ def test_add_records_max_url_and_size_limits_on_crawl(tmp_path, process, disable
 
     assert result.returncode == 0
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    max_urls, crawl_max_size, snapshot_max_size, config_max_urls, config_crawl_max_size, config_snapshot_max_size = c.execute(
-        "SELECT max_urls, crawl_max_size, snapshot_max_size, json_extract(config, '$.CRAWL_MAX_URLS'), json_extract(config, '$.CRAWL_MAX_SIZE'), json_extract(config, '$.SNAPSHOT_MAX_SIZE') FROM crawls_crawl LIMIT 1",
-    ).fetchone()
-    conn.close()
+    columns = {field.name for field in Crawl._meta.local_fields}
+    with use_archivebox_db(tmp_path):
+        config = Crawl.objects.values_list("config", flat=True).get() or {}
 
-    assert max_urls == 3
-    assert crawl_max_size == 45 * 1024 * 1024
-    assert snapshot_max_size == 5 * 1024 * 1024
-    assert config_max_urls == 3
-    assert config_crawl_max_size == 45 * 1024 * 1024
-    assert config_snapshot_max_size == 5 * 1024 * 1024
+    assert {"max_urls", "crawl_max_size", "crawl_timeout", "snapshot_max_size"}.isdisjoint(columns)
+    assert config["CRAWL_MAX_URLS"] == 3
+    assert config["CRAWL_MAX_SIZE"] == 45 * 1024 * 1024
+    assert config["CRAWL_TIMEOUT"] == 120
+    assert config["SNAPSHOT_MAX_SIZE"] == 5 * 1024 * 1024
 
 
 def test_add_without_args_shows_usage(tmp_path, process):
@@ -424,10 +404,8 @@ def test_add_index_only_skips_extraction(tmp_path, process, disable_extractors_d
     assert result.returncode == 0
 
     # Snapshot should exist but archive results should be minimal
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    snapshot_count = c.execute("SELECT COUNT(*) FROM core_snapshot").fetchone()[0]
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        snapshot_count = Snapshot.objects.count()
 
     assert snapshot_count == 1
 
@@ -441,16 +419,9 @@ def test_add_links_snapshot_to_crawl(tmp_path, process, disable_extractors_dict)
         env=disable_extractors_dict,
     )
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-
-    # Get crawl id
-    crawl_id = c.execute("SELECT id FROM crawls_crawl").fetchone()[0]
-
-    # Get snapshot's crawl_id
-    snapshot_crawl = c.execute("SELECT crawl_id FROM core_snapshot").fetchone()[0]
-
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        crawl_id = Crawl.objects.values_list("id", flat=True).get()
+        snapshot_crawl = Snapshot.objects.values_list("crawl_id", flat=True).get()
 
     assert snapshot_crawl == crawl_id
 
@@ -464,10 +435,8 @@ def test_add_sets_snapshot_timestamp(tmp_path, process, disable_extractors_dict)
         env=disable_extractors_dict,
     )
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    timestamp = c.execute("SELECT timestamp FROM core_snapshot").fetchone()[0]
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        timestamp = Snapshot.objects.values_list("timestamp", flat=True).get()
 
     assert timestamp is not None
     assert len(str(timestamp)) > 0

@@ -3,15 +3,24 @@
 
 import json
 import os
+import re
 import signal
-import sqlite3
+import socket
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
+from archivebox.core.models import ArchiveResult, Snapshot
+from archivebox.crawls.models import Crawl
+from archivebox.machine.models import Process
+from archivebox.tests.orm_helpers import use_archivebox_db
+
 from .conftest import _find_system_browser
+
+pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def _pid_is_alive(pid: int) -> bool:
@@ -50,6 +59,256 @@ def _cleanup_process_group(group_pid: int | None, *child_pids: int | None) -> No
                 os.kill(pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+
+
+def _free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def _live_exit_env(data_dir, *, plugins_root=None, extra=None):
+    env = os.environ.copy()
+    env.update(
+        {
+            "DATA_DIR": str(data_dir),
+            "USE_COLOR": "false",
+            "SHOW_PROGRESS": "false",
+            "SAVE_ARCHIVEDOTORG": "false",
+            "SAVE_FAVICON": "false",
+            "SAVE_HEADERS": "false",
+            "SAVE_TITLE": "false",
+            "SAVE_READABILITY": "false",
+            "SAVE_SINGLEFILE": "false",
+            "SAVE_MERCURY": "false",
+            "SAVE_SCREENSHOT": "false",
+            "SAVE_PDF": "false",
+            "SAVE_DOM": "false",
+            "SAVE_GIT": "false",
+            "SAVE_YTDLP": "false",
+            "TIMEOUT": "60",
+            "WGET_TIMEOUT": "45",
+            "CRAWL_MAX_CONCURRENT_SNAPSHOTS": "1",
+            "PARSE_HTML_URLS_ENABLED": "true",
+            "PARSE_DOM_OUTLINKS_ENABLED": "false",
+            "SEARCH_BACKEND_ENGINE": "sqlite",
+        },
+    )
+    if plugins_root is not None:
+        env["ABX_PLUGINS_DIR"] = str(plugins_root)
+    if extra:
+        env.update(extra)
+    return env
+
+
+def _wait_for_port(host: str, port: int, *, timeout: float = 30.0) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=0.25):
+                return
+        except OSError:
+            time.sleep(0.1)
+    raise AssertionError(f"server did not listen on {host}:{port}")
+
+
+def _wait_for_log(log_path: Path, text: str, *, timeout: float = 30.0) -> str:
+    deadline = time.time() + timeout
+    content = ""
+    while time.time() < deadline:
+        if log_path.exists():
+            content = log_path.read_text(encoding="utf-8", errors="replace")
+            if text in content:
+                return content
+        time.sleep(0.1)
+    raise AssertionError(f"timed out waiting for {text!r} in {log_path}:\n{content}")
+
+
+def _wait_for_log_count(log_path: Path, text: str, count: int, *, timeout: float = 30.0) -> str:
+    deadline = time.time() + timeout
+    content = ""
+    while time.time() < deadline:
+        if log_path.exists():
+            content = log_path.read_text(encoding="utf-8", errors="replace")
+            if content.count(text) >= count:
+                return content
+        time.sleep(0.1)
+    raise AssertionError(f"timed out waiting for {count} occurrences of {text!r} in {log_path}:\n{content}")
+
+
+def _wait_for_pid_to_disappear(pid: int, *, timeout: float = 20.0) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not _pid_is_alive(pid):
+            return
+        time.sleep(0.1)
+    raise AssertionError(f"PID {pid} is still running")
+
+
+def _supervisor_pid_from_log(log_path: Path) -> int:
+    content = log_path.read_text(encoding="utf-8", errors="replace")
+    matches = re.findall(r"Supervisord connected \(pid=(\d+)\)", content)
+    assert matches, content
+    return int(matches[-1])
+
+
+def _worker_pid_from_log(log_path: Path, worker_name: str) -> int:
+    content = log_path.read_text(encoding="utf-8", errors="replace")
+    matches = re.findall(rf"Worker {re.escape(worker_name)}: started RUNNING \(pid (\d+),", content)
+    assert matches, content
+    return int(matches[-1])
+
+
+def _pgrep_data_dir(data_dir) -> list[str]:
+    result = subprocess.run(["pgrep", "-af", str(data_dir)], capture_output=True, text=True, timeout=5)
+    return [line for line in result.stdout.splitlines() if "pgrep -af" not in line]
+
+
+def _assert_no_processes_for_data_dir(data_dir, *, timeout: float = 10.0) -> None:
+    deadline = time.time() + timeout
+    remaining: list[str] = []
+    while time.time() < deadline:
+        remaining = _pgrep_data_dir(data_dir)
+        if not remaining:
+            return
+        time.sleep(0.25)
+    raise AssertionError("processes still reference test DATA_DIR:\n" + "\n".join(remaining))
+
+
+def _kill_processes_for_data_dir(data_dir) -> None:
+    for line in _pgrep_data_dir(data_dir):
+        try:
+            pid = int(line.split(None, 1)[0])
+        except (IndexError, ValueError):
+            continue
+        if pid != os.getpid():
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+def _start_server(data_dir, *, port: int, log_name: str, env: dict[str, str] | None = None) -> tuple[subprocess.Popen[str], Path]:
+    log_path = data_dir / log_name
+    log = log_path.open("w", encoding="utf-8")
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "archivebox", "server", f"127.0.0.1:{port}"],
+        cwd=data_dir,
+        env=env or _live_exit_env(data_dir),
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+    )
+    log.close()
+    _wait_for_port("127.0.0.1", port)
+    _wait_for_log(log_path, "Tailing worker logs", timeout=30.0)
+    return proc, log_path
+
+
+def _stop_process(proc: subprocess.Popen[str], sig=signal.SIGTERM, *, timeout: float = 15.0) -> str:
+    if proc.poll() is None:
+        try:
+            os.killpg(proc.pid, sig)
+        except (ProcessLookupError, OSError):
+            try:
+                os.kill(proc.pid, sig)
+            except ProcessLookupError:
+                pass
+    try:
+        stdout, _stderr = proc.communicate(timeout=timeout)
+        return stdout or ""
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            try:
+                os.kill(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        stdout, _stderr = proc.communicate(timeout=5)
+        return stdout or ""
+
+
+def _write_slow_snapshot_plugin(plugins_root, marker_dir):
+    plugin_dir = plugins_root / "slow_exit"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    hook = plugin_dir / "on_Snapshot__09_slow_exit.finite.bg.sh"
+    hook.write_text(
+        "\n".join(
+            [
+                "#!/usr/bin/env bash",
+                "set -euo pipefail",
+                f"marker_dir={str(marker_dir)!r}",
+                "mkdir -p \"$marker_dir\"",
+                "echo $$ >> \"$marker_dir/hook-pids.txt\"",
+                "touch \"$marker_dir/hook-started\"",
+                "trap 'touch \"$marker_dir/hook-stopped\"; exit 0' TERM INT HUP",
+                "while true; do sleep 1; done",
+                "",
+            ],
+        ),
+        encoding="utf-8",
+    )
+    hook.chmod(0o755)
+    return plugin_dir
+
+
+def _wait_for_crawl_state(data_dir, predicate, *, timeout: float = 30.0):
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        with use_archivebox_db(data_dir):
+            last = {
+                "crawls": list(Crawl.objects.order_by("created_at").values("id", "status", "retry_at")),
+                "snapshots": list(Snapshot.objects.order_by("created_at").values("id", "url", "status", "retry_at")),
+                "results": list(ArchiveResult.objects.order_by("created_at").values("id", "plugin", "status")),
+                "processes": list(Process.objects.order_by("created_at").values("id", "process_type", "status", "pid", "cmd")),
+            }
+        if predicate(last):
+            return last
+        time.sleep(0.25)
+    raise AssertionError(f"timed out waiting for crawl state, last={last}")
+
+
+def _wait_for_hook_runs(marker_dir: Path, count: int, *, timeout: float = 45.0) -> list[int]:
+    pid_file = marker_dir / "hook-pids.txt"
+    deadline = time.time() + timeout
+    pids: list[int] = []
+    while time.time() < deadline:
+        if pid_file.exists():
+            pids = [int(line.strip()) for line in pid_file.read_text().splitlines() if line.strip()]
+            if len(pids) >= count:
+                return pids
+        time.sleep(0.25)
+    raise AssertionError(f"timed out waiting for {count} slow hook runs, got {pids}")
+
+
+def _start_live_add(data_dir, env, *, url="https://example.com", max_urls="2", log_name="archivebox-add.log") -> tuple[subprocess.Popen[str], Path]:
+    log_path = data_dir / log_name
+    log = log_path.open("w", encoding="utf-8")
+    urls = [url] if isinstance(url, str) else url
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "archivebox",
+            "add",
+            "--depth=1",
+            f"--max-urls={max_urls}",
+            "--crawl-max-size=50mb",
+            "--plugins=wget,parse_html_urls,slow_exit",
+            *urls,
+        ],
+        cwd=data_dir,
+        env=env,
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+    )
+    log.close()
+    return proc, log_path
 
 
 @pytest.mark.timeout(90)
@@ -175,6 +434,320 @@ def test_cli_run_signal_cleans_background_hook_process_group(tmp_path, process):
         _cleanup_process_group(foreground_pid)
 
 
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize(
+    ("stop_signal", "expected_notice"),
+    [
+        (signal.SIGHUP, "Got SIGHUP"),
+        (signal.SIGINT, "Got SIGINT"),
+        (signal.SIGTERM, "Got SIGTERM"),
+        (signal.SIGKILL, None),
+    ],
+)
+def test_live_server_signal_exit_and_resume_uses_existing_supervisor_state(tmp_path, process, stop_signal, expected_notice):
+    os.chdir(tmp_path)
+    assert process.returncode == 0, process.stderr
+
+    env = _live_exit_env(tmp_path)
+    port = _free_port()
+    server = None
+    resumed = None
+    try:
+        server, server_log = _start_server(tmp_path, port=port, log_name=f"server-{stop_signal.name}.log", env=env)
+
+        os.kill(server.pid, stop_signal)
+        try:
+            server.wait(timeout=20 if stop_signal != signal.SIGKILL else 5)
+        except subprocess.TimeoutExpired:
+            os.kill(server.pid, signal.SIGKILL)
+            server.wait(timeout=5)
+
+        if expected_notice:
+            log_text = server_log.read_text(encoding="utf-8", errors="replace")
+            assert expected_notice in log_text
+            assert "ArchiveBox server shut down gracefully" in log_text
+            _assert_no_processes_for_data_dir(tmp_path, timeout=12)
+
+        resumed, resumed_log = _start_server(tmp_path, port=port, log_name=f"server-{stop_signal.name}-resumed.log", env=env)
+        status = subprocess.run(
+            [sys.executable, "-m", "archivebox", "status"],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert status.returncode == 0, status.stderr or status.stdout
+
+        os.kill(resumed.pid, signal.SIGTERM)
+        resumed.wait(timeout=20)
+        resumed_text = resumed_log.read_text(encoding="utf-8", errors="replace")
+        assert "Got SIGTERM" in resumed_text
+        assert "ArchiveBox server shut down gracefully" in resumed_text
+        _assert_no_processes_for_data_dir(tmp_path, timeout=12)
+    finally:
+        for proc in (server, resumed):
+            if proc is not None and proc.poll() is None:
+                _stop_process(proc, signal.SIGKILL)
+        _kill_processes_for_data_dir(tmp_path)
+
+
+@pytest.mark.timeout(240)
+def test_live_second_server_takes_over_existing_server_parent(tmp_path, process):
+    os.chdir(tmp_path)
+    assert process.returncode == 0, process.stderr
+
+    env = _live_exit_env(tmp_path)
+    port = _free_port()
+    first = None
+    second = None
+    try:
+        first, first_log = _start_server(tmp_path, port=port, log_name="server-first.log", env=env)
+        second, second_log = _start_server(tmp_path, port=port, log_name="server-second.log", env=env)
+
+        assert first.poll() is None
+        first_text = first_log.read_text(encoding="utf-8", errors="replace")
+        second_text = second_log.read_text(encoding="utf-8", errors="replace")
+        assert "Newer ArchiveBox server parent took over; standing by." in first_text
+        assert "is now running the orchestrator and server" in second_text
+
+        status = subprocess.run(
+            [sys.executable, "-m", "archivebox", "status"],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert status.returncode == 0, status.stderr or status.stdout
+
+        first_takeovers = first_log.read_text(encoding="utf-8", errors="replace").count("is now running the orchestrator and server")
+        _stop_process(second, signal.SIGTERM)
+        second = None
+        _wait_for_log_count(first_log, "is now running the orchestrator and server", first_takeovers + 1, timeout=35)
+        assert first.poll() is None
+    finally:
+        if second is not None and second.poll() is None:
+            _stop_process(second, signal.SIGTERM)
+        if first is not None and first.poll() is None:
+            _stop_process(first, signal.SIGKILL)
+        _kill_processes_for_data_dir(tmp_path)
+        _assert_no_processes_for_data_dir(tmp_path, timeout=12)
+
+
+@pytest.mark.timeout(420)
+def test_live_repeated_server_startups_take_over_cleanly(tmp_path, process):
+    os.chdir(tmp_path)
+    assert process.returncode == 0, process.stderr
+
+    env = _live_exit_env(tmp_path)
+    port = _free_port()
+    servers: list[subprocess.Popen[str]] = []
+    server_pids: list[int] = []
+    daphne_pids: list[int] = []
+    runner_pids: list[int] = []
+    try:
+        for index in range(5):
+            server, log_path = _start_server(tmp_path, port=port, log_name=f"server-chaos-{index}.log", env=env)
+            servers.append(server)
+            server_pids.append(server.pid)
+            daphne_pids.append(_worker_pid_from_log(log_path, "worker_daphne"))
+            runner_pids.append(_worker_pid_from_log(log_path, "worker_runner"))
+
+            if index > 0:
+                previous_server = servers[index - 1]
+                previous_log = (tmp_path / f"server-chaos-{index - 1}.log").read_text(encoding="utf-8", errors="replace")
+                current_log = log_path.read_text(encoding="utf-8", errors="replace")
+                assert previous_server.poll() is None
+                assert _pid_is_alive(server_pids[index - 1])
+                assert "Newer ArchiveBox server parent took over; standing by." in previous_log
+                assert "is now running the orchestrator and server" in current_log
+                _wait_for_pid_to_disappear(daphne_pids[index - 1], timeout=15)
+                _wait_for_pid_to_disappear(runner_pids[index - 1], timeout=15)
+
+            status = subprocess.run(
+                [sys.executable, "-m", "archivebox", "status"],
+                cwd=tmp_path,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            assert status.returncode == 0, status.stderr or status.stdout
+            time.sleep(5)
+
+        assert servers[-1].poll() is None
+        assert all(server.poll() is None for server in servers)
+        listener = subprocess.run(
+            ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert listener.returncode == 0, listener.stderr or listener.stdout
+        assert listener.stdout.count(f":{port} (LISTEN)") == 1
+
+        previous_log_path = tmp_path / "server-chaos-3.log"
+        previous_takeovers = previous_log_path.read_text(encoding="utf-8", errors="replace").count("is now running the orchestrator and server")
+        _stop_process(servers[-1], signal.SIGTERM)
+        _wait_for_log_count(previous_log_path, "is now running the orchestrator and server", previous_takeovers + 1, timeout=35)
+        assert servers[3].poll() is None
+    finally:
+        for server in reversed(servers):
+            if server.poll() is None:
+                _stop_process(server, signal.SIGTERM)
+        _kill_processes_for_data_dir(tmp_path)
+        _assert_no_processes_for_data_dir(tmp_path, timeout=12)
+
+
+@pytest.mark.timeout(240)
+def test_live_servers_in_different_data_dirs_do_not_interfere(tmp_path, process):
+    os.chdir(tmp_path)
+    assert process.returncode == 0, process.stderr
+
+    first_data_dir = tmp_path
+    second_data_dir = tmp_path.parent / f"{tmp_path.name}-second"
+    second_data_dir.mkdir()
+    second_env = _live_exit_env(second_data_dir)
+    second_init = subprocess.run(
+        [sys.executable, "-m", "archivebox", "init"],
+        cwd=second_data_dir,
+        env=second_env,
+        capture_output=True,
+        text=True,
+        timeout=90,
+    )
+    assert second_init.returncode == 0, second_init.stderr or second_init.stdout
+
+    first_port = _free_port()
+    second_port = _free_port()
+    first = None
+    second = None
+    first_resumed = None
+    try:
+        first = _start_server(first_data_dir, port=first_port, log_name="server-first-data-dir.log", env=_live_exit_env(first_data_dir))[0]
+        second = _start_server(second_data_dir, port=second_port, log_name="server-second-data-dir.log", env=second_env)[0]
+
+        first_status = subprocess.run(
+            [sys.executable, "-m", "archivebox", "status"],
+            cwd=first_data_dir,
+            env=_live_exit_env(first_data_dir),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        second_status = subprocess.run(
+            [sys.executable, "-m", "archivebox", "status"],
+            cwd=second_data_dir,
+            env=second_env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert first_status.returncode == 0, first_status.stderr or first_status.stdout
+        assert second_status.returncode == 0, second_status.stderr or second_status.stdout
+
+        _stop_process(first, signal.SIGTERM)
+        first = None
+        assert second.poll() is None, "stopping one DATA_DIR server must not stop another DATA_DIR server"
+
+        first_resumed = _start_server(first_data_dir, port=first_port, log_name="server-first-data-dir-resumed.log", env=_live_exit_env(first_data_dir))[0]
+        assert second.poll() is None, "restarting one DATA_DIR server must not take over another DATA_DIR supervisor"
+    finally:
+        for proc in (first, first_resumed, second):
+            if proc is not None and proc.poll() is None:
+                _stop_process(proc, signal.SIGTERM)
+        _kill_processes_for_data_dir(first_data_dir)
+        _kill_processes_for_data_dir(second_data_dir)
+        _assert_no_processes_for_data_dir(first_data_dir, timeout=12)
+        _assert_no_processes_for_data_dir(second_data_dir, timeout=12)
+
+
+@pytest.mark.timeout(420)
+def test_live_add_update_jobs_survive_server_and_cli_owner_exits(tmp_path, process):
+    os.chdir(tmp_path)
+    assert process.returncode == 0, process.stderr
+
+    plugins_root = tmp_path / "runtime_plugins"
+    marker_dir = tmp_path / "slow-plugin-markers"
+    _write_slow_snapshot_plugin(plugins_root, marker_dir)
+    env = _live_exit_env(tmp_path, plugins_root=plugins_root)
+    port = _free_port()
+    server = None
+    server2 = None
+    server3 = None
+    add_proc = None
+    add_proc2 = None
+    try:
+        server, server_log = _start_server(tmp_path, port=port, log_name="server-add-owner-1.log", env=env)
+        supervisor_pid_before = _supervisor_pid_from_log(server_log)
+
+        update_result = subprocess.run(
+            [sys.executable, "-m", "archivebox", "update", "--index-only", "--batch-size=10"],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+        assert update_result.returncode == 0, update_result.stderr or update_result.stdout
+        assert server.poll() is None
+        assert _pid_is_alive(supervisor_pid_before)
+        assert _supervisor_pid_from_log(server_log) == supervisor_pid_before
+
+        add_proc, add_log = _start_live_add(tmp_path, env, url=["https://example.com", "https://blog.sweeting.me"], log_name="archivebox-add-1.log")
+        _wait_for_hook_runs(marker_dir, 1)
+        _wait_for_crawl_state(
+            tmp_path,
+            lambda state: any(snapshot["status"] == Snapshot.StatusChoices.STARTED for snapshot in state["snapshots"]),
+            timeout=30,
+        )
+
+        os.kill(server.pid, signal.SIGTERM)
+        server.wait(timeout=20)
+        assert add_proc.poll() is None, "foreground add should keep owning its crawl after the server exits"
+        assert "Got SIGTERM" in server_log.read_text(encoding="utf-8", errors="replace")
+
+        server2, _server2_log = _start_server(tmp_path, port=port, log_name="server-add-owner-2.log", env=env)
+        os.killpg(add_proc.pid, signal.SIGTERM)
+        add_proc.wait(timeout=30)
+        add_output = add_log.read_text(encoding="utf-8", errors="replace")
+        assert "Runner error" not in add_output
+        _wait_for_hook_runs(marker_dir, 2, timeout=60)
+        _wait_for_crawl_state(
+            tmp_path,
+            lambda state: any(crawl["status"] in (Crawl.StatusChoices.STARTED, Crawl.StatusChoices.QUEUED) for crawl in state["crawls"])
+            and any(result["plugin"] == "slow_exit" for result in state["results"]),
+            timeout=30,
+        )
+
+        add_proc2, add_log2 = _start_live_add(tmp_path, env, url="https://example.com/?exit-resume=2", max_urls="1", log_name="archivebox-add-2.log")
+        _wait_for_hook_runs(marker_dir, 3, timeout=60)
+        os.killpg(add_proc2.pid, signal.SIGTERM)
+        os.kill(server2.pid, signal.SIGTERM)
+        add_proc2.wait(timeout=30)
+        add_output2 = add_log2.read_text(encoding="utf-8", errors="replace")
+        server2.wait(timeout=20)
+        assert "Runner error" not in add_output2
+
+        server3, _server3_log = _start_server(tmp_path, port=port, log_name="server-add-owner-3.log", env=env)
+        _wait_for_hook_runs(marker_dir, 4, timeout=70)
+
+        with use_archivebox_db(tmp_path):
+            crawls = list(Crawl.objects.order_by("created_at").values_list("status", "retry_at"))
+            snapshots = list(Snapshot.objects.order_by("created_at").values_list("url", "status", "retry_at"))
+            failed_results = list(ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.FAILED).values_list("plugin", "output_str"))
+        assert crawls
+        assert snapshots
+        assert not failed_results
+    finally:
+        for proc in (add_proc, add_proc2, server, server2, server3):
+            if proc is not None and proc.poll() is None:
+                _stop_process(proc, signal.SIGTERM, timeout=10)
+        _kill_processes_for_data_dir(tmp_path)
+        _assert_no_processes_for_data_dir(tmp_path, timeout=12)
+
+
 @pytest.mark.timeout(180)
 def test_cli_add_real_urls_with_options_writes_inspectable_outputs(tmp_path, process):
     os.chdir(tmp_path)
@@ -284,39 +857,28 @@ def test_cli_add_real_urls_with_options_writes_inspectable_outputs(tmp_path, pro
     listed = [json.loads(line) for line in list_result.stdout.splitlines() if line.strip()]
     assert {item["url"] for item in listed} >= set(wget_urls)
 
-    conn = sqlite3.connect(tmp_path / "index.sqlite3")
-    try:
-        crawl = conn.execute(
-            "SELECT max_depth, max_urls, crawl_max_size, snapshot_max_size, tags_str, config FROM crawls_crawl ORDER BY created_at DESC LIMIT 1",
-        ).fetchone()
-        real_flow_crawl = conn.execute(
-            "SELECT max_depth, max_urls, crawl_max_size, snapshot_max_size, tags_str, config FROM crawls_crawl WHERE tags_str = 'real-flow,challenge'",
-        ).fetchone()
-        snapshots = conn.execute(
-            "SELECT id, url, depth, status, title FROM core_snapshot ORDER BY url",
-        ).fetchall()
-        archive_results = conn.execute(
-            "SELECT s.url, ar.plugin, ar.status, ar.output_files, ar.output_size, ar.output_str "
-            "FROM core_archiveresult ar "
-            "JOIN core_snapshot s ON s.id = ar.snapshot_id "
-            "ORDER BY s.url, ar.plugin",
-        ).fetchall()
-        processes = conn.execute(
-            "SELECT process_type, status, exit_code, pwd, cmd FROM machine_process WHERE process_type = 'hook'",
-        ).fetchall()
-    finally:
-        conn.close()
+    with use_archivebox_db(tmp_path):
+        crawl = Crawl.objects.order_by("-created_at").values_list("max_depth", "tags_str", "config").first()
+        real_flow_crawl = Crawl.objects.filter(tags_str="real-flow,challenge").values_list("max_depth", "tags_str", "config").first()
+        snapshots = list(Snapshot.objects.order_by("url").values_list("id", "url", "depth", "status", "title"))
+        archive_results = list(
+            ArchiveResult.objects.select_related("snapshot")
+            .order_by("snapshot__url", "plugin")
+            .values_list("snapshot__url", "plugin", "status", "output_files", "output_size", "output_str"),
+        )
+        processes = list(Process.objects.filter(process_type="hook").values_list("process_type", "status", "exit_code", "pwd", "cmd"))
 
     assert real_flow_crawl is not None
     assert real_flow_crawl[0] == 0
-    assert real_flow_crawl[1] == 2
-    assert real_flow_crawl[2] == 10 * 1024 * 1024
-    assert real_flow_crawl[3] == 0
-    assert real_flow_crawl[4] == "real-flow,challenge"
-    assert "wget" in real_flow_crawl[5]
+    assert real_flow_crawl[1] == "real-flow,challenge"
+    real_flow_config = real_flow_crawl[2] or {}
+    assert real_flow_config["CRAWL_MAX_URLS"] == 2
+    assert real_flow_config["CRAWL_MAX_SIZE"] == 10 * 1024 * 1024
+    assert real_flow_config.get("SNAPSHOT_MAX_SIZE", 0) == 0
+    assert "wget" in real_flow_config["PLUGINS"]
     assert crawl is not None
-    assert crawl[4] == "chrome-flow"
-    assert "wget,headers,title" in crawl[5]
+    assert crawl[1] == "chrome-flow"
+    assert "wget,headers,title" in json.dumps(crawl[2] or {})
 
     snapshot_urls = {url for _id, url, _depth, _status, _title in snapshots}
     assert snapshot_urls >= {*wget_urls, chrome_url}
@@ -403,24 +965,21 @@ def test_cli_recursive_crawl_processes_discovered_html_urls(tmp_path, process):
     )
     assert result.returncode == 0, result.stderr or result.stdout
 
-    conn = sqlite3.connect(tmp_path / "index.sqlite3")
-    try:
-        crawl = conn.execute(
-            "SELECT max_depth, max_urls, crawl_max_size, snapshot_max_size, tags_str FROM crawls_crawl ORDER BY created_at DESC LIMIT 1",
-        ).fetchone()
-        snapshots = conn.execute(
-            "SELECT url, depth, status FROM core_snapshot ORDER BY depth, url",
-        ).fetchall()
-        archive_results = conn.execute(
-            "SELECT s.url, ar.plugin, ar.status, ar.output_files "
-            "FROM core_archiveresult ar "
-            "JOIN core_snapshot s ON s.id = ar.snapshot_id "
-            "ORDER BY s.depth, s.url, ar.plugin",
-        ).fetchall()
-    finally:
-        conn.close()
+    with use_archivebox_db(tmp_path):
+        crawl = Crawl.objects.order_by("-created_at").values_list("max_depth", "tags_str", "config").first()
+        snapshots = list(Snapshot.objects.order_by("depth", "url").values_list("url", "depth", "status"))
+        archive_results = list(
+            ArchiveResult.objects.select_related("snapshot")
+            .order_by("snapshot__depth", "snapshot__url", "plugin")
+            .values_list("snapshot__url", "plugin", "status", "output_files"),
+        )
 
-    assert crawl == (2, 2, 50 * 1024 * 1024, 0, "recursive-flow")
+    assert crawl[0] == 2
+    assert crawl[1] == "recursive-flow"
+    crawl_config = crawl[2] or {}
+    assert crawl_config["CRAWL_MAX_URLS"] == 2
+    assert crawl_config["CRAWL_MAX_SIZE"] == 50 * 1024 * 1024
+    assert crawl_config.get("SNAPSHOT_MAX_SIZE", 0) == 0
     assert ("https://example.com", 0, "sealed") in snapshots
     assert any(url == "https://iana.org/domains/example" and depth == 1 and status == "sealed" for url, depth, status in snapshots)
 

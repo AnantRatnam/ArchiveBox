@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import quote, urlparse
 
 from django.shortcuts import render, redirect
-from django.http import JsonResponse, HttpRequest, HttpResponse, Http404, HttpResponseForbidden, QueryDict
+from django.http import FileResponse, JsonResponse, HttpRequest, HttpResponse, Http404, HttpResponseForbidden, QueryDict
 from django.utils.html import format_html
 from django.utils.safestring import mark_safe
 from django.views import View
@@ -22,6 +22,7 @@ from django.db.models import CharField, Count, Q, Prefetch, Sum
 from django.db.models.functions import Cast
 from django.contrib import messages
 from django.contrib.auth.mixins import UserPassesTestMixin
+from django.core.signing import BadSignature, SignatureExpired, TimestampSigner
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.gzip import gzip_page
 from django.utils.decorators import method_decorator
@@ -37,9 +38,25 @@ from archivebox.config.configset import BaseConfigSet
 from archivebox.misc.util import base_url, htmlencode, ts_to_date_str, urldecode, without_fragment
 from archivebox.misc.serve_static import serve_static_with_byterange_support
 from archivebox.misc.logging_util import printable_filesize
-from archivebox.search import get_search_mode, prioritize_metadata_matches, query_search_index
+from archivebox.search import (
+    get_search_backend_display_name,
+    get_search_mode,
+    get_search_mode_backend,
+    get_search_mode_base,
+    get_search_mode_options,
+    prioritize_metadata_matches,
+    query_search_index,
+)
 
 from archivebox.core.models import ArchiveResult, Snapshot
+from archivebox.core.permissions import (
+    PERMISSIONS_PUBLIC,
+    can_view_snapshot,
+    direct_snapshots_queryset,
+    filter_personas_by_permissions,
+    is_admin_user,
+    public_snapshots_queryset,
+)
 from archivebox.core.host_utils import (
     build_admin_url,
     build_snapshot_url,
@@ -62,6 +79,7 @@ from archivebox.hooks import (
 
 ABX_PLUGINS_GITHUB_BASE_URL = "https://github.com/ArchiveBox/abx-plugins/tree/main/abx_plugins/plugins/"
 LIVE_PLUGIN_BASE_URL = "/admin/environment/plugins/"
+SCREENCAST_SIGNER = TimestampSigner(salt="archivebox.live-progress.screencast")
 
 
 def _get_request_config(request: HttpRequest, *, resolve_plugins: bool = False):
@@ -175,7 +193,7 @@ class SnapshotView(View):
             "USES_SUBDOMAIN_ROUTING",
             "ADMIN_BASE_URL",
             "ARCHIVE_BASE_URL",
-            "PUBLIC_SNAPSHOTS",
+            "PERMISSIONS",
             "SERVER_SECURITY_MODE",
         }
         scoped_config_keys = set((getattr(snapshot, "config", None) or {}).keys())
@@ -278,6 +296,12 @@ class SnapshotView(View):
             "size": printable_filesize(output_size) if output_size else "pending",
             "status": "archived" if is_archived else "not yet archived",
             "status_color": "success" if is_archived else "danger",
+            "snapshot_permissions": str(runtime_config.PERMISSIONS).strip().lower(),
+            "snapshot_permissions_icon": {
+                "public": "👥",
+                "unlisted": "🔗",
+                "private": "🔒",
+            }[str(runtime_config.PERMISSIONS).strip().lower()],
             "bookmarked_date": snapshot.bookmarked_date,
             "downloaded_datestr": snapshot.downloaded_datestr,
             "num_outputs": snapshot.num_outputs,
@@ -298,10 +322,6 @@ class SnapshotView(View):
         return render(template_name="core/snapshot.html", request=request, context=context)
 
     def get(self, request, path):
-        request_config = _get_request_config(request)
-        if not request.user.is_authenticated and not request_config.PUBLIC_SNAPSHOTS:
-            return _admin_login_redirect_or_forbidden(request)
-
         snapshot = None
 
         try:
@@ -318,6 +338,8 @@ class SnapshotView(View):
             try:
                 try:
                     snapshot = Snapshot.objects.get(Q(timestamp=slug) | Q(id__startswith=slug))
+                    if not can_view_snapshot(request, snapshot):
+                        return _admin_login_redirect_or_forbidden(request)
                     canonical_base = snapshot.url_path
                     if canonical_base != snapshot.legacy_archive_path:
                         target_path = f"/{canonical_base}/{archivefile or 'index.html'}"
@@ -377,7 +399,7 @@ class SnapshotView(View):
                         snap.url,
                         snap.title_stripped[:64] or "",
                     )
-                    for snap in Snapshot.objects.filter(timestamp__startswith=slug)
+                    for snap in direct_snapshots_queryset(request, Snapshot.objects.filter(timestamp__startswith=slug))
                     .only("url", "timestamp", "title", "bookmarked_at")
                     .order_by("-bookmarked_at")
                 )
@@ -436,7 +458,7 @@ class SnapshotView(View):
         # slug is a URL
         try:
             try:
-                snapshot = SnapshotView.find_snapshots_for_url(path).get()
+                snapshot = direct_snapshots_queryset(request, SnapshotView.find_snapshots_for_url(path)).get()
             except Snapshot.DoesNotExist:
                 raise
         except Snapshot.DoesNotExist:
@@ -457,7 +479,7 @@ class SnapshotView(View):
                 status=404,
             )
         except Snapshot.MultipleObjectsReturned:
-            snapshots = SnapshotView.find_snapshots_for_url(path)
+            snapshots = direct_snapshots_queryset(request, SnapshotView.find_snapshots_for_url(path))
             snapshot_hrefs = mark_safe("<br/>").join(
                 format_html(
                     '{} <code style="font-size: 0.8em">{}</code> <a href="/{}/index.html"><b><code>{}</code></b></a> {} <b>{}</b>',
@@ -501,11 +523,6 @@ class SnapshotPathView(View):
         path: str = "",
         url: str | None = None,
     ):
-        request_config = _get_request_config(request)
-
-        if not request.user.is_authenticated and not request_config.PUBLIC_SNAPSHOTS:
-            return _admin_login_redirect_or_forbidden(request)
-
         if username == "system":
             return redirect(request.path.replace("/system/", "/web/", 1))
 
@@ -517,7 +534,7 @@ class SnapshotPathView(View):
             requested_url = domain
 
         snapshot = None
-        snapshots_qs = Snapshot.objects.select_related("crawl", "crawl__created_by")
+        snapshots_qs = direct_snapshots_queryset(request, Snapshot.objects.select_related("crawl", "crawl__created_by"))
         if snapshot_id:
             try:
                 snapshot = snapshots_qs.get(pk=snapshot_id)
@@ -672,7 +689,27 @@ def _snapshot_sort_key(match_path: str, cache: dict[str, float]) -> tuple[float,
     return (cache[snapshot_id], match_path)
 
 
-def _latest_response_match(domain: str, rel_path: str, *, data_root: Path) -> tuple[Path, Path] | None:
+def _snapshot_id_from_replay_path(path: Path) -> str | None:
+    parts = path.parts
+    try:
+        responses_idx = parts.index("responses")
+    except ValueError:
+        return None
+    return parts[responses_idx - 1] if responses_idx > 0 else None
+
+
+def _replay_path_visible(request: HttpRequest, path: Path) -> bool:
+    snapshot_id = _snapshot_id_from_replay_path(path)
+    if not snapshot_id:
+        return False
+    snapshot = Snapshot.objects.filter(id=snapshot_id).select_related("crawl", "crawl__created_by").first()
+    if not snapshot or not can_view_snapshot(request, snapshot):
+        return False
+    request.archivebox_config = get_config(snapshot=snapshot, resolve_plugins=False)
+    return True
+
+
+def _latest_response_match(request: HttpRequest, domain: str, rel_path: str, *, data_root: Path) -> tuple[Path, Path] | None:
     if not domain or not rel_path:
         return None
     domain = domain.split(":", 1)[0].lower()
@@ -685,8 +722,10 @@ def _latest_response_match(domain: str, rel_path: str, *, data_root: Path) -> tu
         return None
 
     sort_cache: dict[str, float] = {}
-    best = max(matches, key=lambda match_path: _snapshot_sort_key(match_path, sort_cache))
-    best_path = Path(best)
+    best_paths = sorted(matches, key=lambda match_path: _snapshot_sort_key(match_path, sort_cache), reverse=True)
+    best_path = next((Path(match_path) for match_path in best_paths if _replay_path_visible(request, Path(match_path))), None)
+    if best_path is None:
+        return None
     parts = best_path.parts
     try:
         responses_idx = parts.index("responses")
@@ -697,7 +736,7 @@ def _latest_response_match(domain: str, rel_path: str, *, data_root: Path) -> tu
     return responses_root, rel_to_root
 
 
-def _latest_responses_root(domain: str, *, data_root: Path) -> Path | None:
+def _latest_responses_root(request: HttpRequest, domain: str, *, data_root: Path) -> Path | None:
     if not domain:
         return None
     domain = domain.split(":", 1)[0].lower()
@@ -708,16 +747,19 @@ def _latest_responses_root(domain: str, *, data_root: Path) -> Path | None:
         return None
 
     sort_cache: dict[str, float] = {}
-    best = max(matches, key=lambda match_path: _snapshot_sort_key(match_path, sort_cache))
-    return Path(best)
+    best_paths = sorted(matches, key=lambda match_path: _snapshot_sort_key(match_path, sort_cache), reverse=True)
+    return next((Path(match_path) for match_path in best_paths if _replay_path_visible(request, Path(match_path))), None)
 
 
-def _latest_snapshot_for_domain(domain: str) -> Snapshot | None:
+def _latest_snapshot_for_domain(request: HttpRequest, domain: str) -> Snapshot | None:
     if not domain:
         return None
 
     requested_domain = domain.split(":", 1)[0].lower()
-    snapshots = SnapshotView.find_snapshots_for_url(f"https://{requested_domain}").order_by("-bookmarked_at", "-created_at", "-timestamp")
+    snapshots = direct_snapshots_queryset(
+        request,
+        SnapshotView.find_snapshots_for_url(f"https://{requested_domain}"),
+    ).order_by("-bookmarked_at", "-created_at", "-timestamp")
     for snapshot in snapshots:
         if Snapshot.extract_domain_from_url(snapshot.url).lower() == requested_domain:
             return snapshot
@@ -774,7 +816,8 @@ def _serve_responses_path(request, responses_root: Path, rel_path: str, show_ind
 
 
 def _serve_snapshot_replay(request: HttpRequest, snapshot: Snapshot, path: str = ""):
-    request_config = _get_request_config(request)
+    request_config = get_config(snapshot=snapshot, resolve_plugins=False)
+    request.archivebox_config = request_config
     snapshot._runtime_config = request_config
     rel_path = path or ""
     is_directory_request = bool(path) and path.endswith("/")
@@ -823,13 +866,13 @@ def _serve_original_domain_replay(request: HttpRequest, domain: str, path: str =
         raise Http404
 
     domain = domain.lower()
-    match = _latest_response_match(domain, rel_path, data_root=request_config.USERS_DIR)
+    match = _latest_response_match(request, domain, rel_path, data_root=request_config.USERS_DIR)
     if not match and "." not in Path(rel_path).name:
         index_path = f"{rel_path.rstrip('/')}/index.html"
-        match = _latest_response_match(domain, index_path, data_root=request_config.USERS_DIR)
+        match = _latest_response_match(request, domain, index_path, data_root=request_config.USERS_DIR)
     if not match and "." not in Path(rel_path).name:
         html_path = f"{rel_path}.html"
-        match = _latest_response_match(domain, html_path, data_root=request_config.USERS_DIR)
+        match = _latest_response_match(request, domain, html_path, data_root=request_config.USERS_DIR)
 
     show_indexes = bool(request.GET.get("files"))
     if match:
@@ -838,14 +881,14 @@ def _serve_original_domain_replay(request: HttpRequest, domain: str, path: str =
         if response is not None:
             return response
 
-    responses_root = _latest_responses_root(domain, data_root=request_config.USERS_DIR)
+    responses_root = _latest_responses_root(request, domain, data_root=request_config.USERS_DIR)
     if responses_root:
         response = _serve_responses_path(request, responses_root, rel_path, show_indexes)
         if response is not None:
             return response
 
     if requested_root_index and not show_indexes:
-        snapshot = _latest_snapshot_for_domain(domain)
+        snapshot = _latest_snapshot_for_domain(request, domain)
         if snapshot:
             return SnapshotView.render_live_index(request, snapshot)
 
@@ -861,12 +904,12 @@ class SnapshotHostView(View):
 
     def get(self, request, snapshot_id: str, path: str = ""):
         request_config = _get_request_config(request)
-        if not request.user.is_authenticated and not request_config.PUBLIC_SNAPSHOTS:
-            return _admin_login_redirect_or_forbidden(request)
         snapshot = _find_snapshot_by_ref(snapshot_id)
 
         if not snapshot:
             raise Http404
+        if not can_view_snapshot(request, snapshot):
+            return _admin_login_redirect_or_forbidden(request)
 
         canonical_host = get_snapshot_host(str(snapshot.id), config=request_config)
         if not host_matches(request.get_host(), canonical_host):
@@ -882,13 +925,11 @@ class SnapshotReplayView(View):
     """Serve snapshot directory contents on a one-domain replay path."""
 
     def get(self, request, snapshot_id: str, path: str = ""):
-        request_config = _get_request_config(request)
-        if not request.user.is_authenticated and not request_config.PUBLIC_SNAPSHOTS:
-            return _admin_login_redirect_or_forbidden(request)
-
         snapshot = _find_snapshot_by_ref(snapshot_id)
         if not snapshot:
             raise Http404
+        if not can_view_snapshot(request, snapshot):
+            return _admin_login_redirect_or_forbidden(request)
 
         return _serve_snapshot_replay(request, snapshot, path)
 
@@ -897,9 +938,6 @@ class OriginalDomainHostView(View):
     """Serve responses from the most recent snapshot when using <domain>.<listen_host>/<path>."""
 
     def get(self, request, domain: str, path: str = ""):
-        request_config = _get_request_config(request)
-        if not request.user.is_authenticated and not request_config.PUBLIC_SNAPSHOTS:
-            return _admin_login_redirect_or_forbidden(request)
         return _serve_original_domain_replay(request, domain, path)
 
 
@@ -907,9 +945,6 @@ class OriginalDomainReplayView(View):
     """Serve original-domain replay content on a one-domain replay path."""
 
     def get(self, request, domain: str, path: str = ""):
-        request_config = _get_request_config(request)
-        if not request.user.is_authenticated and not request_config.PUBLIC_SNAPSHOTS:
-            return _admin_login_redirect_or_forbidden(request)
         return _serve_original_domain_replay(request, domain, path)
 
 
@@ -928,6 +963,8 @@ class PublicIndexView(ListView):
         runtime_config = getattr(self, "runtime_config", None)
         if runtime_config is None:
             self.runtime_config = runtime_config = _get_request_config(self.request, resolve_plugins=True)
+        search_mode = get_search_mode(self.request.GET.get("search_mode"), config=runtime_config)
+        search_mode_backend = get_search_mode_backend(search_mode, config=runtime_config)
         context = {
             **super().get_context_data(**kwargs),
             "VERSION": VERSION,
@@ -935,21 +972,27 @@ class PublicIndexView(ListView):
             "COMMIT_HASH": runtime_config.COMMIT_HASH,
             "FOOTER_INFO": runtime_config.FOOTER_INFO,
             "WEB_BASE_URL": build_web_url(request=self.request, config=runtime_config),
-            "search_mode": get_search_mode(self.request.GET.get("search_mode")),
+            "search_mode": search_mode,
+            "search_mode_options": get_search_mode_options(config=runtime_config),
+            "search_backend_label": get_search_backend_display_name(search_mode_backend) if search_mode_backend else "",
         }
+        context["show_search_index_hint"] = bool(
+            self.request.GET.get("q")
+            and get_search_mode_base(search_mode, config=runtime_config) == "deep"
+            and search_mode_backend
+            and getattr(context.get("paginator"), "count", 0) == 0
+        )
         for snapshot in context.get("object_list") or ():
             snapshot._icons_compact = True
             snapshot._is_archived_cached = bool(snapshot.downloaded_at or snapshot.status == Snapshot.StatusChoices.SEALED)
             results = getattr(snapshot, "_prefetched_objects_cache", {}).get("archiveresult_set")
             if results is not None:
-                snapshot.output_size_sum = sum(result.output_size or 0 for result in results)
                 snapshot.num_outputs_cached = len(results)
         return context
 
     def get_queryset(self, **kwargs):
         qs = (
-            super()
-            .get_queryset(**kwargs)
+            public_snapshots_queryset(super().get_queryset(**kwargs))
             .prefetch_related(
                 Prefetch("crawl", queryset=Crawl.objects.select_related("created_by")),
                 "tags",
@@ -970,24 +1013,30 @@ class PublicIndexView(ListView):
         if not query:
             return qs
 
-        search_mode = get_search_mode(self.request.GET.get("search_mode"))
+        search_mode = get_search_mode(self.request.GET.get("search_mode"), config=getattr(self, "runtime_config", None))
 
         metadata_qs = qs.filter(
             Q(title__icontains=query) | Q(url__icontains=query) | Q(timestamp__icontains=query) | Q(tags__name__icontains=query),
         )
-        if search_mode == "meta":
+        search_mode_base = get_search_mode_base(search_mode, config=getattr(self, "runtime_config", None))
+        search_mode_backend = get_search_mode_backend(search_mode, config=getattr(self, "runtime_config", None))
+        if search_mode_base == "meta":
             qs = metadata_qs
         else:
             try:
-                qs = prioritize_metadata_matches(
-                    qs,
-                    metadata_qs,
-                    query_search_index(query, search_mode=search_mode),
-                    ordering=self.ordering,
-                )
+                backend_qs = query_search_index(query, search_mode=search_mode)
+                if search_mode_backend:
+                    qs = qs.filter(pk__in=backend_qs.values("pk"))
+                else:
+                    qs = prioritize_metadata_matches(
+                        qs,
+                        metadata_qs,
+                        backend_qs,
+                        ordering=self.ordering,
+                    )
             except Exception as err:
                 print(f"[!] Error while using search backend: {err.__class__.__name__} {err}")
-                qs = metadata_qs
+                qs = qs.none() if search_mode_backend else metadata_qs
 
         return qs.distinct()
 
@@ -1015,12 +1064,16 @@ class AddView(UserPassesTestMixin, FormView):
 
         return super().get_initial()
 
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        kwargs["request"] = self.request
+        return kwargs
+
     def test_func(self):
         return _get_request_config(self.request).PUBLIC_ADD_VIEW or self.request.user.is_authenticated
 
     def _can_override_crawl_config(self) -> bool:
-        user = self.request.user
-        return bool(user.is_authenticated and (getattr(user, "is_superuser", False) or getattr(user, "is_staff", False)))
+        return is_admin_user(self.request)
 
     def _get_custom_config_overrides(self, form: AddLinkForm) -> dict:
         custom_config = form.cleaned_data.get("config") or {}
@@ -1034,35 +1087,55 @@ class AddView(UserPassesTestMixin, FormView):
         return custom_config
 
     def get_context_data(self, **kwargs):
-        from archivebox.personas.models import Persona
-
+        context = super().get_context_data(**kwargs)
         request_config = _get_request_config(self.request, resolve_plugins=True)
         required_search_plugin = f"search_backend_{request_config.SEARCH_BACKEND_ENGINE}".strip()
-        plugin_configs = discover_plugin_configs()
+        can_override_crawl_config = self._can_override_crawl_config()
+        plugin_configs = discover_plugin_configs() if can_override_crawl_config else {}
         sensitive_keys = {
             str(config_key)
             for schema in plugin_configs.values()
             for config_key, prop_schema in (schema.get("properties") or {}).items()
             if isinstance(prop_schema, dict) and prop_schema.get("x-sensitive")
         }
+        public_persona_config_keys = {
+            "CRAWL_MAX_CONCURRENT_SNAPSHOTS",
+            "DELETE_AFTER",
+            "PERMISSIONS",
+            "TIMEOUT",
+        }
+        persona_queryset = context["form"].fields["persona"].queryset
+        if not can_override_crawl_config:
+            persona_queryset = filter_personas_by_permissions(persona_queryset, {PERMISSIONS_PUBLIC})
         persona_config_map = {}
-        for persona in Persona.objects.order_by("name"):
-            raw_config = {str(key): value for key, value in (persona.config or {}).items() if str(key) not in sensitive_keys}
+        for persona in persona_queryset.order_by("name"):
             effective_config = get_config(persona=persona)
+            if can_override_crawl_config:
+                raw_config = {str(key): value for key, value in (persona.config or {}).items() if str(key) not in sensitive_keys}
+                effective_config_json = {str(key): value for key, value in effective_config.items() if str(key) not in sensitive_keys}
+                binary_urls = get_plugin_config_binary_urls(effective_config)
+            else:
+                raw_config = {}
+                effective_config_json = {key: effective_config.get(key) for key in public_persona_config_keys}
+                binary_urls = {}
             persona_config_map[persona.name] = {
                 "config": raw_config,
-                "effective_config": {str(key): value for key, value in effective_config.items() if str(key) not in sensitive_keys},
-                "binary_urls": get_plugin_config_binary_urls(effective_config),
+                "effective_config": effective_config_json,
+                "binary_urls": binary_urls,
             }
-        plugin_dependency_map = {
-            plugin_name: [
-                str(required_plugin).strip() for required_plugin in (schema.get("required_plugins") or []) if str(required_plugin).strip()
-            ]
-            for plugin_name, schema in plugin_configs.items()
-            if isinstance(schema.get("required_plugins"), list) and schema.get("required_plugins")
-        }
+        plugin_dependency_map = {}
+        if can_override_crawl_config:
+            plugin_dependency_map = {
+                plugin_name: [
+                    str(required_plugin).strip()
+                    for required_plugin in (schema.get("required_plugins") or [])
+                    if str(required_plugin).strip()
+                ]
+                for plugin_name, schema in plugin_configs.items()
+                if isinstance(schema.get("required_plugins"), list) and schema.get("required_plugins")
+            }
         return {
-            **super().get_context_data(**kwargs),
+            **context,
             "title": "Create Crawl",
             # We can't just call request.build_absolute_uri in the template, because it would include query parameters
             "absolute_add_path": self.request.build_absolute_uri(self.request.path),
@@ -1071,6 +1144,7 @@ class AddView(UserPassesTestMixin, FormView):
             "required_search_plugin": required_search_plugin,
             "plugin_dependency_map_json": json.dumps(plugin_dependency_map, sort_keys=True),
             "persona_config_map_json": json.dumps(persona_config_map, sort_keys=True, default=str),
+            "can_override_crawl_config": can_override_crawl_config,
             "stdout": "",
         }
 
@@ -1083,20 +1157,27 @@ class AddView(UserPassesTestMixin, FormView):
         depth = int(form.cleaned_data["depth"])
         max_urls = int(form.cleaned_data.get("max_urls") or 0)
         crawl_max_size = int(form.cleaned_data.get("crawl_max_size") or 0)
+        crawl_timeout = int(form.cleaned_data.get("crawl_timeout") or 0)
+        timeout = form.cleaned_data.get("timeout")
         snapshot_max_size = int(form.cleaned_data.get("snapshot_max_size") or 0)
         delete_after = str(form.cleaned_data.get("delete_after") or "0").strip() or "0"
         crawl_max_concurrent_snapshots = int(form.cleaned_data["crawl_max_concurrent_snapshots"])
-        plugins = ",".join(form.cleaned_data.get("plugins", []))
-        schedule = form.cleaned_data.get("schedule", "").strip()
+        permissions = str(form.cleaned_data.get("permissions") or "public").strip().lower()
+        can_override_crawl_config = self._can_override_crawl_config()
+        plugins = ",".join(form.cleaned_data.get("plugins", [])) if can_override_crawl_config else ""
+        schedule = form.cleaned_data.get("schedule", "").strip() if can_override_crawl_config else ""
         persona = form.cleaned_data.get("persona")
-        index_only = form.cleaned_data.get("index_only", False)
+        index_only = form.cleaned_data.get("index_only", False) if can_override_crawl_config else False
         notes = form.cleaned_data.get("notes", "")
         url_filters = form.cleaned_data.get("url_filters") or {}
         plugin_config = form.cleaned_data.get("plugin_config") or {}
         if not isinstance(plugin_config, dict):
             plugin_config = {}
+        if not can_override_crawl_config:
+            plugin_config = {}
         custom_config = self._get_custom_config_overrides(form)
         custom_config.pop("DEFAULT_PERSONA", None)
+        custom_config.pop("PERMISSIONS", None)
         if persona:
             persona.ensure_dirs()
 
@@ -1132,6 +1213,18 @@ class AddView(UserPassesTestMixin, FormView):
             config["CRAWL_MAX_CONCURRENT_SNAPSHOTS"] = crawl_max_concurrent_snapshots
         if delete_after != str(effective_config.DELETE_AFTER):
             config["DELETE_AFTER"] = delete_after
+        if permissions != str(effective_config.PERMISSIONS):
+            config["PERMISSIONS"] = permissions
+        if max_urls:
+            config["CRAWL_MAX_URLS"] = max_urls
+        if crawl_max_size:
+            config["CRAWL_MAX_SIZE"] = crawl_max_size
+        if crawl_timeout:
+            config["CRAWL_TIMEOUT"] = crawl_timeout
+        if timeout is not None and int(timeout) != int(effective_config.TIMEOUT):
+            config["TIMEOUT"] = int(timeout)
+        if snapshot_max_size:
+            config["SNAPSHOT_MAX_SIZE"] = snapshot_max_size
 
         # Merge custom config overrides
         config.update(plugin_config)
@@ -1144,9 +1237,6 @@ class AddView(UserPassesTestMixin, FormView):
         crawl = Crawl.objects.create(
             urls=urls_content,
             max_depth=depth,
-            max_urls=max_urls,
-            crawl_max_size=crawl_max_size,
-            snapshot_max_size=snapshot_max_size,
             tags_str=tag,
             notes=notes,
             label=f"{created_by_name}@{HOSTNAME}{self.request.path} {timestamp}",
@@ -1175,11 +1265,6 @@ class AddView(UserPassesTestMixin, FormView):
 
         ensure_background_runner()
 
-        # 4. start the Orchestrator & wait until it completes
-        #    ... orchestrator will create the root Snapshot, which creates pending ArchiveResults, which gets run by the ArchiveResultActors ...
-        # from archivebox.crawls.actors import CrawlActor
-        # from archivebox.core.actors import SnapshotActor, ArchiveResultActor
-
         return crawl
 
     def form_valid(self, form):
@@ -1191,7 +1276,7 @@ class AddView(UserPassesTestMixin, FormView):
 
         # Build success message with schedule link if created
         schedule_msg = ""
-        if schedule:
+        if schedule and crawl.schedule_id:
             schedule_msg = f" and <a href='{crawl.schedule.admin_change_url}'>scheduled to repeat {schedule}</a>"
 
         messages.success(
@@ -1207,7 +1292,10 @@ class AddView(UserPassesTestMixin, FormView):
 
 class WebAddView(AddView):
     def _latest_snapshot_for_url(self, requested_url: str):
-        return SnapshotView.find_snapshots_for_url(requested_url).order_by("-bookmarked_at", "-created_at", "-timestamp").first()
+        return direct_snapshots_queryset(
+            self.request,
+            SnapshotView.find_snapshots_for_url(requested_url),
+        ).order_by("-bookmarked_at", "-created_at", "-timestamp").first()
 
     def _normalize_add_url(self, requested_url: str) -> str:
         if requested_url.startswith(("http://", "https://")):
@@ -1263,10 +1351,13 @@ class WebAddView(AddView):
                 "depth": defaults_form.fields["depth"].initial or "0",
                 "max_urls": defaults_form.fields["max_urls"].initial or 0,
                 "crawl_max_size": defaults_form.fields["crawl_max_size"].initial or "0",
+                "crawl_timeout": defaults_form.fields["crawl_timeout"].initial or 0,
+                "timeout": defaults_form.fields["timeout"].initial or 0,
                 "snapshot_max_size": defaults_form.fields["snapshot_max_size"].initial or "0",
                 "delete_after": defaults_form.fields["delete_after"].initial or "0",
                 "crawl_max_concurrent_snapshots": defaults_form.fields["crawl_max_concurrent_snapshots"].initial,
                 "persona": defaults_form.fields["persona"].initial or "Default",
+                "permissions": defaults_form.fields["permissions"].initial or "public",
                 "config": "{}",
             },
         )
@@ -1293,6 +1384,37 @@ class HealthCheckView(View):
         Handle a GET request
         """
         return HttpResponse("OK", content_type="text/plain", status=200)
+
+
+def live_progress_screencast_frame_view(request, snapshot_id: str):
+    """Serve cache-only Chrome screencast frames through the admin app."""
+    if not is_admin_user(request):
+        return HttpResponseForbidden("Permission denied")
+
+    token = request.GET.get("token", "")
+    try:
+        if SCREENCAST_SIGNER.unsign(token, max_age=60) != str(snapshot_id):
+            return HttpResponseForbidden("Permission denied")
+    except (BadSignature, SignatureExpired):
+        return HttpResponseForbidden("Permission denied")
+
+    snapshot = Snapshot.objects.filter(id=snapshot_id).select_related("crawl", "crawl__created_by").first()
+    if not snapshot:
+        raise Http404
+
+    live_root = (CONSTANTS.CACHE_DIR / "chrome_screencast").resolve()
+    frame_path = live_root / str(snapshot.id) / "latest.jpg"
+    try:
+        resolved_frame_path = frame_path.resolve(strict=True)
+    except FileNotFoundError:
+        raise Http404 from None
+    if not resolved_frame_path.is_file() or live_root not in resolved_frame_path.parents:
+        raise Http404
+
+    response = FileResponse(resolved_frame_path.open("rb"), content_type="image/jpeg")
+    response["Cache-Control"] = "no-store, max-age=0"
+    response["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 @gzip_page
@@ -1456,18 +1578,20 @@ def live_progress_view(request):
             else None
         )
         runner_worker = None
-        try:
-            from archivebox.workers.supervisord_util import get_existing_supervisord_process, get_worker
+        orchestrator_proc_running = bool(orchestrator_proc and orchestrator_proc.is_running)
+        if not orchestrator_proc_running:
+            try:
+                from archivebox.workers.supervisord_util import get_existing_supervisord_process, get_worker
 
-            supervisor = get_existing_supervisord_process()
-            runner_worker = get_worker(supervisor, "worker_runner") if supervisor else None
-        except Exception:
-            runner_worker = None
+                supervisor = get_existing_supervisord_process(quiet=True)
+                runner_worker = get_worker(supervisor, "worker_runner") if supervisor else None
+            except Exception:
+                runner_worker = None
 
         runner_worker_running = bool(runner_worker and runner_worker.get("statename") in ("STARTING", "RUNNING"))
         runner_worker_pid = runner_worker.get("pid") if runner_worker else None
-        orchestrator_running = orchestrator_proc is not None or runner_worker_running
-        orchestrator_pid = orchestrator_proc.pid if orchestrator_proc else runner_worker_pid
+        orchestrator_running = orchestrator_proc_running or runner_worker_running
+        orchestrator_pid = orchestrator_proc.pid if orchestrator_proc_running and orchestrator_proc else runner_worker_pid
 
         def count_statuses(queryset, statuses) -> dict[str, int]:
             counts = {status: 0 for status in statuses}
@@ -1476,9 +1600,13 @@ def live_progress_view(request):
             return counts
 
         # Get model counts by status
-        crawl_status_counts = count_statuses(crawl_scope, (Crawl.StatusChoices.QUEUED, Crawl.StatusChoices.STARTED))
+        crawl_status_counts = count_statuses(
+            crawl_scope,
+            (Crawl.StatusChoices.QUEUED, Crawl.StatusChoices.STARTED, Crawl.StatusChoices.PAUSED),
+        )
         crawls_pending = crawl_status_counts.get(Crawl.StatusChoices.QUEUED, 0)
         crawls_started = crawl_status_counts.get(Crawl.StatusChoices.STARTED, 0)
+        crawls_paused = crawl_status_counts.get(Crawl.StatusChoices.PAUSED, 0)
 
         # Get recent crawls (last 24 hours)
         from datetime import timedelta
@@ -1487,23 +1615,31 @@ def live_progress_view(request):
         recently_cancelled_after = now - timedelta(minutes=10)
         crawls_recent = crawl_scope.filter(created_at__gte=one_day_ago).count()
 
-        snapshot_status_counts = count_statuses(snapshot_scope, (Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED))
+        snapshot_status_counts = count_statuses(
+            snapshot_scope,
+            (Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED, Snapshot.StatusChoices.PAUSED),
+        )
         snapshots_pending = snapshot_status_counts.get(Snapshot.StatusChoices.QUEUED, 0)
         snapshots_started = snapshot_status_counts.get(Snapshot.StatusChoices.STARTED, 0)
+        snapshots_paused = snapshot_status_counts.get(Snapshot.StatusChoices.PAUSED, 0)
 
         archiveresult_status_counts = count_statuses(
             archiveresult_scope,
             (
                 ArchiveResult.StatusChoices.QUEUED,
                 ArchiveResult.StatusChoices.STARTED,
+                ArchiveResult.StatusChoices.PAUSED,
             ),
         )
         archiveresults_pending = archiveresult_status_counts.get(ArchiveResult.StatusChoices.QUEUED, 0)
         archiveresults_started = archiveresult_status_counts.get(ArchiveResult.StatusChoices.STARTED, 0)
+        archiveresults_paused = archiveresult_status_counts.get(ArchiveResult.StatusChoices.PAUSED, 0)
         archiveresults_succeeded = 0
         archiveresults_failed = 0
 
         # Build hierarchical active crawls with nested snapshots and archive results
+        max_progress_crawls = 3
+        max_progress_snapshots = 50
 
         active_crawl_fields = (
             "id",
@@ -1513,9 +1649,6 @@ def live_progress_view(request):
             "urls",
             "config",
             "max_depth",
-            "max_urls",
-            "crawl_max_size",
-            "snapshot_max_size",
             "tags_str",
             "persona_id",
             "status",
@@ -1525,18 +1658,23 @@ def live_progress_view(request):
             "created_by__username",
         )
         active_crawl_candidates = []
-        for status in (Crawl.StatusChoices.QUEUED, Crawl.StatusChoices.STARTED, Crawl.StatusChoices.SEALED):
+        for status in (Crawl.StatusChoices.STARTED, Crawl.StatusChoices.QUEUED, Crawl.StatusChoices.PAUSED, Crawl.StatusChoices.SEALED):
             status_qs = crawl_scope.filter(status=status)
             if status == Crawl.StatusChoices.SEALED:
                 status_qs = status_qs.filter(modified_at__gte=recently_cancelled_after)
             active_crawl_candidates.extend(
-                status_qs.values(*active_crawl_fields).order_by("-modified_at"),
+                status_qs.values(*active_crawl_fields).order_by("-modified_at")[:max_progress_crawls],
             )
+        crawl_status_priority = {
+            Crawl.StatusChoices.STARTED: 0,
+            Crawl.StatusChoices.QUEUED: 1,
+            Crawl.StatusChoices.PAUSED: 2,
+            Crawl.StatusChoices.SEALED: 3,
+        }
         active_crawls_list = sorted(
             {str(crawl["id"]): crawl for crawl in active_crawl_candidates}.values(),
-            key=lambda crawl: crawl["modified_at"],
-            reverse=True,
-        )
+            key=lambda crawl: (crawl_status_priority.get(crawl["status"], 9), -(crawl["modified_at"].timestamp() if crawl["modified_at"] else 0)),
+        )[:max_progress_crawls]
         for crawl in active_crawls_list:
             crawl["id"] = str(crawl["id"])
             if crawl["persona_id"]:
@@ -1558,6 +1696,10 @@ def live_progress_view(request):
                 persona_details_by_id[str(persona.id)] = persona_details
                 persona_details_by_name[persona.name] = persona_details
         active_crawl_ids = [crawl["id"] for crawl in active_crawls_list]
+        active_crawl_objects = {
+            str(crawl.id): crawl
+            for crawl in Crawl.objects.filter(id__in=active_crawl_ids).select_related("created_by")
+        }
         snapshot_counts_by_crawl: dict[str, dict[str, int]] = {str(crawl_id): {} for crawl_id in active_crawl_ids}
         cancelled_snapshot_counts_by_crawl: dict[str, int] = {str(crawl_id): 0 for crawl_id in active_crawl_ids}
         crawl_output_sizes_by_crawl: dict[str, int] = {str(crawl_id): 0 for crawl_id in active_crawl_ids}
@@ -1588,7 +1730,6 @@ def live_progress_view(request):
         process_records_by_crawl: dict[str, list[tuple[dict[str, object], object | None]]] = {}
         process_records_by_snapshot: dict[str, list[tuple[dict[str, object], object | None]]] = {}
         seen_process_records: set[str] = set()
-        active_snapshot_statuses = {Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED}
         recently_cancelled_snapshots_q = Q(
             status=Snapshot.StatusChoices.SEALED,
             downloaded_at__isnull=True,
@@ -1596,21 +1737,7 @@ def live_progress_view(request):
         )
         crawls_by_id = {str(crawl["id"]): crawl for crawl in active_crawls_list}
         snapshots = list(
-            active_snapshot_scope.filter(status=Snapshot.StatusChoices.QUEUED)
-            .annotate(id_str=Cast("id", CharField()), crawl_id_str=Cast("crawl_id", CharField()))
-            .values(
-                "id_str",
-                "url",
-                "crawl_id_str",
-                "title",
-                "status",
-            )
-            .order_by("crawl_id", "modified_at"),
-        )
-        snapshots.extend(
-            active_snapshot_scope.filter(
-                Q(status__in=active_snapshot_statuses - {Snapshot.StatusChoices.QUEUED}) | recently_cancelled_snapshots_q,
-            )
+            active_snapshot_scope.filter(status=Snapshot.StatusChoices.STARTED)
             .annotate(id_str=Cast("id", CharField()), crawl_id_str=Cast("crawl_id", CharField()))
             .values(
                 "id_str",
@@ -1625,8 +1752,42 @@ def live_progress_view(request):
                 "fs_version",
                 "status",
             )
-            .order_by("crawl_id", "status", "modified_at"),
+            .order_by("crawl_id", "-modified_at")[:max_progress_snapshots],
         )
+        remaining_snapshot_slots = max_progress_snapshots - len(snapshots)
+        if remaining_snapshot_slots > 0:
+            snapshots.extend(
+                active_snapshot_scope.filter(status=Snapshot.StatusChoices.QUEUED)
+                .annotate(id_str=Cast("id", CharField()), crawl_id_str=Cast("crawl_id", CharField()))
+                .values(
+                    "id_str",
+                    "url",
+                    "crawl_id_str",
+                    "title",
+                    "status",
+                )
+                .order_by("crawl_id", "modified_at")[:remaining_snapshot_slots],
+            )
+        remaining_snapshot_slots = max_progress_snapshots - len(snapshots)
+        if remaining_snapshot_slots > 0:
+            snapshots.extend(
+                active_snapshot_scope.filter(recently_cancelled_snapshots_q)
+                .annotate(id_str=Cast("id", CharField()), crawl_id_str=Cast("crawl_id", CharField()))
+                .values(
+                    "id_str",
+                    "created_at",
+                    "modified_at",
+                    "url",
+                    "timestamp",
+                    "bookmarked_at",
+                    "crawl_id_str",
+                    "title",
+                    "downloaded_at",
+                    "fs_version",
+                    "status",
+                )
+                .order_by("crawl_id", "-modified_at")[:remaining_snapshot_slots],
+            )
 
         def dashed_uuid(value: str) -> str:
             value = str(value)
@@ -1762,7 +1923,7 @@ def live_progress_view(request):
                 if proc["status"] == Process.StatusChoices.RUNNING
                 else (
                     "skipped"
-                    if proc["exit_code"] == PROCESS_EXIT_SKIPPED
+                    if proc["exit_code"] == PROCESS_EXIT_SKIPPED or (phase == "binary" and proc["exit_code"] not in (None, 0))
                     else ("failed" if proc["exit_code"] not in (None, 0) else "succeeded")
                 )
             )
@@ -1839,6 +2000,8 @@ def live_progress_view(request):
                 snapshot_favicon_url = ""
                 snapshot_preview_url = ""
                 snapshot_preview_link = ""
+                snapshot_screencast_url = ""
+                snapshot_screencast_link = ""
                 snapshot_fallback_urls: list[str] = []
                 result_by_plugin = {result.plugin: result for result in snapshot_results}
                 title_result = result_by_plugin.get("title")
@@ -1858,6 +2021,17 @@ def live_progress_view(request):
                         snapshot_fallback_urls.append(snapshot_favicon_url)
                 elif snapshot_favicon_url:
                     snapshot_preview_url = snapshot_favicon_url
+
+                if snapshot["status"] == Snapshot.StatusChoices.STARTED:
+                    live_preview_path = CONSTANTS.CACHE_DIR / "chrome_screencast" / str(snapshot["id"]) / "latest.jpg"
+                    try:
+                        live_preview_stat = live_preview_path.stat()
+                    except OSError:
+                        live_preview_stat = None
+                    if live_preview_stat and live_preview_stat.st_size > 0:
+                        token = SCREENCAST_SIGNER.sign(str(snapshot["id"]))
+                        snapshot_screencast_url = f"/admin/live-progress/screencast/{snapshot['id']}.jpg?v={live_preview_stat.st_mtime_ns}&token={quote(token)}"
+                        snapshot_screencast_link = snapshot_view_url(snapshot)
 
                 def plugin_sort_key(ar):
                     status_order = {
@@ -1989,6 +2163,9 @@ def live_progress_view(request):
                     if snapshot_preview_url:
                         snapshot_payload["preview_url"] = snapshot_preview_url
                         snapshot_payload["preview_link"] = snapshot_preview_link
+                    if snapshot_screencast_url:
+                        snapshot_payload["screencast_url"] = snapshot_screencast_url
+                        snapshot_payload["screencast_link"] = snapshot_screencast_link
                     if snapshot_fallback_urls:
                         snapshot_payload["preview_fallbacks"] = snapshot_fallback_urls
                     if snapshot_process_pids.get(str(snapshot["id"])):
@@ -2005,17 +2182,25 @@ def live_progress_view(request):
             persona_details = persona_details or persona_details_by_name.get(persona_name)
             crawl_output_size = crawl_output_sizes_by_crawl.get(crawl_id, 0)
             avg_snapshot_size = int(crawl_output_size / completed_snapshots) if completed_snapshots else 0
+            effective_crawl_config = get_config(crawl=active_crawl_objects[crawl_id])
+            max_urls = int(effective_crawl_config.CRAWL_MAX_URLS or 0)
+            crawl_max_size = int(effective_crawl_config.CRAWL_MAX_SIZE or 0)
+            crawl_timeout = int(effective_crawl_config.CRAWL_TIMEOUT or 0)
+            snapshot_max_size = int(effective_crawl_config.SNAPSHOT_MAX_SIZE or 0)
 
             # Check if retry_at is in the future (would prevent worker from claiming)
             retry_at_future = crawl["retry_at"] > now if crawl["retry_at"] else False
-            seconds_until_retry = int((crawl["retry_at"] - now).total_seconds()) if crawl["retry_at"] and retry_at_future else 0
+            is_paused = active_crawl_objects[crawl_id].is_paused
+            seconds_until_retry = 0 if is_paused else int((crawl["retry_at"] - now).total_seconds()) if crawl["retry_at"] and retry_at_future else 0
             crawl_worker_state = (
                 "running"
                 if crawl_process_pids.get(crawl_id)
                 or any(isinstance(snapshot, dict) and snapshot.get("worker_pid") for snapshot in active_snapshots_for_crawl)
                 else "waiting"
             )
-            if crawl["status"] == Crawl.StatusChoices.SEALED and cancelled_snapshots:
+            if is_paused:
+                crawl_worker_state = "paused"
+            elif crawl["status"] == Crawl.StatusChoices.SEALED and cancelled_snapshots:
                 crawl_worker_state = "cancelled"
             elif (
                 crawl["status"] == Crawl.StatusChoices.STARTED
@@ -2029,19 +2214,20 @@ def live_progress_view(request):
                     "id": crawl_id,
                     "label": (next((line.strip() for line in (crawl["urls"] or "").splitlines() if line.strip()), "") or crawl_id)[:60],
                     "status": crawl["status"],
+                    "is_paused": is_paused,
                     "started": crawl["created_at"].isoformat() if crawl["created_at"] else None,
                     "progress": crawl_progress,
                     "created_by": crawl["created_by__username"],
                     "persona": persona_name,
                     "persona_admin_url": persona_details["admin_url"] if persona_details else None,
                     "max_depth": crawl["max_depth"],
-                    "max_urls": crawl["max_urls"],
-                    "max_crawl_size": crawl["crawl_max_size"],
-                    "max_snapshot_size": crawl["snapshot_max_size"],
-                    "max_crawl_size_display": printable_filesize(crawl["crawl_max_size"]) if crawl["crawl_max_size"] else "unlimited",
-                    "max_snapshot_size_display": printable_filesize(crawl["snapshot_max_size"])
-                    if crawl["snapshot_max_size"]
-                    else "unlimited",
+                    "max_urls": max_urls,
+                    "max_crawl_size": crawl_max_size,
+                    "crawl_timeout": crawl_timeout,
+                    "max_snapshot_size": snapshot_max_size,
+                    "max_crawl_size_display": printable_filesize(crawl_max_size) if crawl_max_size else "unlimited",
+                    "crawl_timeout_display": f"{crawl_timeout}s" if crawl_timeout else "unlimited",
+                    "max_snapshot_size_display": printable_filesize(snapshot_max_size) if snapshot_max_size else "unlimited",
                     "crawl_output_size": crawl_output_size,
                     "avg_snapshot_size": avg_snapshot_size,
                     "crawl_output_size_display": printable_filesize(crawl_output_size) if crawl_output_size else "0 B",
@@ -2075,11 +2261,14 @@ def live_progress_view(request):
             "total_workers": total_workers,
             "crawls_pending": crawls_pending,
             "crawls_started": crawls_started,
+            "crawls_paused": crawls_paused,
             "crawls_recent": crawls_recent,
             "snapshots_pending": snapshots_pending,
             "snapshots_started": snapshots_started,
+            "snapshots_paused": snapshots_paused,
             "archiveresults_pending": archiveresults_pending,
             "archiveresults_started": archiveresults_started,
+            "archiveresults_paused": archiveresults_paused,
             "archiveresults_succeeded": archiveresults_succeeded,
             "archiveresults_failed": archiveresults_failed,
             "active_crawls": active_crawls,
@@ -2103,11 +2292,14 @@ def live_progress_view(request):
                 "total_workers": 0,
                 "crawls_pending": 0,
                 "crawls_started": 0,
+                "crawls_paused": 0,
                 "crawls_recent": 0,
                 "snapshots_pending": 0,
                 "snapshots_started": 0,
+                "snapshots_paused": 0,
                 "archiveresults_pending": 0,
                 "archiveresults_started": 0,
+                "archiveresults_paused": 0,
                 "archiveresults_succeeded": 0,
                 "archiveresults_failed": 0,
                 "active_crawls": [],

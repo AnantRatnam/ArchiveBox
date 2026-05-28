@@ -5,9 +5,15 @@ Verify status reports accurate collection state from DB and filesystem.
 """
 
 import os
-import sqlite3
 import subprocess
 from pathlib import Path
+
+import pytest
+
+from archivebox.core.models import Snapshot
+from archivebox.tests.orm_helpers import use_archivebox_db
+
+pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def _find_snapshot_dir(data_dir: Path, snapshot_id: str) -> Path | None:
@@ -58,10 +64,8 @@ def test_status_shows_correct_snapshot_count(tmp_path, process, disable_extracto
     result = subprocess.run(["archivebox", "status"], capture_output=True, text=True)
 
     # Verify DB has 3 snapshots
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    db_count = c.execute("SELECT COUNT(*) FROM core_snapshot").fetchone()[0]
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        db_count = Snapshot.objects.count()
 
     assert db_count == 3
     # Status output should show 3
@@ -143,10 +147,8 @@ def test_status_counts_new_snapshot_output_dirs_as_archived(tmp_path, process, d
         check=True,
     )
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    snapshot_id = c.execute("SELECT id FROM core_snapshot WHERE url = ?", ("https://example.com",)).fetchone()[0]
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        snapshot_id = Snapshot.objects.values_list("id", flat=True).get(url="https://example.com")
 
     snapshot_dir = _find_snapshot_dir(tmp_path, str(snapshot_id))
     assert snapshot_dir is not None, f"Snapshot output directory not found for {snapshot_id}"
@@ -183,10 +185,8 @@ def test_status_reads_from_db_not_filesystem(tmp_path, process, disable_extracto
     )
 
     # Verify DB has snapshot
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    db_count = c.execute("SELECT COUNT(*) FROM core_snapshot").fetchone()[0]
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        db_count = Snapshot.objects.count()
 
     assert db_count == 1
 

@@ -139,8 +139,6 @@ class ServerConfig(BaseConfigSet):
     # CUSTOM_TEMPLATES_DIR: Path          = Field(default=None)  # this is now a constant
 
     PUBLIC_INDEX: bool = Field(default=True)
-    PUBLIC_SNAPSHOTS: bool = Field(default=True)
-    PUBLIC_SNAPSHOTS_LIST: bool | None = Field(default=None)
     PUBLIC_ADD_VIEW: bool = Field(default=False)
 
     ADMIN_USERNAME: str | None = Field(default=None)
@@ -254,6 +252,7 @@ class ArchivingConfig(BaseConfigSet):
     MAX_DEPTH: int = Field(default=0)
     CRAWL_MAX_URLS: int = Field(default=0)
     CRAWL_MAX_SIZE: int = Field(default=0)
+    CRAWL_TIMEOUT: int = Field(default=0, description="Maximum total crawl runtime in seconds (0 = unlimited).")
     CRAWL_MAX_CONCURRENT_SNAPSHOTS: int = Field(
         default=4,
         description="Maximum number of snapshots to archive concurrently within one crawl.",
@@ -274,6 +273,10 @@ class ArchivingConfig(BaseConfigSet):
     SAVE_DENYLIST: dict[str, list[str]] = Field(default={})
 
     DEFAULT_PERSONA: str = Field(default="Default")
+    PERMISSIONS: str = Field(
+        default="public",
+        description="Snapshot visibility: public lists and serves content, unlisted serves direct links only, private requires admin login.",
+    )
     DELETE_AFTER: str = Field(
         default="0",
         description=(
@@ -309,6 +312,14 @@ class ArchivingConfig(BaseConfigSet):
         if value is None:
             return "0"
         return str(value).strip() or "0"
+
+    @field_validator("PERMISSIONS", mode="before")
+    @classmethod
+    def validate_permissions(cls, value):
+        normalized = str(value or "public").strip().lower()
+        if normalized not in {"public", "unlisted", "private"}:
+            raise ValueError("PERMISSIONS must be one of: public, unlisted, private.")
+        return normalized
 
     @property
     def URL_ALLOWLIST_PTN(self) -> re.Pattern | None:
@@ -561,20 +572,7 @@ def get_config(
             machine = None
 
     if persona is None and crawl is not None:
-        from archivebox.personas.models import Persona
-
-        persona_id = crawl.persona_id
-        if persona_id:
-            persona = Persona.objects.filter(id=persona_id).first()
-            if persona is None:
-                raise Persona.DoesNotExist(f"Crawl {crawl.id} references missing Persona {persona_id}")
-
-        if persona is None:
-            crawl_config = crawl.config or {}
-            default_persona_name = str(crawl_config.get("DEFAULT_PERSONA") or "").strip()
-            if default_persona_name:
-                persona, _ = Persona.objects.get_or_create(name=default_persona_name or "Default")
-                persona.ensure_dirs()
+        persona = crawl.resolve_persona()
 
     config_data: ConfigPayload = dict(defaults or {})
     config_data.update(ArchiveBoxConfig().model_dump(mode="json"))

@@ -70,7 +70,7 @@ def test_enqueue_discovered_snapshots_refreshes_crawl_limits(tmp_path):
     crawl = Crawl.objects.create(
         urls="https://example.com",
         max_depth=0,
-        max_urls=5,
+        config={"CRAWL_MAX_URLS": 5},
         created_by_id=get_or_create_system_user_pk(),
     )
     snapshot = Snapshot.objects.create(
@@ -469,8 +469,8 @@ def test_run_snapshot_seals_descendant_when_crawl_max_size_is_reached(tmp_path):
             "LIB_DIR": str(tmp_path / "lib"),
             "PLUGINS": "__archivebox_test_no_plugins__",
             "CHROME_BINARY": "",
+            "CRAWL_MAX_SIZE": 16,
         },
-        crawl_max_size=16,
         created_by_id=get_or_create_system_user_pk(),
     )
     root = Snapshot.objects.create(
@@ -583,7 +583,7 @@ def test_seal_snapshot_cancels_queued_descendants_after_crawl_max_size():
     crawl = Crawl.objects.create(
         urls="https://example.com",
         created_by_id=get_or_create_system_user_pk(),
-        crawl_max_size=16,
+        config={"CRAWL_MAX_SIZE": 16},
     )
     root = Snapshot.objects.create(
         url="https://example.com",

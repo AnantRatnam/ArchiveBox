@@ -16,7 +16,6 @@ from hashlib import sha256
 from urllib.parse import urlparse, quote, unquote
 from html import escape, unescape
 from datetime import datetime, timezone
-from requests.exceptions import RequestException, ReadTimeout
 
 from base32_crockford import encode as base32_encode
 from w3lib.encoding import html_body_declared_encoding, http_content_type_encoding
@@ -28,8 +27,6 @@ try:
 except ImportError:
     detect_encoding = lambda rawdata: "utf-8"
 
-
-from archivebox.config.constants import CONSTANTS
 
 from .logging import COLOR_DICT
 
@@ -61,19 +58,9 @@ htmlencode = lambda s: s and escape(s, quote=True)
 htmldecode = lambda s: s and unescape(s)
 
 
-def short_ts(ts: Any) -> str | None:
-    parsed = parse_date(ts)
-    return None if parsed is None else str(parsed.timestamp()).split(".")[0]
-
-
 def ts_to_date_str(ts: Any) -> str | None:
     parsed = parse_date(ts)
     return None if parsed is None else parsed.strftime("%Y-%m-%d %H:%M")
-
-
-def ts_to_iso(ts: Any) -> str | None:
-    parsed = parse_date(ts)
-    return None if parsed is None else parsed.isoformat()
 
 
 COLOR_REGEX = re.compile(r"\[(?P<arg_1>\d+)(;(?P<arg_2>\d+)(;(?P<arg_3>\d+))?)?m")
@@ -296,11 +283,6 @@ def parse_filesize_to_bytes(value: str | int | float | None) -> int:
     return int(amount * multiplier)
 
 
-def is_static_file(url: str):
-    # TODO: the proper way is with MIME type detection + ext, not only extension
-    return extension(url).lower() in CONSTANTS.STATICFILE_EXTENSIONS
-
-
 def enforce_types(func):
     """
     Enforce function arg and kwarg types at runtime using its python3 type hints
@@ -353,17 +335,6 @@ def docstring(text: str | None):
         return func
 
     return decorator
-
-
-@enforce_types
-def str_between(string: str, start: str, end: str | None = None) -> str:
-    """(<abc>12345</def>, <abc>, </def>)  ->  12345"""
-
-    content = string.split(start, 1)[-1]
-    if end is not None:
-        content = content.rsplit(end, 1)[0]
-
-    return content
 
 
 @enforce_types
@@ -446,50 +417,6 @@ def download_url(url: str, timeout: int | None = None, config=None, **config_kwa
     except UnicodeDecodeError:
         # if response is non-test (e.g. image or other binary files), just return the filename instead
         return url.rsplit("/", 1)[-1]
-
-
-@enforce_types
-def get_headers(url: str, timeout: int | None = None, config=None, **config_kwargs) -> str:
-    """Download the contents of a remote url and return the headers"""
-    # TODO: get rid of this and use an abx pluggy hook instead
-
-    from archivebox.config.common import get_config
-
-    config = config or get_config(**config_kwargs)
-    timeout = timeout or config.TIMEOUT
-
-    try:
-        response = requests.head(
-            url,
-            headers={"User-Agent": config.USER_AGENT},
-            verify=config.CHECK_SSL_VALIDITY,
-            timeout=timeout,
-            allow_redirects=True,
-        )
-        if response.status_code >= 400:
-            raise RequestException
-    except ReadTimeout:
-        raise
-    except RequestException:
-        response = requests.get(
-            url,
-            headers={"User-Agent": config.USER_AGENT},
-            verify=config.CHECK_SSL_VALIDITY,
-            timeout=timeout,
-            stream=True,
-        )
-
-    return pyjson.dumps(
-        {
-            "URL": url,
-            "Status-Code": response.status_code,
-            "Elapsed": response.elapsed.total_seconds() * 1000,
-            "Encoding": str(response.encoding),
-            "Apparent-Encoding": response.apparent_encoding,
-            **dict(response.headers),
-        },
-        indent=4,
-    )
 
 
 @enforce_types
@@ -698,50 +625,3 @@ _test_url_strs = {
 for url_str, num_urls in _test_url_strs.items():
     assert len(list(find_all_urls(url_str))) == num_urls, f"{url_str} does not contain {num_urls} urls"
 
-
-### Chrome Helpers
-
-
-def chrome_cleanup(config=None, **config_kwargs):
-    """
-    Cleans up any state or runtime files that Chrome leaves behind when killed by
-    a timeout or other error. Handles:
-    - All persona chrome_profile directories (via Persona.cleanup_chrome_all())
-    - Explicit CHROME_USER_DATA_DIR from config
-    - Legacy Docker chromium path
-    """
-    import os
-    from pathlib import Path
-    from archivebox.config.permissions import IN_DOCKER
-
-    # Clean up all persona chrome directories using Persona class
-    try:
-        from archivebox.personas.models import Persona
-
-        # Clean up all personas
-        Persona.cleanup_chrome_all()
-
-        # Also clean up the active persona's explicit CHROME_USER_DATA_DIR if set
-        # (in case it's a custom path not under PERSONAS_DIR)
-        from archivebox.config.common import get_config
-
-        config = config or get_config(**config_kwargs)
-        chrome_user_data_dir = config.get("CHROME_USER_DATA_DIR")
-        if chrome_user_data_dir:
-            singleton_lock = Path(chrome_user_data_dir) / "SingletonLock"
-            if os.path.lexists(singleton_lock):
-                try:
-                    singleton_lock.unlink()
-                except OSError:
-                    pass
-    except Exception:
-        pass  # Persona/config not available during early startup
-
-    # Legacy Docker cleanup (for backwards compatibility)
-    if IN_DOCKER:
-        singleton_lock = "/home/archivebox/.config/chromium/SingletonLock"
-        if os.path.lexists(singleton_lock):
-            try:
-                os.remove(singleton_lock)
-            except OSError:
-                pass

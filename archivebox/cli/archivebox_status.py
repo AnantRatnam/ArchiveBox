@@ -130,7 +130,7 @@ def status(out_dir: Path = DATA_DIR) -> None:
         print("        [green]archivebox manage createsuperuser[/green]")
 
     print()
-    recent_snapshots = snapshots_qs.annotate(output_size_sum=Coalesce(Sum("archiveresult__output_size"), 0)).order_by(
+    recent_snapshots = snapshots_qs.order_by(
         "-downloaded_at",
         "-modified_at",
     )[:10]
@@ -141,7 +141,7 @@ def status(out_dir: Path = DATA_DIR) -> None:
             (
                 "[grey53] "
                 f"   > {str(snapshot.downloaded_at)[:16]} "
-                f"[{snapshot.num_outputs} {('X', '√')[snapshot.status == Snapshot.StatusChoices.SEALED]} {printable_filesize(snapshot.output_size_sum or 0)}] "
+                f"[{snapshot.num_outputs} {('X', '√')[snapshot.status == Snapshot.StatusChoices.SEALED]} {printable_filesize(snapshot.output_size or 0)}] "
                 f'"{snapshot.title}": {snapshot.url}'
                 "[/grey53]"
             )[: config.TERM_WIDTH],

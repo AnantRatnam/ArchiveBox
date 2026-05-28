@@ -13,83 +13,6 @@ from archivebox.misc.util import docstring, enforce_types
 from archivebox.config.common import get_config
 
 
-def stop_existing_background_runner(*, machine, process_model, supervisor=None, stop_worker_fn=None, log=print) -> int:
-    """Stop any existing orchestrator process so the server can take ownership."""
-    running_runners = list(
-        process_model.objects.filter(
-            machine=machine,
-            status=process_model.StatusChoices.RUNNING,
-            process_type=process_model.TypeChoices.ORCHESTRATOR,
-        ).order_by("created_at"),
-    )
-
-    if not running_runners:
-        return 0
-
-    log("[yellow][*] Stopping existing ArchiveBox background runner...[/yellow]")
-
-    if supervisor is not None and stop_worker_fn is not None:
-        for worker_name in ("worker_runner", "worker_runner_watch"):
-            try:
-                stop_worker_fn(supervisor, worker_name)
-            except Exception:
-                pass
-
-    for proc in running_runners:
-        try:
-            proc.kill_tree(graceful_timeout=2.0)
-        except Exception:
-            try:
-                proc.terminate(graceful_timeout=2.0)
-            except Exception:
-                pass
-
-    return len(running_runners)
-
-
-def _read_supervisor_worker_command(worker_name: str) -> str:
-    from archivebox.workers.supervisord_util import WORKERS_DIR_NAME, get_sock_file
-
-    worker_conf = get_sock_file().parent / WORKERS_DIR_NAME / f"{worker_name}.conf"
-    if not worker_conf.exists():
-        return ""
-
-    for line in worker_conf.read_text().splitlines():
-        if line.startswith("command="):
-            return line.removeprefix("command=").strip()
-    return ""
-
-
-def _worker_command_matches_bind(command: str, host: str, port: str) -> bool:
-    if not command:
-        return False
-    return f"{host}:{port}" in command or (f"--bind={host}" in command and f"--port={port}" in command)
-
-
-def stop_existing_server_workers(*, supervisor, stop_worker_fn, host: str, port: str, log=print) -> int:
-    """Stop existing ArchiveBox web workers if they already own the requested bind."""
-    stopped = 0
-
-    for worker_name in ("worker_runserver", "worker_daphne"):
-        try:
-            proc = supervisor.getProcessInfo(worker_name) if supervisor else None
-        except Exception:
-            proc = None
-        if not isinstance(proc, dict) or proc.get("statename") != "RUNNING":
-            continue
-
-        command = _read_supervisor_worker_command(worker_name)
-        if not _worker_command_matches_bind(command, host, port):
-            continue
-
-        if stopped == 0:
-            log("[yellow][*] Taking over existing ArchiveBox web server on same port...[/yellow]")
-        stop_worker_fn(supervisor, worker_name)
-        stopped += 1
-
-    return stopped
-
-
 @enforce_types
 def server(
     runserver_args: Iterable[str] | None = None,
@@ -144,60 +67,17 @@ def server(
         pass
 
     from archivebox.workers.supervisord_util import (
-        get_existing_supervisord_process,
-        get_worker,
-        stop_worker,
         start_server_workers,
+        stop_existing_supervisord_process,
         is_port_in_use,
     )
-    from archivebox.machine.models import Machine, Process
-
-    machine = Machine.current()
-    supervisor = get_existing_supervisord_process()
-    stop_existing_background_runner(
-        machine=machine,
-        process_model=Process,
-        supervisor=supervisor,
-        stop_worker_fn=stop_worker,
+    from archivebox.machine.models import Process
+    from archivebox.services.supervision_service import (
+        command_owns_runtime_stack,
+        current_command,
+        standby_until_runtime_stack_needed,
     )
-    if supervisor:
-        stop_existing_server_workers(
-            supervisor=supervisor,
-            stop_worker_fn=stop_worker,
-            host=host,
-            port=port,
-        )
-
-    # Check if port is already in use
-    if is_port_in_use(host, int(port)):
-        print(f"[red][X] Error: Port {port} is already in use[/red]")
-        print(f"    Another process (possibly daphne or runserver) is already listening on {host}:{port}")
-        print("    Stop the conflicting process or choose a different port")
-        sys.exit(1)
-
-    supervisor = get_existing_supervisord_process()
-    if supervisor:
-        server_worker_name = "worker_runserver" if run_in_debug else "worker_daphne"
-        server_proc = get_worker(supervisor, server_worker_name)
-        server_state = server_proc.get("statename") if isinstance(server_proc, dict) else None
-        if server_state == "RUNNING":
-            runner_proc = get_worker(supervisor, "worker_runner")
-            runner_watch_proc = get_worker(supervisor, "worker_runner_watch")
-            runner_state = runner_proc.get("statename") if isinstance(runner_proc, dict) else None
-            runner_watch_state = runner_watch_proc.get("statename") if isinstance(runner_watch_proc, dict) else None
-            print("[red][X] Error: ArchiveBox server is already running[/red]")
-            print(
-                f"    [green]√[/green] Web server ({server_worker_name}) is RUNNING on [deep_sky_blue4][link=http://{host}:{port}]http://{host}:{port}[/link][/deep_sky_blue4]",
-            )
-            if runner_state == "RUNNING":
-                print("    [green]√[/green] Background runner (worker_runner) is RUNNING")
-            if runner_watch_state == "RUNNING":
-                print("    [green]√[/green] Reload watcher (worker_runner_watch) is RUNNING")
-            print()
-            print("[yellow]To stop the existing server, run:[/yellow]")
-            print('    pkill -f "archivebox server"')
-            print("    pkill -f supervisord")
-            sys.exit(1)
+    from archivebox.core.shutdown_util import foreground_shutdown_signals
 
     if run_in_debug:
         print("[green][+] Starting ArchiveBox webserver in DEBUG mode...[/green]")
@@ -211,7 +91,42 @@ def server(
     )
     print("    > Writing ArchiveBox error log to ./logs/errors.log")
     print()
-    start_server_workers(host=host, port=port, daemonize=daemonize, debug=run_in_debug, reload=reload, nothreading=nothreading)
+    bind_url = f"http://{host}:{port}"
+    command = current_command(Process.TypeChoices.SERVER, data_dir=config.DATA_DIR, url=bind_url)
+
+    try:
+        with foreground_shutdown_signals():
+            while True:
+                standby_until_runtime_stack_needed(command, data_dir=config.DATA_DIR)
+                sys.stdout.write(f"[*] ArchiveBox server parent pid={os.getpid()} is now running the orchestrator and server...\n")
+                sys.stdout.flush()
+                stop_existing_supervisord_process()
+                if is_port_in_use(host, int(port)):
+                    print(f"[red][X] Error: Port {port} is already in use[/red]")
+                    print(f"    Another process outside this ArchiveBox runtime is listening on {host}:{port}")
+                    sys.exit(1)
+
+                result = start_server_workers(
+                    host=host,
+                    port=port,
+                    daemonize=daemonize,
+                    debug=run_in_debug,
+                    reload=reload,
+                    nothreading=nothreading,
+                    keep_running=lambda: command_owns_runtime_stack(command, data_dir=config.DATA_DIR),
+                    should_stop_supervisord=lambda: command_owns_runtime_stack(command, data_dir=config.DATA_DIR),
+                )
+                if not command_owns_runtime_stack(command, data_dir=config.DATA_DIR):
+                    print("[yellow][*] Another ArchiveBox command took over the runtime stack; standing by.[/yellow]")
+                    continue
+                if result == "exited":
+                    print("[yellow][*] Runtime stack exited while this parent is still leader; restarting...[/yellow]")
+                    continue
+                break
+    except KeyboardInterrupt:
+        pass
+    finally:
+        command.mark_exited()
     print("\n[i][green][🟩] ArchiveBox server shut down gracefully.[/green][/i]")
 
 

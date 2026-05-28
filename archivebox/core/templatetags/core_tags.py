@@ -278,6 +278,14 @@ def file_size(num_bytes: int | float) -> str:
     return "{:3.1f} {}".format(num_bytes, "TB")
 
 
+@register.filter
+def intcomma(value: int | str | None) -> str:
+    try:
+        return f"{int(value or 0):,}"
+    except (TypeError, ValueError):
+        return str(value or "")
+
+
 def result_list(context, cl):
     """
     Monkey patched result

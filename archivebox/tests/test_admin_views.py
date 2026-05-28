@@ -28,6 +28,7 @@ pytestmark = pytest.mark.django_db
 User = get_user_model()
 ADMIN_HOST = "admin.archivebox.localhost:8000"
 PUBLIC_HOST = "public.archivebox.localhost:8000"
+WEB_HOST = "web.archivebox.localhost:8000"
 
 
 @pytest.fixture
@@ -254,9 +255,11 @@ class TestSnapshotProgressStats:
             {"name": "video.mp4", "path": "ytdlp/video.mp4", "size": 111},
         ]
 
-    def test_discover_outputs_falls_back_to_hashes_index_without_filesystem_walk(self, snapshot, monkeypatch):
+    def test_discover_outputs_falls_back_to_hashes_index_without_filesystem_walk(self, snapshot):
         """Older snapshots can still render cards from hashes.json when DB output_files are missing."""
-        from archivebox.core.models import ArchiveResult, Snapshot
+        import json
+
+        from archivebox.core.models import ArchiveResult
 
         ArchiveResult.objects.create(
             snapshot=snapshot,
@@ -266,31 +269,27 @@ class TestSnapshotProgressStats:
             output_files={},
         )
 
-        monkeypatch.setattr(
-            Snapshot,
-            "hashes_index",
-            property(
-                lambda self: {
+        hashes_dir = Path(snapshot.output_dir) / "hashes"
+        hashes_dir.mkdir(parents=True, exist_ok=True)
+        (hashes_dir / "hashes.json").write_text(
+            json.dumps(
+                {
                     "responses/index.jsonl": {"size": 456},
                     "responses/all/20260323T073504__GET__example.com__.html": {"size": 789},
                     "responses/all/20260323T073504__GET__example.com__app.js": {"size": 123},
                 },
             ),
-            raising=False,
+            encoding="utf-8",
         )
 
-        outputs = snapshot.discover_outputs(include_filesystem_fallback=False)
+        outputs = snapshot.discover_outputs(include_filesystem_fallback=True)
 
         assert next(output for output in outputs if output["name"] == "responses")["path"] == (
             "responses/all/20260323T073504__GET__example.com__.html"
         )
 
-    def test_discover_outputs_falls_back_to_filesystem_for_missing_db_and_hashes(self, snapshot, monkeypatch):
+    def test_discover_outputs_falls_back_to_filesystem_for_missing_db_and_hashes(self, snapshot):
         """Snapshot page can still recover cards from plugin dirs when DB metadata is missing."""
-        from archivebox.core.models import Snapshot
-
-        monkeypatch.setattr(Snapshot, "hashes_index", property(lambda self: {}), raising=False)
-
         responses_dir = Path(snapshot.output_dir) / "responses"
         (responses_dir / "all").mkdir(parents=True, exist_ok=True)
         (responses_dir / "index.jsonl").write_text("{}", encoding="utf-8")
@@ -1250,7 +1249,7 @@ class TestLiveProgressView:
         import archivebox.workers.supervisord_util as supervisord_util
 
         machine_models._CURRENT_MACHINE = None
-        monkeypatch.setattr(supervisord_util, "get_existing_supervisord_process", lambda: object())
+        monkeypatch.setattr(supervisord_util, "get_existing_supervisord_process", lambda **_kwargs: object())
         monkeypatch.setattr(
             supervisord_util,
             "get_worker",
@@ -1695,6 +1694,41 @@ class TestPublicIndexSearch:
         """Test public search by URL."""
         response = client.get("/public/", {"q": "public-example.com"}, HTTP_HOST=PUBLIC_HOST)
         assert response.status_code == 200
+
+    @override_settings(PUBLIC_INDEX=True)
+    def test_public_index_lists_only_public_snapshots(self, client, admin_user):
+        from archivebox.core.models import Snapshot
+        from archivebox.crawls.models import Crawl
+
+        public_crawl = Crawl.objects.create(urls="https://public.example", created_by=admin_user, config={"PERMISSIONS": "public"})
+        unlisted_crawl = Crawl.objects.create(urls="https://unlisted.example", created_by=admin_user, config={"PERMISSIONS": "unlisted"})
+        private_crawl = Crawl.objects.create(urls="https://private.example", created_by=admin_user, config={"PERMISSIONS": "private"})
+        Snapshot.objects.create(url="https://public.example", title="Public Snapshot", crawl=public_crawl, status=Snapshot.StatusChoices.SEALED)
+        Snapshot.objects.create(url="https://unlisted.example", title="Unlisted Snapshot", crawl=unlisted_crawl, status=Snapshot.StatusChoices.SEALED)
+        Snapshot.objects.create(url="https://private.example", title="Private Snapshot", crawl=private_crawl, status=Snapshot.StatusChoices.SEALED)
+
+        response = client.get("/public/", HTTP_HOST=PUBLIC_HOST)
+
+        assert response.status_code == 200
+        assert b"Public Snapshot" in response.content
+        assert b"Unlisted Snapshot" not in response.content
+        assert b"Private Snapshot" not in response.content
+
+    def test_direct_snapshot_urls_allow_unlisted_but_not_private_for_guests(self, client, admin_user):
+        from archivebox.core.models import Snapshot
+        from archivebox.crawls.models import Crawl
+
+        unlisted_crawl = Crawl.objects.create(urls="https://unlisted.example", created_by=admin_user, config={"PERMISSIONS": "unlisted"})
+        private_crawl = Crawl.objects.create(urls="https://private.example", created_by=admin_user, config={"PERMISSIONS": "private"})
+        unlisted_snapshot = Snapshot.objects.create(url="https://unlisted.example", crawl=unlisted_crawl, status=Snapshot.StatusChoices.SEALED)
+        private_snapshot = Snapshot.objects.create(url="https://private.example", crawl=private_crawl, status=Snapshot.StatusChoices.SEALED)
+
+        unlisted_response = client.get(f"/snapshot/{unlisted_snapshot.id}/", HTTP_HOST=WEB_HOST)
+        private_response = client.get(f"/snapshot/{private_snapshot.id}/", HTTP_HOST=WEB_HOST)
+
+        assert unlisted_response.status_code == 200
+        assert private_response.status_code == 302
+        assert private_response["Location"].startswith("/admin/login/")
 
     @override_settings(PUBLIC_INDEX=True)
     def test_public_search_mode_selector_defaults_to_meta_for_ripgrep(self, client, monkeypatch):

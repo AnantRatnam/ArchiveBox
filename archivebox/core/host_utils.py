@@ -206,11 +206,6 @@ def get_public_base_url(request=None, config: dict[str, Any] | None = None, **co
     return _build_base_url_for_host(get_public_host(config=config), request=request, config=config)
 
 
-# Backwards-compat aliases (archive == web)
-def get_archive_base_url(request=None, config: dict[str, Any] | None = None, **config_kwargs: Any) -> str:
-    return get_web_base_url(request=request, config=config, **config_kwargs)
-
-
 def get_snapshot_base_url(snapshot_id: str, request=None, config: dict[str, Any] | None = None, **config_kwargs: Any) -> str:
     config = config or get_config(**config_kwargs)
     if not config.USES_SUBDOMAIN_ROUTING:
@@ -231,14 +226,6 @@ def build_admin_url(path: str = "", request=None, config: dict[str, Any] | None 
 
 def build_web_url(path: str = "", request=None, config: dict[str, Any] | None = None, **config_kwargs: Any) -> str:
     return _build_url(get_web_base_url(request, config=config, **config_kwargs), path)
-
-
-def build_api_url(path: str = "", request=None, config: dict[str, Any] | None = None, **config_kwargs: Any) -> str:
-    return _build_url(get_api_base_url(request, config=config, **config_kwargs), path)
-
-
-def build_archive_url(path: str = "", request=None, config: dict[str, Any] | None = None, **config_kwargs: Any) -> str:
-    return _build_url(get_archive_base_url(request, config=config, **config_kwargs), path)
 
 
 def build_snapshot_url(snapshot_id: str, path: str = "", request=None, config: dict[str, Any] | None = None, **config_kwargs: Any) -> str:

@@ -1216,6 +1216,28 @@
                 font-size: 15px;
             }
 
+            .search-empty-state {
+                padding: 28px 18px;
+                text-align: center;
+                color: #475569;
+                background: #f8fafc;
+                border-top: 1px solid #e2e8f0;
+            }
+
+            .search-empty-state p {
+                margin: 0;
+            }
+
+            .search-empty-state code {
+                display: inline-block;
+                margin-left: 4px;
+                padding: 2px 6px;
+                border-radius: 5px;
+                background: #e2e8f0;
+                color: #0f172a;
+                font-size: 13px;
+            }
+
             /* Date hierarchy */
             .xfull {
                 padding: 12px 16px;
@@ -1457,7 +1479,61 @@
             .actions .tag-inline-input {
                 min-width: 40px;
                 padding: 0;
+                margin: 0;
+                height: auto;
+                min-height: 0;
+                border: 0;
+                border-radius: 0;
+                box-shadow: none;
+                background: transparent;
                 font-size: 11px;
+            }
+
+            .model-snapshot.change-list #changelist .actions-tags-with-buttons {
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) 34px 34px;
+                gap: 0;
+                align-items: stretch;
+                border: 1px solid #cbd5e1;
+                border-radius: 8px;
+                background: #fff;
+                overflow: hidden;
+            }
+
+            .model-snapshot.change-list #changelist .actions-tags-with-buttons .tag-editor-container {
+                width: auto;
+                max-width: none;
+                height: 34px;
+                min-height: 34px;
+                padding: 4px 9px;
+                border: 0;
+                border-radius: 0;
+                box-shadow: none;
+                overflow: hidden;
+            }
+
+            .model-snapshot.change-list #changelist .actions-tags-with-buttons .tag-inline-input {
+                height: auto;
+                min-height: 0;
+                padding: 0;
+                margin: 0;
+                border: 0;
+                border-radius: 0;
+                box-shadow: none;
+                background: transparent;
+            }
+
+            .model-snapshot.change-list #changelist .actions-tags-with-buttons .button[name="add_tags"],
+            .model-snapshot.change-list #changelist .actions-tags-with-buttons .button[name="remove_tags"] {
+                width: 34px;
+                min-width: 34px;
+                height: 34px;
+                padding: 0;
+                margin: 0;
+                border: 0;
+                border-left: 1px solid #cbd5e1;
+                border-radius: 0;
+                justify-content: center;
             }
 
 
@@ -1675,17 +1751,40 @@
             // change the admin actions button from a dropdown to buttons across
             function fix_actions() {
                 const container = $('div.actions')
+                if (container.find('.action-buttons').length) return
 
                 // too many actions to turn into buttons
                 if (container.find('select[name=action] option').length >= 11) return
 
                 // hide the empty default option thats just a placeholder with no value
-                container.find('label:nth-child(1), button[value=0]').hide()
+                container.find('label:nth-child(1), button[type=submit][name=index][value=0]').hide()
 
                 const buttons = $('<div></div>')
                     .insertAfter('div.actions button[type=submit]')
                     .css('display', 'inline')
                     .addClass('action-buttons');
+
+                function flushPendingActionTags() {
+                    const tagContainer = document.querySelector('.actions-tags')
+                    const input = tagContainer?.querySelector('.tag-inline-input')
+                    const hidden = tagContainer?.querySelector('input[type="hidden"][name="tags"]')
+                    const pending = (input?.value || '').trim()
+                    if (!pending || !hidden) return
+                    const seen = new Set()
+                    const tags = (hidden.value ? hidden.value.split(',') : [])
+                        .concat(pending.split(','))
+                        .map((tag) => tag.trim())
+                        .filter((tag) => {
+                            const key = tag.toLowerCase()
+                            if (!tag || seen.has(key)) return false
+                            seen.add(key)
+                            return true
+                        })
+                    hidden.value = tags.join(',')
+                    input.value = ''
+                    hidden.dispatchEvent(new Event('input', { bubbles: true }))
+                    hidden.dispatchEvent(new Event('change', { bubbles: true }))
+                }
 
                 // for each action in the dropdown, turn it into a button instead
                 container.find('select[name=action] option:gt(0)').each(function () {
@@ -1699,7 +1798,11 @@
                             e.preventDefault()
                             e.stopPropagation()
 
-                            const num_selected = document.querySelector('.action-counter').innerText.split(' ')[0]
+                            const num_selected = (
+                                document.querySelector('.action-selected-count')?.textContent.split('/')[0].trim()
+                                || document.querySelector('.action-counter')?.textContent.split(' ')[0]
+                                || '0'
+                            )
 
                             if (action_type === 'overwrite_snapshots') {
                                 const message = (
@@ -1715,6 +1818,9 @@
                                 )
                                 if (!window.confirm(message)) return false
                             }
+                            if (action_type === 'add_tags' || action_type === 'remove_tags') {
+                                flushPendingActionTags()
+                            }
 
                             // select the action from the original Django admin dropdown
                             container.find('select[name=action]')
@@ -1729,6 +1835,14 @@
                         .appendTo(buttons)
                 })
                 console.log('Converted', buttons.children().length, 'admin actions from dropdown to buttons')
+                const tagContainer = document.querySelector('.actions-tags')
+                if (tagContainer) {
+                    const tagButtons = buttons.find('button[name="add_tags"], button[name="remove_tags"]')
+                    if (tagButtons.length) {
+                        tagContainer.classList.add('actions-tags-with-buttons')
+                        tagButtons.appendTo(tagContainer)
+                    }
+                }
                 if (window.jQuery && window.jQuery.fn.select2) {
                     window.jQuery('select[multiple]').select2();
                 }
@@ -1737,7 +1851,188 @@
                 const tagContainer = document.querySelector('.actions-tags');
                 if (!tagContainer) return;
                 const checked = document.querySelectorAll('#changelist-form input.action-select:checked').length;
-                tagContainer.style.display = checked > 0 ? 'inline-flex' : 'none';
+                tagContainer.style.display = tagContainer.classList.contains('actions-tags-with-buttons') || checked > 0 ? 'inline-flex' : 'none';
+            }
+            function setupActionSummary() {
+                const summary = document.querySelector('.action-summary')
+                if (!summary || summary.dataset.summaryReady) return
+                summary.dataset.summaryReady = '1'
+                const selectedCount = summary.querySelector('.action-selected-count')
+                const counter = summary.querySelector('.action-counter')
+                const formatter = new Intl.NumberFormat()
+                const update = function() {
+                    if (!selectedCount || !counter) return
+                    const match = counter.textContent.match(/(\d+)\s+of\s+(\d+)\s+selected/)
+                    const selectAcross = document.querySelector('div.actions input.select-across')?.value === '1'
+                    const selected = selectAcross
+                        ? Number(summary.dataset.resultCount || 0)
+                        : (match ? Number(match[1]) : document.querySelectorAll('#changelist-form input.action-select:checked').length)
+                    const pageCount = match ? Number(match[2]) : Number(summary.dataset.pageCount || 0)
+                    const selectedLimit = selectAcross ? Number(summary.dataset.resultCount || pageCount) : pageCount
+                    selectedCount.textContent = formatter.format(selected) + ' / ' + formatter.format(selectedLimit) + ' selected'
+                    summary.classList.toggle('action-summary-has-selection', selected > 0)
+                    summary.classList.toggle('action-summary-select-across', selectAcross)
+                    const totalCount = summary.querySelector('.action-total-count')
+                    if (totalCount) {
+                        totalCount.hidden = selectAcross
+                    }
+                }
+                new MutationObserver(update).observe(counter, { childList: true, characterData: true, subtree: true })
+                document.querySelector('#changelist-form')?.addEventListener('change', function() {
+                    window.setTimeout(update, 0)
+                })
+                summary.addEventListener('click', function(event) {
+                    const explicitSelectAll = event.target.closest('.action-total-select, .action-total-count .question a')
+                    const selectedTotalClick = event.target.closest('.action-total-reset') && summary.classList.contains('action-summary-has-selection')
+                    if (explicitSelectAll || selectedTotalClick) {
+                        const questionLink = summary.querySelector('.action-total-count .question a')
+                        const allToggle = document.getElementById('action-toggle')
+                        const pageCount = Number(summary.dataset.pageCount || 0)
+                        const resultCount = Number(summary.dataset.resultCount || pageCount)
+                        event.preventDefault()
+                        if (allToggle && !allToggle.checked) {
+                            allToggle.click()
+                        }
+                        if (questionLink && resultCount > pageCount) {
+                            questionLink.click()
+                        }
+                    }
+                    window.setTimeout(update, 0)
+                })
+                update()
+            }
+            function setupSearchModeSelect() {
+                const storageKey = 'archivebox-admin-search-mode'
+                const params = new URLSearchParams(window.location.search)
+                document.querySelectorAll('.search-mode-select').forEach(function(select) {
+                    if (select.dataset.searchModeReady) return
+                    select.dataset.searchModeReady = '1'
+                    const values = Array.from(select.options).map(option => option.value)
+                    const stored = localStorage.getItem(storageKey)
+                    if (!params.has('search_mode') && values.includes(stored)) {
+                        select.value = stored
+                        if ((params.get('q') || '').trim()) {
+                            params.set('search_mode', stored)
+                            params.delete('p')
+                            window.location.replace(window.location.pathname + '?' + params.toString() + window.location.hash)
+                            return
+                        }
+                    }
+                    select.addEventListener('change', function() {
+                        localStorage.setItem(storageKey, select.value)
+                        const search = select.closest('#changelist-search')
+                        if (search && search.dataset.embeddedSearch === '1') {
+                            submitEmbeddedChangelistSearch(search)
+                            return
+                        }
+                        if (search && search.tagName === 'FORM' && document.activeElement === select) {
+                            search.requestSubmit()
+                        }
+                    })
+                })
+            }
+            function submitEmbeddedChangelistSearch(search) {
+                const params = new URLSearchParams(window.location.search)
+                search.querySelectorAll('[name]').forEach(function(input) {
+                    const value = (input.value || '').trim()
+                    if (value) {
+                        params.set(input.name, value)
+                    } else {
+                        params.delete(input.name)
+                    }
+                })
+                params.delete('p')
+                const query = params.toString()
+                window.location.href = window.location.pathname + (query ? '?' + query : '') + window.location.hash
+            }
+            function setupEmbeddedChangelistSearch() {
+                document.querySelectorAll('#changelist-search[data-embedded-search="1"]').forEach(function(search) {
+                    if (search.dataset.searchReady) return
+                    search.dataset.searchReady = '1'
+                    search.querySelector('.changelist-search-submit')?.addEventListener('click', function() {
+                        submitEmbeddedChangelistSearch(search)
+                    })
+                    search.querySelector('#searchbar')?.addEventListener('keydown', function(event) {
+                        if (event.key === 'Enter') {
+                            event.preventDefault()
+                            submitEmbeddedChangelistSearch(search)
+                        }
+                    })
+                })
+            }
+            function setupSnapshotPermissionsQuickEdit() {
+                if (document.body.dataset.snapshotPermissionsReady) return
+                document.body.dataset.snapshotPermissionsReady = '1'
+                document.addEventListener('click', function(event) {
+                    const toggle = event.target.closest('.snapshot-permissions-button')
+                    const item = event.target.closest('.snapshot-permissions-menu-item')
+                    document.querySelectorAll('.snapshot-permissions-quick.is-open').forEach(function(openMenu) {
+                        if (!openMenu.contains(event.target)) {
+                            openMenu.classList.remove('is-open')
+                            openMenu.querySelector('.snapshot-permissions-button')?.setAttribute('aria-expanded', 'false')
+                            const menu = openMenu.querySelector('.snapshot-permissions-menu')
+                            if (menu) menu.hidden = true
+                        }
+                    })
+                    if (toggle) {
+                        event.preventDefault()
+                        const wrapper = toggle.closest('.snapshot-permissions-quick')
+                        const menu = wrapper?.querySelector('.snapshot-permissions-menu')
+                        if (!wrapper || !menu) return
+                        const isOpen = wrapper.classList.toggle('is-open')
+                        toggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false')
+                        menu.hidden = !isOpen
+                        return
+                    }
+                    if (!item) return
+                    event.preventDefault()
+                    const wrapper = item.closest('.snapshot-permissions-quick')
+                    const permissions = item.dataset.permissions
+                    const csrf = document.querySelector('input[name="csrfmiddlewaretoken"]')?.value
+                    if (!wrapper || !permissions || !csrf || wrapper.dataset.saving === '1') return
+                    wrapper.dataset.saving = '1'
+                    const body = new URLSearchParams({permissions: permissions, csrfmiddlewaretoken: csrf})
+                    fetch(wrapper.dataset.permissionsUrl, {
+                        method: 'POST',
+                        headers: {'X-CSRFToken': csrf, 'Content-Type': 'application/x-www-form-urlencoded'},
+                        body: body.toString(),
+                    }).then(function(response) {
+                        if (!response.ok) throw new Error('Failed to update permissions')
+                        return response.json()
+                    }).then(function(data) {
+                        wrapper.dataset.currentPermissions = data.permissions
+                        wrapper.querySelectorAll('.snapshot-permissions-menu-item').forEach(function(button) {
+                            button.classList.toggle('is-active', button.dataset.permissions === data.permissions)
+                        })
+                        const icon = wrapper.querySelector('.snapshot-permissions-icon')
+                        if (icon) {
+                            icon.textContent = data.icon
+                            icon.style.color = data.fg
+                            icon.style.background = data.bg
+                        }
+                        const toggle = wrapper.querySelector('.snapshot-permissions-button')
+                        if (toggle) {
+                            toggle.className = 'snapshot-permissions-button snapshot-permissions-' + data.permissions
+                            toggle.title = data.label
+                            toggle.setAttribute('aria-label', 'Change snapshot permissions: ' + data.label)
+                            toggle.setAttribute('aria-expanded', 'false')
+                        }
+                        wrapper.classList.remove('is-open')
+                        const menu = wrapper.querySelector('.snapshot-permissions-menu')
+                        if (menu) menu.hidden = true
+                    }).catch(function(error) {
+                        window.alert(error.message)
+                    }).finally(function() {
+                        wrapper.dataset.saving = ''
+                    })
+                })
+            }
+            function setupChangelistFormHandlers() {
+                const form = document.querySelector('#changelist-form')
+                if (form && !form.dataset.archiveboxActionsReady) {
+                    form.dataset.archiveboxActionsReady = '1'
+                    form.addEventListener('change', updateTagWidgetVisibility)
+                }
             }
             function fixInlineAddRow() {
                 $('#id_snapshottag-MAX_NUM_FORMS').val('1000')
@@ -1858,28 +2153,30 @@
                 })
                 return false
             }
-            if ($) {
-                $(document).ready(function() {
+            window.archiveboxInitAdminChangelist = function() {
+                if (window.jQuery) {
                     fix_actions()
-                    updateTagWidgetVisibility()
-                    const form = document.querySelector('#changelist-form')
-                    if (form) {
-                        form.addEventListener('change', updateTagWidgetVisibility)
-                    }
                     fixInlineAddRow()
                     setupSnapshotGridListToggle()
+                }
+                updateTagWidgetVisibility()
+                setupActionSummary()
+                setupSearchModeSelect()
+                setupEmbeddedChangelistSearch()
+                setupChangelistFormHandlers()
+                selectSnapshotIfHotlinked()
+            }
+            if ($) {
+                $(document).ready(function() {
+                    window.archiveboxInitAdminChangelist()
+                    setupSnapshotPermissionsQuickEdit()
                     setTimeOffset()
-                    selectSnapshotIfHotlinked()
                 })
             } else {
                 document.addEventListener('DOMContentLoaded', function() {
-                    updateTagWidgetVisibility()
-                    const form = document.querySelector('#changelist-form')
-                    if (form) {
-                        form.addEventListener('change', updateTagWidgetVisibility)
-                    }
+                    window.archiveboxInitAdminChangelist()
+                    setupSnapshotPermissionsQuickEdit()
                     setTimeOffset()
-                    selectSnapshotIfHotlinked()
                 })
             }
         </script>

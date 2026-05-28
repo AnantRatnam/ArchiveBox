@@ -1,0 +1,303 @@
+#!/usr/bin/env bash
+
+# Chaos-drive ArchiveBox CLI commands and print what happens.
+# This is intentionally not a test harness: it does not assert success/failure.
+
+set -u
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DATA_DIR="${DATA_DIR:-$ROOT_DIR/data}"
+LOG_DIR="${FUZZ_LOG_DIR:-$ROOT_DIR/tmp/fuzz-$(date +%Y%m%d-%H%M%S)}"
+FUZZ_ROUNDS="${FUZZ_ROUNDS:-8}"
+FUZZ_PARALLEL="${FUZZ_PARALLEL:-10}"
+COMMAND_TIMEOUT="${FUZZ_COMMAND_TIMEOUT:-180}"
+SERVER_HOLD_SECONDS="${FUZZ_SERVER_HOLD_SECONDS:-35}"
+SERVER_BASE_PORT="${FUZZ_SERVER_BASE_PORT:-8700}"
+SLEEP_BETWEEN_JOBS="${FUZZ_SLEEP_BETWEEN_JOBS:-0.2}"
+
+if [[ -n "${ARCHIVEBOX_CMD:-}" ]]; then
+    read -r -a ABX <<< "$ARCHIVEBOX_CMD"
+elif command -v archivebox >/dev/null 2>&1; then
+    ABX=(archivebox)
+else
+    ABX=(uv run archivebox)
+fi
+
+DEFAULT_URLS=(
+    "https://example.com/"
+    "https://blog.sweeting.me/"
+    "https://www.iana.org/domains/reserved"
+    "https://httpbin.org/html"
+    "https://www.recurse.com/"
+)
+
+URLS=()
+if [[ -n "${FUZZ_URLS:-}" ]]; then
+    while IFS= read -r url; do
+        [[ -n "$url" ]] && URLS+=("$url")
+    done <<< "$FUZZ_URLS"
+else
+    URLS=("${DEFAULT_URLS[@]}")
+fi
+
+ts() {
+    date "+%Y-%m-%d %H:%M:%S"
+}
+
+pick() {
+    local arr_name="$1"
+    local len idx
+    eval "len=\${#${arr_name}[@]}"
+    idx=$((RANDOM % len))
+    eval "printf '%s\n' \"\${${arr_name}[$idx]}\""
+}
+
+kill_tree() {
+    local pid="$1"
+    local child
+    if command -v pgrep >/dev/null 2>&1; then
+        for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+            kill_tree "$child"
+        done
+    fi
+    kill "$pid" >/dev/null 2>&1 || true
+}
+
+cleanup() {
+    local pid
+    echo "[$(ts)] cleanup: stopping active background jobs"
+    for pid in $(jobs -pr); do
+        kill_tree "$pid"
+    done
+    sleep 2
+    for pid in $(jobs -pr); do
+        kill -9 "$pid" >/dev/null 2>&1 || true
+    done
+}
+
+trap cleanup INT TERM EXIT
+
+run_with_timeout() {
+    local label="$1"
+    local timeout="$2"
+    shift 2
+
+    local slug token
+    slug="$(echo "$label" | tr ' /:' '____' | tr -cd '[:alnum:]_.-')"
+    token="$(date +%s).$RANDOM.$RANDOM"
+    local logfile="$LOG_DIR/${slug}.${token}.log"
+
+    {
+        echo "[$(ts)] START label=$label shell=$$ data=$DATA_DIR"
+        echo "[$(ts)] CMD DATA_DIR=$DATA_DIR $*"
+    } | tee -a "$logfile"
+
+    (
+        DATA_DIR="$DATA_DIR" "$@"
+    ) >> "$logfile" 2>&1 &
+    local child=$!
+
+    (
+        sleep "$timeout"
+        if kill -0 "$child" >/dev/null 2>&1; then
+            echo "[$(ts)] TIMEOUT label=$label pid=$child after=${timeout}s" >> "$logfile"
+            kill "$child" >/dev/null 2>&1 || true
+            sleep 5
+            kill -9 "$child" >/dev/null 2>&1 || true
+        fi
+    ) &
+    local watchdog=$!
+
+    trap 'kill_tree "$child"; kill "$watchdog" >/dev/null 2>&1 || true' INT TERM
+
+    wait "$child"
+    local code=$?
+    kill "$watchdog" >/dev/null 2>&1 || true
+    wait "$watchdog" >/dev/null 2>&1 || true
+    trap - INT TERM
+
+    echo "[$(ts)] END label=$label pid=$child exit=$code log=$logfile" | tee -a "$logfile"
+    return 0
+}
+
+run_server_for_a_bit() {
+    local label="$1"
+    local port="$2"
+    local hold="$3"
+    local debug_flag="$4"
+    local token logfile
+    local server_extra=()
+    [[ -n "$debug_flag" ]] && read -r -a server_extra <<< "$debug_flag"
+    token="$(date +%s).$RANDOM.$RANDOM"
+    logfile="$LOG_DIR/server-${port}.${token}.log"
+
+    {
+        echo "[$(ts)] START label=$label shell=$$ data=$DATA_DIR"
+        echo "[$(ts)] CMD DATA_DIR=$DATA_DIR ${ABX[*]} server $debug_flag 127.0.0.1:$port"
+    } | tee -a "$logfile"
+
+    (
+        DATA_DIR="$DATA_DIR" "${ABX[@]}" server "${server_extra[@]}" "127.0.0.1:$port"
+    ) >> "$logfile" 2>&1 &
+    local child=$!
+
+    trap 'kill_tree "$child"' INT TERM
+
+    sleep "$hold"
+    echo "[$(ts)] STOP label=$label pid=$child after=${hold}s" | tee -a "$logfile"
+    kill_tree "$child"
+    sleep 5
+    kill -9 "$child" >/dev/null 2>&1 || true
+    wait "$child" >/dev/null 2>&1
+    local code=$?
+    trap - INT TERM
+
+    echo "[$(ts)] END label=$label pid=$child exit=$code log=$logfile" | tee -a "$logfile"
+    return 0
+}
+
+job_init() {
+    run_with_timeout "init" "$COMMAND_TIMEOUT" "${ABX[@]}" init
+}
+
+job_init_install() {
+    run_with_timeout "init-install" "$((COMMAND_TIMEOUT * 2))" "${ABX[@]}" init --install
+}
+
+job_update_all() {
+    run_with_timeout "update" "$((COMMAND_TIMEOUT * 2))" "${ABX[@]}" update
+}
+
+job_update_index() {
+    run_with_timeout "update-index-only" "$((COMMAND_TIMEOUT * 2))" "${ABX[@]}" update --index-only
+}
+
+job_update_migrate() {
+    run_with_timeout "update-migrate-only" "$((COMMAND_TIMEOUT * 2))" "${ABX[@]}" update --migrate-only
+}
+
+job_update_index_migrate() {
+    run_with_timeout "update-index-migrate-only" "$((COMMAND_TIMEOUT * 2))" "${ABX[@]}" update --index-only --migrate-only
+}
+
+job_add_depth0() {
+    local url
+    url="$(pick URLS)"
+    run_with_timeout "add-depth0-$url" "$((COMMAND_TIMEOUT * 2))" "${ABX[@]}" add --depth=0 "$url"
+}
+
+job_add_depth1() {
+    local url max_urls
+    url="$(pick URLS)"
+    max_urls=$((5 + RANDOM % 25))
+    run_with_timeout "add-depth1-max${max_urls}-$url" "$((COMMAND_TIMEOUT * 3))" "${ABX[@]}" add --depth=1 --max-urls="$max_urls" "$url"
+}
+
+job_server() {
+    local port hold debug_flag
+    port=$((SERVER_BASE_PORT + RANDOM % 50))
+    hold=$((5 + RANDOM % SERVER_HOLD_SECONDS))
+    debug_flag=""
+    [[ $((RANDOM % 4)) -eq 0 ]] && debug_flag="--debug"
+    run_server_for_a_bit "server-$port" "$port" "$hold" "$debug_flag"
+}
+
+job_server_reload_debug() {
+    local port hold
+    port=$((SERVER_BASE_PORT + 50 + RANDOM % 25))
+    hold=$((5 + RANDOM % SERVER_HOLD_SECONDS))
+    run_server_for_a_bit "server-reload-debug-$port" "$port" "$hold" "--reload --debug"
+}
+
+job_version() {
+    run_with_timeout "version" "60" "${ABX[@]}" version
+}
+
+job_list() {
+    run_with_timeout "list-search" "90" "${ABX[@]}" list --search example
+}
+
+# Used through pick JOBS.
+# shellcheck disable=SC2034
+JOBS=(
+    job_init
+    job_init_install
+    job_update_all
+    job_update_index
+    job_update_migrate
+    job_update_index_migrate
+    job_add_depth0
+    job_add_depth1
+    job_server
+    job_server_reload_debug
+    job_version
+    job_list
+)
+
+run_random_job() {
+    local job
+    job="$(pick JOBS)"
+    "$job"
+}
+
+run_difficult_sequence() {
+    local port_a port_b
+    port_a=$((SERVER_BASE_PORT + 100 + RANDOM % 50))
+    port_b=$((SERVER_BASE_PORT + 150 + RANDOM % 50))
+
+    echo "[$(ts)] SEQUENCE overlap-init-server-update-add ports=$port_a,$port_b"
+    run_server_for_a_bit "sequence-server-a-$port_a" "$port_a" "$SERVER_HOLD_SECONDS" "" &
+    sleep 1
+    job_init &
+    sleep 1
+    job_update_index &
+    sleep 1
+    job_add_depth0 &
+    sleep 1
+    run_server_for_a_bit "sequence-server-b-$port_b" "$port_b" "$SERVER_HOLD_SECONDS" "--reload --debug" &
+    wait
+
+    echo "[$(ts)] SEQUENCE update-mode-collision"
+    job_update_all &
+    job_update_index &
+    job_update_migrate &
+    job_update_index_migrate &
+    wait
+}
+
+main() {
+    mkdir -p "$LOG_DIR"
+    cd "$ROOT_DIR" || exit 1
+
+    echo "[$(ts)] ArchiveBox fuzz run"
+    echo "  root:       $ROOT_DIR"
+    echo "  data:       $DATA_DIR"
+    echo "  logs:       $LOG_DIR"
+    echo "  command:    ${ABX[*]}"
+    echo "  rounds:     $FUZZ_ROUNDS"
+    echo "  parallel:   $FUZZ_PARALLEL"
+    echo "  urls:       ${URLS[*]}"
+    echo
+
+    for round in $(seq 1 "$FUZZ_ROUNDS"); do
+        echo "[$(ts)] ROUND $round/$FUZZ_ROUNDS starting random batch"
+        for slot in $(seq 1 "$FUZZ_PARALLEL"); do
+            (
+                echo "[$(ts)] ROUND $round slot=$slot"
+                run_random_job
+            ) &
+            sleep "$SLEEP_BETWEEN_JOBS"
+        done
+        wait
+
+        if [[ $((round % 2)) -eq 0 ]]; then
+            run_difficult_sequence
+        fi
+
+        echo "[$(ts)] ROUND $round/$FUZZ_ROUNDS done"
+    done
+
+    echo "[$(ts)] fuzz run complete; logs in $LOG_DIR"
+}
+
+main "$@"

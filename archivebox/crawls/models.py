@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 from django.db import IntegrityError, models, transaction
 from django.db.models import Q
+from django.db.models.fields.json import KT
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.conf import settings
@@ -31,7 +32,7 @@ from archivebox.base_models.models import (
     ModelWithHealthStats,
     get_or_create_system_user_pk,
 )
-from archivebox.workers.models import ModelWithStateMachine, BaseStateMachine
+from archivebox.workers.models import RETRY_AT_MAX, ModelWithStateMachine, BaseStateMachine
 from archivebox.crawls.schedule_utils import next_run_for_schedule, validate_schedule
 from archivebox.misc.util import validate_url_length
 
@@ -101,9 +102,6 @@ class CrawlSchedule(ModelWithUUID, ModelWithNotes):
             urls=template.urls,
             config=template.config or {},
             max_depth=template.max_depth,
-            max_urls=template.max_urls,
-            crawl_max_size=template.crawl_max_size,
-            snapshot_max_size=template.snapshot_max_size,
             tags_str=template.tags_str,
             persona_id=template.persona_id,
             label=label,
@@ -123,24 +121,23 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
 
     urls = models.TextField(blank=False, null=False, help_text="Newline-separated list of URLs to crawl")
     config = models.JSONField(default=dict, null=True, blank=True)
+    permissions = models.GeneratedField(
+        expression=KT("config__PERMISSIONS"),
+        output_field=models.CharField(max_length=16, null=True),
+        db_persist=True,
+        db_index=True,
+        editable=False,
+    )
     max_depth = models.PositiveSmallIntegerField(default=0, validators=[MinValueValidator(0), MaxValueValidator(4)])
-    max_urls = models.IntegerField(
-        default=0,
-        validators=[MinValueValidator(0)],
-        help_text="Maximum number of URLs to snapshot for this crawl (0 = unlimited).",
-    )
-    crawl_max_size = models.BigIntegerField(
-        default=0,
-        validators=[MinValueValidator(0)],
-        help_text="Maximum total archived output size in bytes for this crawl (0 = unlimited).",
-    )
-    snapshot_max_size = models.BigIntegerField(
-        default=0,
-        validators=[MinValueValidator(0)],
-        help_text="Maximum archived output size in bytes for each snapshot (0 = unlimited).",
-    )
     tags_str = models.CharField(max_length=1024, blank=True, null=False, default="")
-    persona_id = models.UUIDField(null=True, blank=True)
+    persona = models.ForeignKey(
+        "personas.Persona",
+        db_column="persona_id",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="crawls",
+    )
     label = models.CharField(max_length=64, blank=True, null=False, default="")
     notes = models.TextField(blank=True, null=False, default="")
     schedule = models.ForeignKey(CrawlSchedule, on_delete=models.SET_NULL, null=True, blank=True, editable=True)
@@ -189,6 +186,59 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
 
         return get_config(crawl=self).DELETE_AFTER
 
+    def pause(self, *, save: bool = True) -> bool:
+        paused = super().pause(save=save)
+        if paused and self.pk:
+            from archivebox.core.models import ArchiveResult, Snapshot
+
+            active_snapshots = self.snapshot_set.filter(
+                status__in=[Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED],
+            )
+            active_snapshots.update(
+                status=Snapshot.StatusChoices.PAUSED,
+                retry_at=RETRY_AT_MAX,
+                modified_at=timezone.now(),
+            )
+            ArchiveResult.pause_queryset(ArchiveResult.objects.filter(snapshot__crawl=self))
+        return paused
+
+    def resume(self, *, when=None, save: bool = True) -> bool:
+        resumed = super().resume(when=when, save=save)
+        if resumed and self.pk:
+            from archivebox.core.models import ArchiveResult, Snapshot
+
+            resume_at = when or timezone.now()
+            active_snapshots = self.snapshot_set.filter(
+                status=Snapshot.StatusChoices.PAUSED,
+            )
+            active_snapshots.update(
+                status=Snapshot.StatusChoices.QUEUED,
+                retry_at=resume_at,
+                modified_at=timezone.now(),
+            )
+            ArchiveResult.resume_queryset(ArchiveResult.objects.filter(snapshot__crawl=self), when=resume_at)
+        return resumed
+
+    def cancel(self) -> None:
+        from archivebox.core.models import Snapshot
+
+        cancelled_at = timezone.now()
+        self.status = self.StatusChoices.SEALED
+        self.retry_at = None
+        self.save(update_fields=["status", "retry_at", "modified_at"])
+        Snapshot.objects.filter(
+            crawl=self,
+            status__in=[
+                Snapshot.StatusChoices.QUEUED,
+                Snapshot.StatusChoices.STARTED,
+                Snapshot.StatusChoices.PAUSED,
+            ],
+        ).update(
+            status=Snapshot.StatusChoices.SEALED,
+            retry_at=None,
+            modified_at=cancelled_at,
+        )
+
     @classmethod
     def missing_delete_at_candidates(cls):
         from archivebox.personas.models import Persona
@@ -199,27 +249,12 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
     def save(self, *args, **kwargs):
         update_fields = kwargs.get("update_fields")
         sync_tags = update_fields is None or "tags_str" in update_fields
+        old_crawl = type(self).objects.filter(pk=self.pk).first() if self.pk else None
         previous_tag_names = set()
-        if sync_tags and self.pk:
-            previous_tags_str = type(self).objects.filter(pk=self.pk).values_list("tags_str", flat=True).first()
-            previous_tag_names = set(self.parse_tag_names(previous_tags_str or ""))
+        if sync_tags and old_crawl is not None:
+            previous_tag_names = set(self.parse_tag_names(old_crawl.tags_str or ""))
 
         config = dict(self.config or {})
-        if self.max_urls > 0:
-            config["CRAWL_MAX_URLS"] = self.max_urls
-        else:
-            config.pop("CRAWL_MAX_URLS", None)
-
-        if self.crawl_max_size > 0:
-            config["CRAWL_MAX_SIZE"] = self.crawl_max_size
-        else:
-            config.pop("CRAWL_MAX_SIZE", None)
-
-        if self.snapshot_max_size > 0:
-            config["SNAPSHOT_MAX_SIZE"] = self.snapshot_max_size
-        else:
-            config.pop("SNAPSHOT_MAX_SIZE", None)
-
         if "CRAWL_MAX_CONCURRENT_SNAPSHOTS" in config:
             raw_concurrency = config["CRAWL_MAX_CONCURRENT_SNAPSHOTS"]
             if raw_concurrency in (None, ""):
@@ -342,9 +377,7 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
             "urls": self.urls,
             "status": self.status,
             "max_depth": self.max_depth,
-            "max_urls": self.max_urls,
-            "crawl_max_size": self.crawl_max_size,
-            "snapshot_max_size": self.snapshot_max_size,
+            "config": self.config or {},
             "tags_str": self.tags_str,
             "label": self.label,
             "created_at": self.created_at.isoformat() if self.created_at else None,
@@ -386,9 +419,7 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
         crawl = Crawl.objects.create(
             urls=urls,
             max_depth=record.get("max_depth", record.get("depth", 0)),
-            max_urls=record.get("max_urls", 0),
-            crawl_max_size=record.get("crawl_max_size", 0),
-            snapshot_max_size=record.get("snapshot_max_size", 0),
+            config=record.get("config") or {},
             tags_str=record.get("tags_str", record.get("tags", "")),
             label=record.get("label", ""),
             status=Crawl.StatusChoices.QUEUED,
@@ -551,7 +582,11 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
         filtered_snapshots = [
             snapshot
             for snapshot in self.snapshot_set.filter(
-                status__in=[Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED],
+                status__in=[
+                    Snapshot.StatusChoices.QUEUED,
+                    Snapshot.StatusChoices.STARTED,
+                    Snapshot.StatusChoices.PAUSED,
+                ],
             ).only("pk", "url", "status")
             if not self.url_passes_filters(snapshot.url, snapshot=snapshot, use_effective_config=False)
         ]
@@ -603,18 +638,24 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
         return len(urls)
 
     def remaining_url_capacity(self) -> int | None:
-        if self.max_urls <= 0:
+        from archivebox.config.common import get_config
+
+        max_urls = int(get_config(crawl=self).CRAWL_MAX_URLS or 0)
+        if max_urls <= 0:
             return None
-        return max(self.max_urls - self.count_urls_for_limit(), 0)
+        return max(max_urls - self.count_urls_for_limit(), 0)
 
     def has_remaining_url_capacity(self) -> bool:
         remaining = self.remaining_url_capacity()
         return remaining is None or remaining > 0
 
     def remaining_snapshot_capacity(self) -> int | None:
-        if self.max_urls <= 0:
+        from archivebox.config.common import get_config
+
+        max_urls = int(get_config(crawl=self).CRAWL_MAX_URLS or 0)
+        if max_urls <= 0:
             return None
-        return max(self.max_urls - self.snapshot_set.count(), 0)
+        return max(max_urls - self.snapshot_set.count(), 0)
 
     def has_remaining_snapshot_capacity(self) -> bool:
         remaining = self.remaining_snapshot_capacity()
@@ -687,16 +728,26 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
 
         if self.persona_id:
             persona = Persona.objects.filter(id=self.persona_id).first()
-            if persona is None:
-                raise Persona.DoesNotExist(f"Crawl {self.id} references missing Persona {self.persona_id}")
-            return persona
+            if persona is not None:
+                return persona
 
         default_persona_name = str((self.config or {}).get("DEFAULT_PERSONA") or "").strip()
         if default_persona_name:
             persona, _ = Persona.objects.get_or_create(name=default_persona_name or "Default")
+            persona.ensure_dirs()
             return persona
 
         return None
+
+    def limit_stop_reason(self) -> str:
+        from abx_dl.limits import CrawlLimitState
+        from archivebox.config.common import get_config
+
+        if not (self.output_dir / ".abx-dl" / "limits.json").exists():
+            return ""
+        config = get_config(crawl=self, include_machine=False)
+        config["CRAWL_DIR"] = str(self.output_dir)
+        return CrawlLimitState.from_config(config).get_stop_reason()
 
     def add_url(self, entry: dict) -> bool:
         """
@@ -1132,16 +1183,9 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
             The root Snapshot for this crawl, or None for system crawls that don't create snapshots
         """
         import time
-        from pathlib import Path
         from archivebox.hooks import run_hook, discover_hooks, process_hook_records, is_finite_background_hook
         from archivebox.config.common import get_config
         from archivebox.machine.models import Binary, Machine
-
-        # Debug logging to file (since stdout/stderr redirected to /dev/null in progress mode)
-        debug_log = Path("/tmp/archivebox_crawl_debug.log")
-        with open(debug_log, "a") as f:
-            f.write(f"\n=== Crawl.run() starting for {self.id} at {time.time()} ===\n")
-            f.flush()
 
         def get_runtime_config():
             config = get_config(crawl=self)
@@ -1177,9 +1221,6 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
                 self.urls.strip(),
             )
 
-            with open(debug_log, "a") as f:
-                f.write(f"Running hook: {hook.name}\n")
-                f.flush()
             hook_start = time.time()
             plugin_name = hook.parent.name
             output_dir = self.output_dir / plugin_name
@@ -1194,10 +1235,6 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
                 url=primary_url,
                 snapshot_id=str(self.id),
             )
-            with open(debug_log, "a") as f:
-                f.write(f"Hook {hook.name} completed with status={process.status}\n")
-                f.flush()
-
             hook_elapsed = time.time() - hook_start
             if hook_elapsed > 0.5:
                 print(f"[yellow]⏱️  Hook {hook.name} took {hook_elapsed:.2f}s[/yellow]")
@@ -1213,9 +1250,9 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
             from archivebox.hooks import extract_records_from_process
 
             records = []
-            # Finite background hooks can exit before their stdout log is fully
-            # visible to our polling loop. Give successful hooks a brief chance
-            # to flush JSONL records before we move on to downstream hooks.
+            # Finite background hooks can exit before their completed Process
+            # metadata is visible. Give successful hooks a brief chance to
+            # flush JSONL stdout into the Process row before downstream hooks.
             for delay in (0.0, 0.05, 0.1, 0.25, 0.5):
                 if delay:
                     time.sleep(delay)
@@ -1284,14 +1321,7 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
                 for hook in provider_hooks:
                     resolved_binary_names.update(run_crawl_hook(hook))
 
-        # Discover and run on_Crawl hooks
-        with open(debug_log, "a") as f:
-            f.write("Discovering Crawl hooks...\n")
-            f.flush()
         hooks = discover_hooks("Crawl", config=get_runtime_config())
-        with open(debug_log, "a") as f:
-            f.write(f"Found {len(hooks)} hooks\n")
-            f.flush()
 
         for hook in hooks:
             hook_binary_names = run_crawl_hook(hook)
@@ -1309,20 +1339,9 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
                 leaked_count = leaked_snapshots.count()
                 leaked_snapshots.delete()
                 print(f"[yellow]⚠️  Removed {leaked_count} leaked snapshot(s) created during system crawl {system_task}[/yellow]")
-            with open(debug_log, "a") as f:
-                f.write(f"Skipping snapshot creation for system crawl: {system_task}\n")
-                f.write("=== Crawl.run() complete ===\n\n")
-                f.flush()
             return None
 
-        with open(debug_log, "a") as f:
-            f.write("Creating snapshots from URLs...\n")
-            f.flush()
-        created_snapshots = self.create_snapshots_from_urls()
-        with open(debug_log, "a") as f:
-            f.write(f"Created {len(created_snapshots)} snapshots\n")
-            f.write("=== Crawl.run() complete ===\n\n")
-            f.flush()
+        self.create_snapshots_from_urls()
 
         # Return first snapshot for this crawl (newly created or existing)
         # This ensures the crawl doesn't seal if snapshots exist, even if they weren't just created
@@ -1340,7 +1359,13 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
             return True
 
         # If snapshots exist, check if all are sealed
-        if snapshots.filter(status__in=[Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED]).exists():
+        if snapshots.filter(
+            status__in=[
+                Snapshot.StatusChoices.QUEUED,
+                Snapshot.StatusChoices.STARTED,
+                Snapshot.StatusChoices.PAUSED,
+            ],
+        ).exists():
             return False
 
         return True
@@ -1426,13 +1451,16 @@ class CrawlMachine(BaseStateMachine):
     # States
     queued = State(value=Crawl.StatusChoices.QUEUED, initial=True)
     started = State(value=Crawl.StatusChoices.STARTED)
+    paused = State(value=Crawl.StatusChoices.PAUSED)
     sealed = State(value=Crawl.StatusChoices.SEALED, final=True)
 
     # Tick Event (polled by workers)
-    tick = queued.to.itself(unless="can_start") | queued.to(started, cond="can_start") | started.to(sealed, cond="is_finished")
+    tick = queued.to.itself(unless="can_start") | queued.to(started, cond="can_start") | started.to(sealed, cond="is_finished") | paused.to.itself()
 
     # Manual event (triggered by last Snapshot sealing)
     seal = started.to(sealed)
+    pause_requested = queued.to(paused) | started.to(paused)
+    resume_requested = paused.to(queued)
 
     def can_start(self) -> bool:
         if not self.crawl.urls:
@@ -1447,6 +1475,13 @@ class CrawlMachine(BaseStateMachine):
     def is_finished(self) -> bool:
         """Check if all Snapshots for this crawl are finished."""
         return self.crawl.is_finished()
+
+    @queued.enter
+    def enter_queued(self):
+        self.crawl.update_and_requeue(
+            retry_at=timezone.now(),
+            status=Crawl.StatusChoices.QUEUED,
+        )
 
     @started.enter
     def enter_started(self):
@@ -1481,6 +1516,13 @@ class CrawlMachine(BaseStateMachine):
 
             traceback.print_exc()
             raise
+
+    @paused.enter
+    def enter_paused(self):
+        self.crawl.update_and_requeue(
+            retry_at=RETRY_AT_MAX,
+            status=Crawl.StatusChoices.PAUSED,
+        )
 
     @sealed.enter
     def enter_sealed(self):

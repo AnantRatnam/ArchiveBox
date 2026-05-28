@@ -7,6 +7,14 @@
 {% if results %}
 <div class="results">
 <table id="result_list">
+{% if cl.opts.model_name == "snapshot" %}
+<colgroup>
+  <col>
+  <col class="snapshot-permissions-col">
+  <col>
+  <col>
+</colgroup>
+{% endif %}
 <thead>
 <tr>
 {% for header in result_headers %}
@@ -34,5 +42,13 @@
 {% endfor %}
 </tbody>
 </table>
+</div>
+{% elif cl.show_search_index_hint %}
+<div class="results search-empty-state">
+  <p>
+    0 results from deep: {{ cl.search_backend_label }}.
+    If this looks wrong, the search index may need to be updated:
+    <code>archivebox update --index-only</code>
+  </p>
 </div>
 {% endif %}

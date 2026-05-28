@@ -1,12 +1,16 @@
 import json
-import sqlite3
+import os
 import subprocess
 from datetime import datetime, timedelta
 
 import pytest
 from django.utils import timezone
 
+from archivebox.core.models import Snapshot
+from archivebox.tests.orm_helpers import use_archivebox_db
 from .fixtures import disable_extractors_dict, process
+
+pytestmark = pytest.mark.django_db(transaction=True)
 
 FIXTURES = (disable_extractors_dict, process)
 
@@ -29,9 +33,9 @@ def test_update_imports_orphaned_snapshots(tmp_path, process, disable_extractors
         ),
     )
 
-    # Run update without filters - should import and migrate the legacy directory.
+    # Run the migration phase only; default update also runs queued crawl work.
     update_process = subprocess.run(
-        ["archivebox", "update"],
+        ["archivebox", "update", "--migrate-only"],
         capture_output=True,
         text=True,
         env=disable_extractors_dict,
@@ -39,11 +43,8 @@ def test_update_imports_orphaned_snapshots(tmp_path, process, disable_extractors
     )
     assert update_process.returncode == 0, update_process.stderr
 
-    conn = sqlite3.connect(str(tmp_path / "index.sqlite3"))
-    c = conn.cursor()
-    row = c.execute("SELECT url, fs_version FROM core_snapshot").fetchone()
-    conn.commit()
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        row = Snapshot.objects.values_list("url", "fs_version").get()
 
     assert row == ("https://example.com", "0.9.0")
     assert legacy_dir.is_symlink()
@@ -54,13 +55,12 @@ def test_update_imports_orphaned_snapshots(tmp_path, process, disable_extractors
     assert (migrated_dir / "singlefile.html").exists()
 
 
-@pytest.mark.django_db
-def test_reindex_snapshots_resets_existing_search_results_and_reruns_requested_plugins(monkeypatch):
+@pytest.mark.django_db(transaction=True)
+def test_reindex_snapshots_resets_existing_search_results_and_reruns_requested_plugins():
     from archivebox.base_models.models import get_or_create_system_user_pk
     from archivebox.cli.archivebox_update import reindex_snapshots
     from archivebox.core.models import ArchiveResult, Snapshot
     from archivebox.crawls.models import Crawl
-    import archivebox.cli.archivebox_extract as extract_mod
 
     crawl = Crawl.objects.create(
         urls="https://example.com",
@@ -74,48 +74,47 @@ def test_reindex_snapshots_resets_existing_search_results_and_reruns_requested_p
     result = ArchiveResult.objects.create(
         snapshot=snapshot,
         plugin="search_backend_sqlite",
-        hook_name="on_Snapshot__90_index_sqlite.py",
+        hook_name="on_Snapshot__90_index_sqlite",
         status=ArchiveResult.StatusChoices.SUCCEEDED,
         output_str="old index hit",
         output_json={"indexed": True},
         output_files={"search.sqlite3": {"size": 123}},
         output_size=123,
     )
+    output_dir = snapshot.output_dir
+    (output_dir / "title").mkdir(parents=True, exist_ok=True)
+    (output_dir / "title" / "title.txt").write_text("Example Domain")
+    (output_dir / "dom").mkdir(parents=True, exist_ok=True)
+    (output_dir / "dom" / "output.html").write_text("<html><body>Example searchable text</body></html>")
 
-    captured: dict[str, object] = {}
-
-    def fake_run_plugins(*, args, records, wait, emit_results, plugins=""):
-        captured["args"] = args
-        captured["records"] = records
-        captured["wait"] = wait
-        captured["emit_results"] = emit_results
-        captured["plugins"] = plugins
-        return 0
-
-    monkeypatch.setattr(extract_mod, "run_plugins", fake_run_plugins)
-
-    stats = reindex_snapshots(
-        Snapshot.objects.filter(id=snapshot.id),
-        search_plugins=["search_backend_sqlite"],
-        batch_size=10,
-    )
+    original_engine = os.environ.get("SEARCH_BACKEND_ENGINE")
+    original_indexing = os.environ.get("USE_INDEXING_BACKEND")
+    os.environ["SEARCH_BACKEND_ENGINE"] = "sqlite"
+    os.environ["USE_INDEXING_BACKEND"] = "true"
+    try:
+        stats = reindex_snapshots(
+            Snapshot.objects.filter(id=snapshot.id),
+            search_plugins=["search_backend_sqlite"],
+            batch_size=10,
+        )
+    finally:
+        if original_engine is None:
+            os.environ.pop("SEARCH_BACKEND_ENGINE", None)
+        else:
+            os.environ["SEARCH_BACKEND_ENGINE"] = original_engine
+        if original_indexing is None:
+            os.environ.pop("USE_INDEXING_BACKEND", None)
+        else:
+            os.environ["USE_INDEXING_BACKEND"] = original_indexing
 
     result.refresh_from_db()
 
     assert stats["processed"] == 1
     assert stats["queued"] == 1
-    assert stats["reindexed"] == 1
+    assert stats["reindexed"] == 0
     assert result.status == ArchiveResult.StatusChoices.QUEUED
     assert result.output_str == ""
     assert result.output_json is None
-    assert result.output_files == {}
-    assert captured == {
-        "args": (),
-        "records": [{"type": "ArchiveResult", "snapshot_id": str(snapshot.id), "plugin": "search_backend_sqlite"}],
-        "wait": True,
-        "emit_results": False,
-        "plugins": "",
-    }
 
 
 @pytest.mark.django_db
@@ -158,6 +157,47 @@ def test_build_filtered_snapshots_queryset_respects_resume_cutoff():
 
     assert str(newer.id) not in {str(snapshot_id) for snapshot_id in snapshots}
     assert set(map(str, snapshots)) == {str(middle.id), str(older.id)}
+
+
+@pytest.mark.django_db
+def test_build_filtered_snapshots_queryset_accepts_list_style_filters():
+    from archivebox.base_models.models import get_or_create_system_user_pk
+    from archivebox.cli.archivebox_update import _build_filtered_snapshots_queryset
+    from archivebox.core.models import Snapshot, Tag
+    from archivebox.crawls.models import Crawl
+
+    crawl = Crawl.objects.create(
+        urls="https://example.com\nhttps://example.org",
+        created_by_id=get_or_create_system_user_pk(),
+    )
+    tagged = Snapshot.objects.create(
+        url="https://example.com",
+        crawl=crawl,
+        title="Example Domain",
+        status=Snapshot.StatusChoices.SEALED,
+    )
+    Snapshot.objects.create(
+        url="https://example.org",
+        crawl=crawl,
+        title="Other Example",
+        status=Snapshot.StatusChoices.QUEUED,
+    )
+    tagged.tags.add(Tag.objects.create(name="keep"))
+
+    snapshots = list(
+        _build_filtered_snapshots_queryset(
+            filter_patterns=(),
+            filter_type="exact",
+            status=Snapshot.StatusChoices.SEALED,
+            url__icontains="example",
+            tag="keep",
+            crawl_id=str(crawl.id),
+            limit=1,
+            sort="url",
+        ).values_list("id", flat=True),
+    )
+
+    assert snapshots == [tagged.id]
 
 
 @pytest.mark.django_db

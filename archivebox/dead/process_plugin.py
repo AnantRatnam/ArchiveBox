@@ -1,3 +1,4 @@
+# ruff: noqa
 __package__ = "archivebox.ideas"
 
 import asyncio

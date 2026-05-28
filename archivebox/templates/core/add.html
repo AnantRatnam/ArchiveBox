@@ -75,21 +75,49 @@
                         {% if form.url.errors %}
                             <div class="error">{{ form.url.errors }}</div>
                         {% endif %}
-                        <div class="help-text">
-                            Enter URLs to archive, as one per line, CSV, JSON, or embedded in text (e.g. markdown, HTML, etc.). Examples:<br/>
-                            <code>https://example.com</code><br/>
-                            <code>https://news.ycombinator.com,https://news.google.com</code><br/>
-                            <code>[ArchiveBox](https://github.com/ArchiveBox/ArchiveBox)</code>
-                        </div>
                     </div>
 
-                    <div class="form-field">
-                        {{ form.tag.label_tag }}
-                        {{ form.tag }}
-                        {% if form.tag.errors %}
-                            <div class="error">{{ form.tag.errors }}</div>
-                        {% endif %}
-                        <div class="help-text">Tags will be applied to all snapshots created by this crawl.</div>
+                    <div class="tags-persona-row">
+                        <div class="form-field">
+                            <div class="field-label-with-icon">
+                                <span class="field-label-icon" aria-hidden="true">🏷️</span>
+                                {{ form.tag.label_tag }}
+                            </div>
+                            {{ form.tag }}
+                            {% if form.tag.errors %}
+                                <div class="error">{{ form.tag.errors }}</div>
+                            {% endif %}
+                            <div class="help-text">Tags will be applied to all snapshots created by this crawl.</div>
+                        </div>
+
+                        <div class="form-field persona-field">
+                            <div class="field-label-with-icon">
+                                <span class="field-label-icon" aria-hidden="true">👤</span>
+                                {{ form.persona.label_tag }}
+                            </div>
+                            {{ form.persona }}
+                            {% if form.persona.errors %}
+                                <div class="error">{{ form.persona.errors }}</div>
+                            {% endif %}
+                            <div class="help-text">
+                                Authentication profile (Chrome profile, cookies, etc.) to use when accessing URLs.
+                                {% if can_override_crawl_config %}
+                                <a href="/admin/personas/persona/add/" target="_blank">Create new persona / import from Chrome →</a>
+                                {% endif %}
+                            </div>
+                        </div>
+
+                        <div class="form-field permissions-field">
+                            <div class="field-label-with-icon">
+                                <span class="field-label-icon" aria-hidden="true">🔒</span>
+                                {{ form.permissions.label_tag }}
+                            </div>
+                            {{ form.permissions }}
+                            {% if form.permissions.errors %}
+                                <div class="error">{{ form.permissions.errors }}</div>
+                            {% endif %}
+                            <div class="help-text">Public lists it. Unlisted only serves direct links. Private requires admin login.</div>
+                        </div>
                     </div>
 
                     <div class="settings-row">
@@ -100,53 +128,7 @@
                                 <div class="error">{{ form.depth.errors }}</div>
                             {% endif %}
                             <div class="help-text">Controls how many links deep the crawl will follow from the starting URLs.</div>
-
-                            <div class="crawl-limit-grid">
-                                <div class="crawl-limit-field">
-                                    {{ form.max_urls.label_tag }}
-                                    {{ form.max_urls }}
-                                    {% if form.max_urls.errors %}
-                                        <div class="error">{{ form.max_urls.errors }}</div>
-                                    {% endif %}
-                                    <div class="help-text">0 means unlimited. When set, only the first N filtered URLs will be snapshotted.</div>
-                                </div>
-
-                                <div class="crawl-limit-field">
-                                    {{ form.crawl_max_size.label_tag }}
-                                    {{ form.crawl_max_size }}
-                                    {% if form.crawl_max_size.errors %}
-                                        <div class="error">{{ form.crawl_max_size.errors }}</div>
-                                    {% endif %}
-                                    <div class="help-text">0 means unlimited across the whole crawl. Accepts bytes or units like <code>45mb</code> and <code>1gb</code>.</div>
-                                </div>
-
-                                <div class="crawl-limit-field">
-                                    {{ form.snapshot_max_size.label_tag }}
-                                    {{ form.snapshot_max_size }}
-                                    {% if form.snapshot_max_size.errors %}
-                                        <div class="error">{{ form.snapshot_max_size.errors }}</div>
-                                    {% endif %}
-                                    <div class="help-text">0 means unlimited per snapshot. Accepts bytes or units like <code>45mb</code> and <code>1gb</code>.</div>
-                                </div>
-
-                                <div class="crawl-limit-field">
-                                    {{ form.delete_after.label_tag }}
-                                    {{ form.delete_after }}
-                                    {% if form.delete_after.errors %}
-                                        <div class="error">{{ form.delete_after.errors }}</div>
-                                    {% endif %}
-                                    <div class="help-text">0 keeps rows forever. Use <code>1h</code>, <code>7d</code>, <code>4w</code>, <code>6mo</code>, or <code>1y</code>.</div>
-                                </div>
-
-                                <div class="crawl-limit-field">
-                                    {{ form.crawl_max_concurrent_snapshots.label_tag }}
-                                    {{ form.crawl_max_concurrent_snapshots }}
-                                    {% if form.crawl_max_concurrent_snapshots.errors %}
-                                        <div class="error">{{ form.crawl_max_concurrent_snapshots.errors }}</div>
-                                    {% endif %}
-                                    <div class="help-text">Caps how many snapshots from this crawl archive at the same time.</div>
-                                </div>
-                            </div>
+                            <div id="same-domain-toggle-slot"></div>
                         </div>
 
                         <div class="form-field url-filters-field">
@@ -154,6 +136,92 @@
                             {% if form.url_filters.errors %}
                                 <div class="error">{{ form.url_filters.errors }}</div>
                             {% endif %}
+                        </div>
+                    </div>
+
+                    <div class="crawl-limit-grid">
+                        <div class="crawl-limit-field">
+                            <div class="field-label-with-icon">
+                                <span class="field-label-icon" aria-hidden="true">🔢</span>
+                                {{ form.max_urls.label_tag }}
+                            </div>
+                            {{ form.max_urls }}
+                            {% if form.max_urls.errors %}
+                                <div class="error">{{ form.max_urls.errors }}</div>
+                            {% endif %}
+                            <div class="help-text">0 = unlimited. Whole numbers, e.g. 25, 300.</div>
+                        </div>
+
+                        <div class="crawl-limit-field">
+                            <div class="field-label-with-icon">
+                                <span class="field-label-icon" aria-hidden="true">📦</span>
+                                {{ form.crawl_max_size.label_tag }}
+                            </div>
+                            {{ form.crawl_max_size }}
+                            {% if form.crawl_max_size.errors %}
+                                <div class="error">{{ form.crawl_max_size.errors }}</div>
+                            {% endif %}
+                            <div class="help-text">0 = unlimited. Sizes: 45mb, 1.5gb, 2tb.</div>
+                        </div>
+
+                        <div class="crawl-limit-field">
+                            <div class="field-label-with-icon">
+                                <span class="field-label-icon" aria-hidden="true">⏱️</span>
+                                {{ form.crawl_timeout.label_tag }}
+                            </div>
+                            {{ form.crawl_timeout }}
+                            {% if form.crawl_timeout.errors %}
+                                <div class="error">{{ form.crawl_timeout.errors }}</div>
+                            {% endif %}
+                            <div class="help-text">0 = unlimited. Must be >10s: 11, 1.5m, 1hr.</div>
+                        </div>
+
+                        <div class="crawl-limit-field">
+                            <div class="field-label-with-icon">
+                                <span class="field-label-icon" aria-hidden="true">⌛</span>
+                                {{ form.timeout.label_tag }}
+                            </div>
+                            {{ form.timeout }}
+                            {% if form.timeout.errors %}
+                                <div class="error">{{ form.timeout.errors }}</div>
+                            {% endif %}
+                            <div class="help-text">Must be >10s: 11, 1.5m, 1hr.</div>
+                        </div>
+
+                        <div class="crawl-limit-field">
+                            <div class="field-label-with-icon">
+                                <span class="field-label-icon" aria-hidden="true">📄</span>
+                                {{ form.snapshot_max_size.label_tag }}
+                            </div>
+                            {{ form.snapshot_max_size }}
+                            {% if form.snapshot_max_size.errors %}
+                                <div class="error">{{ form.snapshot_max_size.errors }}</div>
+                            {% endif %}
+                            <div class="help-text">0 = unlimited. Sizes: 45mb, 1.5gb, 2tb.</div>
+                        </div>
+
+                        <div class="crawl-limit-field">
+                            <div class="field-label-with-icon">
+                                <span class="field-label-icon" aria-hidden="true">🗑️</span>
+                                {{ form.delete_after.label_tag }}
+                            </div>
+                            {{ form.delete_after }}
+                            {% if form.delete_after.errors %}
+                                <div class="error">{{ form.delete_after.errors }}</div>
+                            {% endif %}
+                            <div class="help-text">0 = keep forever. Durations: 1hr, 30d, 3mo.</div>
+                        </div>
+
+                        <div class="crawl-limit-field">
+                            <div class="field-label-with-icon">
+                                <span class="field-label-icon" aria-hidden="true">⚡</span>
+                                {{ form.crawl_max_concurrent_snapshots.label_tag }}
+                            </div>
+                            {{ form.crawl_max_concurrent_snapshots }}
+                            {% if form.crawl_max_concurrent_snapshots.errors %}
+                                <div class="error">{{ form.crawl_max_concurrent_snapshots.errors }}</div>
+                            {% endif %}
+                            <div class="help-text">Whole numbers, e.g. 1, 4, 12.</div>
                         </div>
                     </div>
 
@@ -166,19 +234,9 @@
                         <div class="help-text">Optional description for this crawl (visible in the admin interface).</div>
                     </div>
 
-                    <div class="form-field">
-                        {{ form.persona.label_tag }}
-                        {{ form.persona }}
-                        {% if form.persona.errors %}
-                            <div class="error">{{ form.persona.errors }}</div>
-                        {% endif %}
-                        <div class="help-text">
-                            Authentication profile (Chrome profile, cookies, etc.) to use when accessing URLs.
-                            <a href="/admin/personas/persona/add/" target="_blank">Create new persona / import from Chrome →</a>
-                        </div>
-                    </div>
                 </div>
 
+                {% if can_override_crawl_config %}
                 <!-- Plugins section -->
                 <div class="form-section">
                     <h3>Crawl Plugins</h3>
@@ -239,6 +297,7 @@
                         </div>
                     </details>
                 </div>
+                {% endif %}
 
                 <center>
                     <button role="submit" id="submit">&nbsp; Create Crawl and Start Archiving ➕</button>
@@ -279,6 +338,11 @@
                     { bg: 'rgba(210, 105, 30, 0.16)', border: 'rgba(210, 105, 30, 0.5)' },
                 ];
                 const requiredSearchPlugin = '{{ required_search_plugin|default:""|escapejs }}';
+                const sameDomainToggleSlot = document.getElementById('same-domain-toggle-slot');
+                const shortcutToggles = document.querySelectorAll('.url-filters-toggle');
+                if (sameDomainToggleSlot && shortcutToggles.length) {
+                    shortcutToggles.forEach((toggle) => sameDomainToggleSlot.appendChild(toggle));
+                }
                 const pluginDependencyMap = JSON.parse('{{ plugin_dependency_map_json|default:"{}"|escapejs }}');
                 const personaConfigMap = JSON.parse('{{ persona_config_map_json|default:"{}"|escapejs }}');
                 const personaSelect = document.querySelector('select[name="persona"]');
@@ -412,6 +476,16 @@
                     const deleteAfterValue = personaData.effective_config?.DELETE_AFTER;
                     if (deleteAfterInput && deleteAfterValue !== undefined && deleteAfterValue !== null) {
                         deleteAfterInput.value = deleteAfterValue || '0';
+                    }
+                    const timeoutInput = document.querySelector('input[name="timeout"]');
+                    const timeoutValue = personaData.effective_config?.TIMEOUT;
+                    if (timeoutInput && timeoutValue !== undefined && timeoutValue !== null) {
+                        timeoutInput.value = timeoutValue || '0';
+                    }
+                    const permissionsSelect = document.querySelector('select[name="permissions"]');
+                    const permissionsValue = personaData.effective_config?.PERMISSIONS;
+                    if (permissionsSelect && permissionsValue) {
+                        permissionsSelect.value = permissionsValue;
                     }
                     if (typeof window.archiveboxSetPluginConfigValues === 'function') {
                         window.archiveboxSetPluginConfigValues(personaData.effective_config || {}, personaData.binary_urls || {});
@@ -1046,6 +1120,7 @@
                         event.target.matches('textarea[name="url_filters_denylist"]') ||
                         event.target.matches('input[name="max_urls"]') ||
                         event.target.matches('input[name="url_filters_same_domain_only"]') ||
+                        event.target.matches('input[name="url_filters_subpaths_only"]') ||
                         event.target.matches('#id_config_rows .kv-key') ||
                         event.target.matches('#id_config_rows .kv-value')
                     ) {

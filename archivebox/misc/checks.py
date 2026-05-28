@@ -2,6 +2,7 @@ __package__ = "archivebox.misc"
 
 import os
 import sys
+import time
 from pathlib import Path
 
 from rich import print
@@ -55,23 +56,43 @@ def check_data_folder(config=None, **config_kwargs) -> None:
     check_data_dir_permissions(config=config)
 
 
-def check_migrations():
+def check_migrations(*, blocking: bool = True, auto_apply: bool = False, cancel_delay: int = 3) -> list[str]:
     from archivebox import DATA_DIR
-    from archivebox.misc.db import list_migrations
+    from archivebox.misc.db import apply_migrations, pending_migrations
 
-    pending_migrations = [name for status, name in list_migrations() if not status]
+    pending = pending_migrations()
     is_migrating = any(arg in sys.argv for arg in ["makemigrations", "migrate", "init"])
 
-    if pending_migrations and not is_migrating:
-        print("[red][X] This collection was created with an older version of ArchiveBox and must be upgraded first.[/red]")
+    if pending and not is_migrating:
+        print("[red][X] This collection was created with an older version of ArchiveBox and must be upgraded first.[/red]", file=sys.stderr)
         print(f"    {DATA_DIR}", file=sys.stderr)
         print(file=sys.stderr)
         print(
-            f"    [violet]Hint:[/violet] To upgrade it to the latest version and apply the {len(pending_migrations)} pending migrations, run:",
+            f"    [violet]Hint:[/violet] To upgrade it to the latest version and apply the {len(pending)} pending migrations, run:",
             file=sys.stderr,
         )
         print("        archivebox init", file=sys.stderr)
-        raise SystemExit(3)
+        if auto_apply:
+            print(file=sys.stderr)
+            print(
+                f"[yellow][*] ArchiveBox will apply migrations automatically in {cancel_delay}s. Press CTRL+C to cancel.[/yellow]",
+                file=sys.stderr,
+            )
+            try:
+                time.sleep(cancel_delay)
+            except KeyboardInterrupt:
+                print("[red][X] Migration cancelled before any changes were applied.[/red]", file=sys.stderr)
+                raise SystemExit(130) from None
+
+            # Always delegate to Django's migration executor. It records each
+            # migration only after it succeeds, so power loss or SIGKILL leaves
+            # unapplied work visible here and the next startup resumes normally.
+            print("[yellow][*] Applying database migrations...[/yellow]", file=sys.stderr)
+            apply_migrations(stdout=sys.stderr, stderr=sys.stderr, verbosity=1)
+            return pending_migrations()
+        if blocking:
+            raise SystemExit(3)
+    return pending
 
 
 def check_io_encoding():

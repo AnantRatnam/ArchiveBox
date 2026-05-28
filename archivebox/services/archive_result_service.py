@@ -17,7 +17,7 @@ from .process_service import parse_event_datetime
 
 
 def _collect_output_metadata(plugin_dir: Path) -> tuple[dict[str, dict], int, str]:
-    exclude_names = {"stdout.log", "stderr.log", "process.pid", "hook.pid", "listener.pid", "cmd.sh"}
+    exclude_names = {"stdout.log", "stderr.log", "process.pid", "hook.pid", "listener.pid"}
     output_files: dict[str, dict] = {}
     mime_sizes: dict[str, int] = defaultdict(int)
     total_size = 0

@@ -243,6 +243,10 @@
                 line-height: 1.2;
                 white-space: nowrap;
             }
+            .header-tags .permission-pill {
+                border-style: dashed;
+                text-transform: lowercase;
+            }
             .header-badges {
                 display: flex;
                 flex-wrap: wrap;
@@ -1034,9 +1038,14 @@
                             <span class="header-title-text">{{title|truncatechars:120|safe}}</span>
                             {% if title_tags %}
                                 <span class="header-tags">
+                                    <span class="tag-pill permission-pill">{{ snapshot_permissions_icon }} [{{ snapshot_permissions }}]</span>
                                     {% for tag in title_tags %}
                                         <span class="tag-pill" style="{{ tag.style }}">{{ tag.name }}</span>
                                     {% endfor %}
+                                </span>
+                            {% else %}
+                                <span class="header-tags">
+                                    <span class="tag-pill permission-pill">{{ snapshot_permissions_icon }} [{{ snapshot_permissions }}]</span>
                                 </span>
                             {% endif %}
                             <a href="#" class="header-toggle header-toggle-trigger">▾</a>

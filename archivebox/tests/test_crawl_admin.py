@@ -62,6 +62,7 @@ def test_crawl_admin_add_view_renders_url_filter_alias_fields(client, admin_user
     assert b'name="url_filters_allowlist"' in response.content
     assert b'name="url_filters_denylist"' in response.content
     assert b"Same domain only" in response.content
+    assert b"Subpaths only" in response.content
 
 
 def test_crawl_admin_form_saves_tags_editor_to_tags_str(crawl, admin_user):
@@ -69,11 +70,8 @@ def test_crawl_admin_form_saves_tags_editor_to_tags_str(crawl, admin_user):
         data={
             "created_at": crawl.created_at.strftime("%Y-%m-%d %H:%M:%S"),
             "urls": crawl.urls,
-            "config": "{}",
+            "config": '{"CRAWL_MAX_URLS": 3, "CRAWL_MAX_SIZE": 47185920, "CRAWL_TIMEOUT": 120, "SNAPSHOT_MAX_SIZE": 5242880}',
             "max_depth": "0",
-            "max_urls": "3",
-            "crawl_max_size": str(45 * 1024 * 1024),
-            "snapshot_max_size": str(5 * 1024 * 1024),
             "tags_editor": "alpha, beta, Alpha, gamma",
             "url_filters_allowlist": "example.com\n*.example.com",
             "url_filters_denylist": "static.example.com",
@@ -95,14 +93,36 @@ def test_crawl_admin_form_saves_tags_editor_to_tags_str(crawl, admin_user):
     updated = form.save()
     updated.refresh_from_db()
     assert updated.tags_str == "alpha,beta,gamma"
-    assert updated.max_urls == 3
-    assert updated.crawl_max_size == 45 * 1024 * 1024
-    assert updated.snapshot_max_size == 5 * 1024 * 1024
     assert updated.config["CRAWL_MAX_URLS"] == 3
     assert updated.config["CRAWL_MAX_SIZE"] == 45 * 1024 * 1024
+    assert updated.config["CRAWL_TIMEOUT"] == 120
     assert updated.config["SNAPSHOT_MAX_SIZE"] == 5 * 1024 * 1024
     assert updated.config["URL_ALLOWLIST"] == "example.com\n*.example.com"
     assert updated.config["URL_DENYLIST"] == "static.example.com"
+
+
+def test_crawl_admin_resume_action_updates_only_status(client, admin_user, crawl):
+    crawl.status = Crawl.StatusChoices.SEALED
+    crawl.retry_at = None
+    crawl.notes = "unsaved-change-guard"
+    crawl.save(update_fields=["status", "retry_at", "notes", "modified_at"])
+
+    client.login(username="crawladmin", password="testpassword")
+    response = client.post(
+        reverse("admin:crawls_crawl_changelist"),
+        data={
+            "action": "resume_selected_crawls",
+            "_selected_action": str(crawl.pk),
+            "index": "0",
+        },
+        HTTP_HOST=ADMIN_HOST,
+    )
+
+    assert response.status_code == 302
+    crawl.refresh_from_db()
+    assert crawl.status == Crawl.StatusChoices.STARTED
+    assert crawl.retry_at is not None
+    assert crawl.notes == "unsaved-change-guard"
 
 
 @pytest.mark.django_db(transaction=True)
@@ -256,7 +276,7 @@ def test_create_snapshots_from_urls_respects_max_urls(admin_user):
                 "https://example.com/contact",
             ],
         ),
-        max_urls=2,
+        config={"CRAWL_MAX_URLS": 2},
         created_by=admin_user,
     )
 

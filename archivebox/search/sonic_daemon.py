@@ -21,6 +21,9 @@ def register_sonic_daemon_event_handler(bus) -> None:
         from archivebox.workers.supervisord_util import get_existing_supervisord_process, get_worker
 
         daemon_event = SonicDaemonStartEvent.from_record(record)
+        if is_port_listening(daemon_event.host, daemon_event.port):
+            return
+
         supervisor = get_existing_supervisord_process()
         if supervisor is None:
             raise RuntimeError("Sonic search backend is required, but ArchiveBox supervisord is not running")
@@ -32,7 +35,6 @@ def register_sonic_daemon_event_handler(bus) -> None:
             raise RuntimeError(
                 f"Sonic search backend worker is {worker.get('statename')}: {worker.get('description')}",
             )
-        if not is_port_listening(daemon_event.host, daemon_event.port):
-            raise RuntimeError(f"Sonic search backend is not listening at {daemon_event.url}")
+        raise RuntimeError(f"Sonic search backend is not listening at {daemon_event.url}")
 
     bus.on(ProcessStdoutEvent, on_ProcessStdoutEvent__require_sonic_daemon)

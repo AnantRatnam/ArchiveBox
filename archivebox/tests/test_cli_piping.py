@@ -6,17 +6,22 @@ This file covers both:
 - subprocess integration for the supported records `archivebox run` consumes
 """
 
-import sqlite3
 import sys
 import uuid
 from io import StringIO
-from pathlib import Path
 
+import pytest
+
+from archivebox.core.models import Snapshot
+from archivebox.machine.models import Binary
 from archivebox.tests.conftest import (
     create_test_url,
     parse_jsonl_output,
     run_archivebox_cmd,
 )
+from archivebox.tests.orm_helpers import use_archivebox_db
+
+pytestmark = pytest.mark.django_db(transaction=True)
 
 
 PIPE_TEST_ENV = {
@@ -46,22 +51,8 @@ def _assert_stdout_is_jsonl_only(stdout: str) -> None:
     assert all(line.lstrip().startswith("{") for line in lines), stdout
 
 
-def _sqlite_param(value: object) -> object:
-    if not isinstance(value, str):
-        return value
-    try:
-        return uuid.UUID(value).hex
-    except ValueError:
-        return value
-
-
-def _db_value(data_dir: Path, sql: str, params: tuple[object, ...] = ()) -> object | None:
-    conn = sqlite3.connect(data_dir / "index.sqlite3")
-    try:
-        row = conn.execute(sql, tuple(_sqlite_param(param) for param in params)).fetchone()
-    finally:
-        conn.close()
-    return row[0] if row else None
+def _uuid(value: str) -> uuid.UUID:
+    return uuid.UUID(value)
 
 
 def test_parse_line_accepts_supported_piping_inputs():
@@ -227,11 +218,8 @@ def test_crawl_create_stdout_pipes_into_run(initialized_archive):
     run_records = parse_jsonl_output(run_stdout)
     assert any(record.get("type") == "Crawl" and record.get("id") == crawl["id"] for record in run_records)
 
-    snapshot_count = _db_value(
-        initialized_archive,
-        "SELECT COUNT(*) FROM core_snapshot WHERE crawl_id = ?",
-        (crawl["id"],),
-    )
+    with use_archivebox_db(initialized_archive):
+        snapshot_count = Snapshot.objects.filter(crawl_id=_uuid(crawl["id"])).count()
     assert isinstance(snapshot_count, int)
     assert snapshot_count >= 1
 
@@ -272,11 +260,8 @@ def test_snapshot_list_stdout_pipes_into_run(initialized_archive):
     run_records = parse_jsonl_output(run_stdout)
     assert any(record.get("type") == "Snapshot" and record.get("id") == snapshot["id"] for record in run_records)
 
-    snapshot_status = _db_value(
-        initialized_archive,
-        "SELECT status FROM core_snapshot WHERE id = ?",
-        (snapshot["id"],),
-    )
+    with use_archivebox_db(initialized_archive):
+        snapshot_status = Snapshot.objects.values_list("status", flat=True).get(pk=_uuid(snapshot["id"]))
     assert snapshot_status == "sealed"
 
 
@@ -351,11 +336,8 @@ def test_binary_create_stdout_pipes_into_run(initialized_archive):
     run_records = parse_jsonl_output(run_stdout)
     assert any(record.get("type") in {"BinaryRequest", "Binary"} and record.get("id") == binary["id"] for record in run_records)
 
-    status = _db_value(
-        initialized_archive,
-        "SELECT status FROM machine_binary WHERE id = ?",
-        (binary["id"],),
-    )
+    with use_archivebox_db(initialized_archive):
+        status = Binary.objects.values_list("status", flat=True).get(pk=_uuid(binary["id"]))
     assert status in {"queued", "installed"}
 
 
@@ -400,9 +382,6 @@ def test_multi_stage_pipeline_into_run(initialized_archive):
     snapshot = next(record for record in run_records if record.get("type") == "Snapshot")
     assert any(record.get("type") == "ArchiveResult" for record in run_records)
 
-    snapshot_status = _db_value(
-        initialized_archive,
-        "SELECT status FROM core_snapshot WHERE id = ?",
-        (snapshot["id"],),
-    )
+    with use_archivebox_db(initialized_archive):
+        snapshot_status = Snapshot.objects.values_list("status", flat=True).get(pk=_uuid(snapshot["id"]))
     assert snapshot_status == "sealed"

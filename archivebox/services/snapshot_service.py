@@ -24,6 +24,8 @@ class SnapshotService(BaseService):
         snapshot = await Snapshot.objects.filter(id=event.snapshot_id, crawl_id=self.crawl_id).afirst()
 
         if snapshot is not None:
+            if snapshot.is_paused:
+                return
             if snapshot.status == Snapshot.StatusChoices.QUEUED:
                 await sync_to_async(snapshot.sm.tick, thread_sensitive=True)()
                 await sync_to_async(snapshot.refresh_from_db, thread_sensitive=True)()
@@ -42,7 +44,7 @@ class SnapshotService(BaseService):
             snapshot.downloaded_at = snapshot.downloaded_at or timezone.now()
             await snapshot.asave(update_fields=["downloaded_at", "modified_at"])
             stop_reason = await sync_to_async(self._crawl_limit_stop_reason, thread_sensitive=True)(snapshot.crawl)
-            if snapshot.crawl_id and stop_reason == "crawl_max_size":
+            if snapshot.crawl_id and stop_reason in ("crawl_max_size", "crawl_timeout"):
                 await (
                     Snapshot.objects.filter(
                         crawl_id=snapshot.crawl_id,

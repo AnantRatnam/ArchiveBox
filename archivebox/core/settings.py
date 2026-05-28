@@ -229,7 +229,7 @@ SQLITE_JOURNAL_MODE = os.environ.get("ARCHIVEBOX_SQLITE_JOURNAL_MODE", "WAL")
 SQLITE_MMAP_SIZE = os.environ.get("ARCHIVEBOX_SQLITE_MMAP_SIZE", "0" if CONSTANTS.IN_DOCKER else "134217728")
 
 SQLITE_CONNECTION_OPTIONS = {
-    "ENGINE": "django.db.backends.sqlite3",
+    "ENGINE": "archivebox.core.sqlite_backend",
     "TIME_ZONE": CONSTANTS.TIMEZONE,
     "OPTIONS": {
         # https://gcollazo.com/optimal-sqlite-settings-for-django/
@@ -237,7 +237,13 @@ SQLITE_CONNECTION_OPTIONS = {
         # https://docs.djangoproject.com/en/5.1/ref/databases/#setting-pragma-options
         "timeout": 30,
         "check_same_thread": False,
-        "transaction_mode": "IMMEDIATE",
+        # Keep SQLite on Django's default deferred transaction mode. BEGIN
+        # IMMEDIATE grabs the write lock as soon as atomic() opens, which is
+        # exactly what hurts ArchiveBox on large collections where Python code
+        # may do filesystem work before the actual row write. Deferred BEGIN
+        # keeps writes statement-scoped unless a caller explicitly opens a
+        # transaction around multiple writes.
+        "transaction_mode": None,
         "init_command": (
             "PRAGMA foreign_keys=ON;"
             "PRAGMA busy_timeout = 30000;"

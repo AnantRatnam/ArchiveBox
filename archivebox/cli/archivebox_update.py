@@ -3,48 +3,23 @@
 __package__ = "archivebox.cli"
 
 import os
+import asyncio
+import shlex
 import time
 
 from typing import TYPE_CHECKING, Any
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from pathlib import Path
 
 import rich_click as click
 from django.core.exceptions import ObjectDoesNotExist
-from django.db.models import Q, QuerySet
+from django.db.models import QuerySet
 
 from archivebox.misc.util import enforce_types, docstring
 
 if TYPE_CHECKING:
     from archivebox.core.models import Snapshot
     from archivebox.crawls.models import Crawl
-
-
-LINK_FILTERS: dict[str, Callable[[str], Q]] = {
-    "exact": lambda pattern: Q(url=pattern),
-    "substring": lambda pattern: Q(url__icontains=pattern),
-    "regex": lambda pattern: Q(url__iregex=pattern),
-    "domain": lambda pattern: (
-        Q(url__istartswith=f"http://{pattern}") | Q(url__istartswith=f"https://{pattern}") | Q(url__istartswith=f"ftp://{pattern}")
-    ),
-    "tag": lambda pattern: Q(tags__name=pattern),
-    "timestamp": lambda pattern: Q(timestamp=pattern),
-}
-
-
-def _apply_pattern_filters(
-    snapshots: QuerySet["Snapshot", "Snapshot"],
-    filter_patterns: list[str],
-    filter_type: str,
-) -> QuerySet["Snapshot", "Snapshot"]:
-    filter_builder = LINK_FILTERS.get(filter_type)
-    if filter_builder is None:
-        raise SystemExit(2)
-
-    query = Q()
-    for pattern in filter_patterns:
-        query |= filter_builder(pattern)
-    return snapshots.filter(query)
 
 
 def _get_snapshot_crawl(snapshot: "Snapshot") -> "Crawl | None":
@@ -73,17 +48,35 @@ def _build_filtered_snapshots_queryset(
     *,
     filter_patterns: Iterable[str],
     filter_type: str,
-    before: float | None,
-    after: float | None,
+    status: str | None = None,
+    url__icontains: str | None = None,
+    url__istartswith: str | None = None,
+    tag: str | None = None,
+    crawl_id: str | None = None,
+    limit: int | None = None,
+    sort: str | None = None,
+    search: str | None = None,
+    before: float | None = None,
+    after: float | None = None,
     resume: str | None = None,
 ):
-    from archivebox.core.models import Snapshot
     from datetime import datetime
+    from archivebox.cli.archivebox_snapshot import build_snapshot_queryset
 
-    snapshots = Snapshot.objects.all()
+    filter_patterns = tuple(filter_patterns)
+    snapshots = build_snapshot_queryset(
+        status=status,
+        url__icontains=url__icontains,
+        url__istartswith=url__istartswith,
+        tag=tag,
+        crawl_id=crawl_id,
+        sort=sort,
+        search=search,
+        query=" ".join(filter_patterns) if search else None,
+    )
 
-    if filter_patterns:
-        snapshots = _apply_pattern_filters(snapshots, list(filter_patterns), filter_type)
+    if filter_patterns and not search:
+        snapshots = snapshots.filter_by_patterns(list(filter_patterns), filter_type)
 
     if before:
         snapshots = snapshots.filter(bookmarked_at__lt=datetime.fromtimestamp(before))
@@ -91,8 +84,14 @@ def _build_filtered_snapshots_queryset(
         snapshots = snapshots.filter(bookmarked_at__gt=datetime.fromtimestamp(after))
     if resume:
         snapshots = snapshots.filter(timestamp__lte=resume)
+    if not sort:
+        snapshots = snapshots.order_by("-timestamp")
+    snapshots = snapshots.select_related("crawl")
+    if limit:
+        limited_ids = list(snapshots.values_list("id", flat=True)[:limit])
+        snapshots = snapshots.model.objects.filter(id__in=limited_ids).select_related("crawl")
 
-    return snapshots.select_related("crawl").order_by("-bookmarked_at")
+    return snapshots
 
 
 def reindex_snapshots(
@@ -100,53 +99,64 @@ def reindex_snapshots(
     *,
     search_plugins: list[str],
     batch_size: int,
-) -> dict[str, int]:
+    collect_ids: bool = False,
+) -> dict[str, Any]:
     from archivebox.cli.archivebox_extract import run_plugins
 
-    stats = {"processed": 0, "reconciled": 0, "queued": 0, "reindexed": 0}
+    stats: dict[str, Any] = {"processed": 0, "queued": 0, "reindexed": 0, "snapshot_ids": []}
     records: list[dict[str, str]] = []
 
     total = snapshots.count()
     print(f"[*] Reindexing {total} snapshots with search plugins: {', '.join(search_plugins)}")
 
-    for snapshot in snapshots.iterator(chunk_size=batch_size):
-        stats["processed"] += 1
+    def run_batch() -> None:
+        if not records:
+            return
+        batch_records = list(records)
+        # Index-only backfill intentionally queues only search ArchiveResult
+        # rows. The extract runner bumps Snapshot.retry_at so the orchestrator
+        # sees the maintenance work, but it does not change status away from
+        # PAUSED; run_due_snapshot restores retry_at=MAX after the targeted
+        # plugin rows finish.
+        exit_code = run_plugins(
+            args=(),
+            records=batch_records,
+            wait=False,
+            emit_results=False,
+            show_progress=False,
+        )
+        if exit_code != 0:
+            raise SystemExit(exit_code)
+        print(
+            f"    [{stats['processed']}/{total}] Queued {len(batch_records)} index jobs for orchestrator",
+        )
+        records.clear()
 
-        if _get_snapshot_crawl(snapshot) is None:
-            continue
+    for snapshot in snapshots.select_related("crawl").paged_iterator(chunk_size=batch_size):
+        try:
+            stats["processed"] += 1
 
-        output_dir = Path(snapshot.output_dir)
-        has_directory = output_dir.exists() and output_dir.is_dir()
-        if has_directory:
-            snapshot.reconcile_with_index_json()
-            stats["reconciled"] += 1
+            if _get_snapshot_crawl(snapshot) is None:
+                continue
 
-        for plugin_name in search_plugins:
-            existing_result = snapshot.archiveresult_set.filter(plugin=plugin_name).order_by("-created_at").first()
-            if existing_result:
-                existing_result.reset_for_retry()
-            records.append(
-                {
-                    "type": "ArchiveResult",
-                    "snapshot_id": str(snapshot.id),
-                    "plugin": plugin_name,
-                },
-            )
-            stats["queued"] += 1
+            if collect_ids:
+                stats["snapshot_ids"].append(str(snapshot.id))
+            for plugin_name in search_plugins:
+                records.append(
+                    {
+                        "type": "ArchiveResult",
+                        "snapshot_id": str(snapshot.id),
+                        "plugin": plugin_name,
+                    },
+                )
+                stats["queued"] += 1
+            if len(records) >= batch_size:
+                run_batch()
+        except KeyboardInterrupt as err:
+            err.archivebox_resume = snapshot.timestamp
+            raise
 
-    if not records:
-        return stats
-
-    exit_code = run_plugins(
-        args=(),
-        records=records,
-        wait=True,
-        emit_results=False,
-    )
-    if exit_code != 0:
-        raise SystemExit(exit_code)
-
-    stats["reindexed"] = len(records)
+    run_batch()
     return stats
 
 
@@ -154,12 +164,21 @@ def reindex_snapshots(
 def update(
     filter_patterns: Iterable[str] = (),
     filter_type: str = "exact",
+    status: str | None = None,
+    url__icontains: str | None = None,
+    url__istartswith: str | None = None,
+    tag: str | None = None,
+    crawl_id: str | None = None,
+    limit: int | None = None,
+    sort: str | None = None,
+    search: str | None = None,
     before: float | None = None,
     after: float | None = None,
     resume: str | None = None,
     batch_size: int = 100,
     continuous: bool = False,
     index_only: bool = False,
+    migrate_only: bool = False,
 ) -> None:
     """
     Update snapshots: migrate old dirs, reconcile DB, and re-queue for archiving.
@@ -174,83 +193,173 @@ def update(
     """
 
     from rich import print
+    from archivebox.config import CONSTANTS
     from archivebox.config.django import setup_django
 
     setup_django()
+    from archivebox.machine.models import Process
+    from archivebox.services.supervision_service import current_command, ensure_daemon_stack
+    from archivebox.workers.supervisord_util import stop_existing_supervisord_process
 
-    from django.core.management import call_command
+    command = current_command(Process.TypeChoices.UPDATE, data_dir=CONSTANTS.DATA_DIR)
+    is_filtered_update = any(
+        (
+            filter_patterns,
+            status,
+            url__icontains,
+            url__istartswith,
+            tag,
+            crawl_id,
+            limit,
+            sort,
+            search,
+            before,
+            after,
+        ),
+    )
+    touched_snapshot_ids: set[str] = set()
 
-    # Run migrations first to ensure DB schema is up-to-date
-    print("[*] Checking for pending migrations...")
+    from archivebox.misc.checks import check_migrations
+
     try:
-        call_command("migrate", "--no-input", verbosity=0)
-    except Exception as e:
-        print(f"[!] Warning: Migration check failed: {e}")
+        # Run migrations first to ensure DB schema is up-to-date
+        print("[*] Checking for pending migrations...")
+        check_migrations(auto_apply=True)
+        stop_existing_supervisord_process()
 
-    while True:
-        if index_only:
-            search_plugins = _get_search_indexing_plugins()
-            if not search_plugins:
-                print("[*] No search indexing plugins are available, nothing to backfill.")
+        while True:
+            do_migrate = migrate_only or not index_only
+            do_index = index_only or not migrate_only
+            do_run_until_idle = do_migrate or do_index
+
+            if do_migrate:
+                if filter_patterns or status or url__icontains or url__istartswith or tag or crawl_id or limit or sort or search or before or after:
+                    print("[*] Processing filtered snapshots from database...")
+                    stats = process_filtered_snapshots(
+                        filter_patterns=filter_patterns,
+                        filter_type=filter_type,
+                        status=status,
+                        url__icontains=url__icontains,
+                        url__istartswith=url__istartswith,
+                        tag=tag,
+                        crawl_id=crawl_id,
+                        limit=limit,
+                        sort=sort,
+                        search=search,
+                        before=before,
+                        after=after,
+                        resume=resume,
+                        batch_size=batch_size,
+                        queue_for_archiving=do_run_until_idle,
+                    )
+                    print_stats(stats)
+                    touched_snapshot_ids.update(stats.get("snapshot_ids", []))
+                else:
+                    stats_combined = {"phase1": {}, "phase2": {}}
+
+                    print("[*] Phase 1: Draining old archive/ directories (0.8.x → 0.9.x migration)...")
+                    stats_combined["phase1"] = drain_old_archive_dirs(
+                        resume_from=resume,
+                        batch_size=batch_size,
+                    )
+
+                    print("[*] Phase 2: Processing all database snapshots (most recent first)...")
+                    stats_combined["phase2"] = process_all_db_snapshots(batch_size=batch_size, resume=resume)
+                    print_combined_stats(stats_combined)
+
+            if do_index:
+                ensure_daemon_stack(reason="search indexing")
+                search_plugins = _get_search_indexing_plugins()
+                if not search_plugins:
+                    print("[*] No search indexing plugins are available, nothing to backfill.")
+                else:
+                    snapshots = _build_filtered_snapshots_queryset(
+                        filter_patterns=filter_patterns,
+                        filter_type=filter_type,
+                        status=status,
+                        url__icontains=url__icontains,
+                        url__istartswith=url__istartswith,
+                        tag=tag,
+                        crawl_id=crawl_id,
+                        limit=limit,
+                        sort=sort,
+                        search=search,
+                        before=before,
+                        after=after,
+                        resume=resume,
+                    )
+                    stats = reindex_snapshots(
+                        snapshots,
+                        search_plugins=search_plugins,
+                        batch_size=batch_size,
+                        collect_ids=is_filtered_update,
+                    )
+                    print_index_stats(stats)
+                    touched_snapshot_ids.update(stats.get("snapshot_ids", []))
+
+            if do_run_until_idle:
+                print("[*] Phase 3: Running queued/interrupted crawl work until idle...")
+                from archivebox.cli.archivebox_run import run_runner, run_snapshot_worker
+
+                if is_filtered_update:
+                    if not touched_snapshot_ids:
+                        print("[*] No matching snapshots queued work for the runner.")
+                    for snapshot_id in sorted(touched_snapshot_ids):
+                        exit_code = run_snapshot_worker(snapshot_id)
+                        if exit_code != 0:
+                            raise SystemExit(exit_code)
+                else:
+                    exit_code = run_runner(daemon=False)
+                    if exit_code != 0:
+                        raise SystemExit(exit_code)
+
+            if not continuous:
                 break
 
-            if not (filter_patterns or before or after):
-                print("[*] Phase 1: Draining old archive/ directories (0.8.x → 0.9.x migration)...")
-                drain_old_archive_dirs(
-                    resume_from=resume,
-                    batch_size=batch_size,
-                )
-
-            snapshots = _build_filtered_snapshots_queryset(
-                filter_patterns=filter_patterns,
-                filter_type=filter_type,
-                before=before,
-                after=after,
-                resume=resume,
-            )
-            stats = reindex_snapshots(
-                snapshots,
-                search_plugins=search_plugins,
-                batch_size=batch_size,
-            )
-            print_index_stats(stats)
-        elif filter_patterns or before or after:
-            # Filtered mode: query DB only
-            print("[*] Processing filtered snapshots from database...")
-            stats = process_filtered_snapshots(
-                filter_patterns=filter_patterns,
-                filter_type=filter_type,
-                before=before,
-                after=after,
-                resume=resume,
-                batch_size=batch_size,
-            )
-            print_stats(stats)
-        else:
-            # Full mode: drain old dirs + process DB
-            stats_combined = {"phase1": {}, "phase2": {}}
-
-            print("[*] Phase 1: Draining old archive/ directories (0.8.x → 0.9.x migration)...")
-            stats_combined["phase1"] = drain_old_archive_dirs(
-                resume_from=resume,
-                batch_size=batch_size,
-            )
-
-            print("[*] Phase 2: Processing all database snapshots (most recent first)...")
-            stats_combined["phase2"] = process_all_db_snapshots(batch_size=batch_size, resume=resume)
-
-            # Phase 3: Deduplication (disabled for now)
-            # print('[*] Phase 3: Deduplicating...')
-            # stats_combined['deduplicated'] = Snapshot.find_and_merge_duplicates()
-
-            print_combined_stats(stats_combined)
-
-        if not continuous:
-            break
-
-        print("[yellow]Sleeping 60s before next pass...[/yellow]")
-        time.sleep(60)
-        resume = None
+            print("[yellow]Sleeping 60s before next pass...[/yellow]")
+            time.sleep(60)
+            resume = None
+    except (KeyboardInterrupt, asyncio.CancelledError) as err:
+        exact_resume = getattr(err, "archivebox_resume", None)
+        resume_cmd = ["archivebox", "update"]
+        if migrate_only:
+            resume_cmd.append("--migrate-only")
+        if index_only:
+            resume_cmd.append("--index-only")
+        if batch_size != 100:
+            resume_cmd.extend(["--batch-size", str(batch_size)])
+        if exact_resume or resume:
+            resume_cmd.extend(["--resume", str(exact_resume or resume)])
+        if before is not None:
+            resume_cmd.extend(["--before", str(before)])
+        if after is not None:
+            resume_cmd.extend(["--after", str(after)])
+        if filter_type != "exact":
+            resume_cmd.extend(["--filter-type", filter_type])
+        if status:
+            resume_cmd.extend(["--status", status])
+        if url__icontains:
+            resume_cmd.extend(["--url__icontains", url__icontains])
+        if url__istartswith:
+            resume_cmd.extend(["--url__istartswith", url__istartswith])
+        if tag:
+            resume_cmd.extend(["--tag", tag])
+        if crawl_id:
+            resume_cmd.extend(["--crawl-id", crawl_id])
+        if limit:
+            resume_cmd.extend(["--limit", str(limit)])
+        if sort:
+            resume_cmd.extend(["--sort", sort])
+        if search:
+            resume_cmd.extend(["--search", search])
+        resume_cmd.extend(str(pattern) for pattern in filter_patterns)
+        print("\n[red][X] archivebox update interrupted.[/red]")
+        print("[yellow]Hint: resume this idempotent update with:[/yellow]")
+        print(f"    [green]{' '.join(shlex.quote(part) for part in resume_cmd)}[/green]")
+        raise SystemExit(130)
+    finally:
+        command.mark_exited()
+        stop_existing_supervisord_process()
 
 
 def drain_old_archive_dirs(resume_from: str | None = None, batch_size: int = 100) -> dict[str, int]:
@@ -269,11 +378,9 @@ def drain_old_archive_dirs(resume_from: str | None = None, batch_size: int = 100
     from archivebox.core.models import Snapshot
     from archivebox.config.common import get_config
     from archivebox.crawls.models import Crawl
-    from django.db import transaction
     from django.utils import timezone
 
-    stats = {"processed": 0, "migrated": 0, "skipped": 0, "invalid": 0}
-    crawl_output_dirs: dict[str, Path] = {}
+    stats = {"processed": 0, "migrated": 0, "queued": 0, "skipped": 0, "invalid": 0}
     crawl_url_lines: dict[str, list[str]] = {}
     crawl_url_sets: dict[str, set[str]] = {}
     dirty_crawl_ids: set[str] = set()
@@ -283,18 +390,27 @@ def drain_old_archive_dirs(resume_from: str | None = None, batch_size: int = 100
     if not archive_dir.exists():
         return stats
 
-    for crawl in Crawl.objects.filter(label__startswith="[migration] orphaned").iterator():
-        url_entries = crawl._iter_url_lines()
-        existing_urls = {url for _raw_line, url in url_entries if url}
-        lines = (crawl.urls or "").splitlines()
-        changed = False
-        for url in crawl.snapshot_set.order_by("timestamp").values_list("url", flat=True):
-            if url not in existing_urls:
-                lines.append(url)
-                existing_urls.add(url)
-                changed = True
-        if changed:
-            Crawl.objects.filter(pk=crawl.pk).update(urls="\n".join(lines), modified_at=timezone.now())
+    last_crawl_id = None
+    while True:
+        crawl_qs = Crawl.objects.filter(label__startswith="[migration] orphaned").order_by("id")
+        if last_crawl_id is not None:
+            crawl_qs = crawl_qs.filter(id__gt=last_crawl_id)
+        crawl_batch = list(crawl_qs[:batch_size])
+        if not crawl_batch:
+            break
+        for crawl in crawl_batch:
+            last_crawl_id = crawl.id
+            url_entries = crawl._iter_url_lines()
+            existing_urls = {url for _raw_line, url in url_entries if url}
+            lines = (crawl.urls or "").splitlines()
+            changed = False
+            for url in crawl.snapshot_set.order_by("timestamp").values_list("url", flat=True):
+                if url not in existing_urls:
+                    lines.append(url)
+                    existing_urls.add(url)
+                    changed = True
+            if changed:
+                Crawl.objects.filter(pk=crawl.pk).update(urls="\n".join(lines), modified_at=timezone.now())
 
     # Scan for real directories only (skip symlinks - they're already migrated)
     all_entries = list(os.scandir(archive_dir))
@@ -329,29 +445,17 @@ def drain_old_archive_dirs(resume_from: str | None = None, batch_size: int = 100
                 continue
 
             try:
+                snapshot.status = Snapshot.StatusChoices.SEALED
+                snapshot.retry_at = timezone.now()
                 Snapshot.objects.bulk_create([snapshot])
-                snapshot.migrate_filesystem_to_current_version(source_dir=entry_path, config=runtime_config)
                 Snapshot.objects.filter(pk=snapshot.pk).update(
-                    fs_version=snapshot.fs_version,
+                    status=Snapshot.StatusChoices.SEALED,
+                    retry_at=snapshot.retry_at,
                 )
-                migration_cleanup = getattr(snapshot, "_pending_fs_migration_cleanup", None)
-                new_dir = None
-                if migration_cleanup:
-                    old_dir, new_dir = migration_cleanup
-                    transaction.on_commit(
-                        lambda old_dir=old_dir, new_dir=new_dir, snapshot=snapshot: snapshot._cleanup_old_migration_dir(old_dir, new_dir),
-                    )
-                    delattr(snapshot, "_pending_fs_migration_cleanup")
 
                 crawl = _get_snapshot_crawl(snapshot)
-                crawl_dir = None
                 if crawl is not None:
                     crawl_cache_key = str(crawl.id)
-                    crawl_dir = crawl_output_dirs.get(crawl_cache_key)
-                    if crawl_dir is None:
-                        crawl_dir = Path(crawl.output_dir)
-                        crawl_output_dirs[crawl_cache_key] = crawl_dir
-
                     existing_urls = crawl_url_sets.get(crawl_cache_key)
                     if existing_urls is None:
                         url_entries = crawl._iter_url_lines()
@@ -363,9 +467,8 @@ def drain_old_archive_dirs(resume_from: str | None = None, batch_size: int = 100
                         existing_urls.add(snapshot.url)
                         dirty_crawl_ids.add(crawl_cache_key)
 
-                snapshot.ensure_crawl_symlink(crawl_dir=crawl_dir, snapshot_dir=new_dir)
-                stats["migrated"] += 1
-                print(f"    [{stats['processed']}] Imported orphaned snapshot: {entry_path.name}")
+                stats["queued"] += 1
+                print(f"    [{stats['processed']}] Imported orphaned snapshot and queued migration: {entry_path.name}")
             except Exception as e:
                 stats["skipped"] += 1
                 print(f"    [{stats['processed']}] Skipped (error: {e}): {entry_path.name}")
@@ -377,7 +480,9 @@ def drain_old_archive_dirs(resume_from: str | None = None, batch_size: int = 100
         if not has_valid_crawl:
             # Create a new crawl (created_by will default to system user)
             crawl = Crawl.objects.create(urls=snapshot.url)
-            # Use queryset update to avoid triggering save() hooks
+            # Use queryset update to avoid save() hooks and keep the SQLite
+            # write to one statement while the migration loop does filesystem
+            # work outside any transaction.
             from archivebox.core.models import Snapshot as SnapshotModel
 
             SnapshotModel.objects.filter(pk=snapshot.pk).update(crawl=crawl)
@@ -386,32 +491,13 @@ def drain_old_archive_dirs(resume_from: str | None = None, batch_size: int = 100
 
         # Check if needs migration (0.8.x → 0.9.x)
         try:
-            old_version = snapshot.fs_version
-            snapshot.migrate_filesystem_to_current_version(source_dir=entry_path, config=runtime_config)
-            if snapshot.fs_version != old_version or getattr(snapshot, "_pending_fs_migration_cleanup", None):
+            if snapshot.fs_migration_needed:
                 Snapshot.objects.filter(pk=snapshot.pk).update(
-                    fs_version=snapshot.fs_version,
+                    retry_at=timezone.now(),
+                    modified_at=timezone.now(),
                 )
-                migration_cleanup = getattr(snapshot, "_pending_fs_migration_cleanup", None)
-                new_dir = None
-                if migration_cleanup:
-                    old_dir, new_dir = migration_cleanup
-                    transaction.on_commit(
-                        lambda old_dir=old_dir, new_dir=new_dir, snapshot=snapshot: snapshot._cleanup_old_migration_dir(old_dir, new_dir),
-                    )
-                    delattr(snapshot, "_pending_fs_migration_cleanup")
-                crawl_dir = None
-                if snapshot.crawl_id:
-                    crawl_cache_key = str(snapshot.crawl_id)
-                    crawl_dir = crawl_output_dirs.get(crawl_cache_key)
-                    if crawl_dir is None:
-                        crawl = _get_snapshot_crawl(snapshot)
-                        if crawl is not None:
-                            crawl_dir = Path(crawl.output_dir)
-                            crawl_output_dirs[crawl_cache_key] = crawl_dir
-                snapshot.ensure_crawl_symlink(crawl_dir=crawl_dir, snapshot_dir=new_dir)
-                stats["migrated"] += 1
-                print(f"    [{stats['processed']}] Migrated: {entry_path.name}")
+                stats["queued"] += 1
+                print(f"    [{stats['processed']}] Queued filesystem migration: {entry_path.name}")
             else:
                 stats["skipped"] += 1
         except Exception as e:
@@ -425,7 +511,6 @@ def drain_old_archive_dirs(resume_from: str | None = None, batch_size: int = 100
                     modified_at=timezone.now(),
                 )
             dirty_crawl_ids.clear()
-            transaction.commit()
 
     for crawl_id in tuple(dirty_crawl_ids):
         Crawl.objects.filter(pk=crawl_id).update(
@@ -433,7 +518,6 @@ def drain_old_archive_dirs(resume_from: str | None = None, batch_size: int = 100
             modified_at=timezone.now(),
         )
     dirty_crawl_ids.clear()
-    transaction.commit()
     return stats
 
 
@@ -448,14 +532,21 @@ def process_all_db_snapshots(batch_size: int = 100, resume: str | None = None) -
     No orphan detection needed - we trust 1:1 mapping between DB and filesystem
     after Phase 1 has drained all old archive/ directories.
     """
-    from archivebox.core.models import ArchiveResult, Snapshot
-    from archivebox.config.common import get_config
+    import uuid
+    from archivebox.core.models import Snapshot
     from archivebox.crawls.models import Crawl
-    from django.db import transaction
     from django.utils import timezone
 
-    stats = {"processed": 0, "reconciled": 0, "sealed": 0, "crawls_sealed": 0}
-    runtime_config = get_config()
+    stats = {
+        "processed": 0,
+        "scanned_dirs": 0,
+        "updated_json": 0,
+        "updated_db": 0,
+        "queued": 0,
+        "sealed": 0,
+        "crawls_sealed": 0,
+    }
+    current_fs_version = Snapshot._fs_current_version()
 
     queryset = Snapshot.objects.all()
     if resume:
@@ -463,89 +554,83 @@ def process_all_db_snapshots(batch_size: int = 100, resume: str | None = None) -
     total = queryset.count()
     print(f"[*] Processing {total} snapshots from database (most recent first)...")
 
-    # Process from most recent to least recent
-    for snapshot in queryset.select_related("crawl__created_by").order_by("-bookmarked_at").iterator(chunk_size=batch_size):
-        stats["processed"] += 1
+    def update_in_batches(rows, *, label: str, **updates) -> int:
+        updated = 0
+        checked = 0
+        while True:
+            ids = list(rows.order_by("-timestamp").values_list("id", flat=True)[:batch_size])
+            if not ids:
+                if updated:
+                    print(f"    [{label}] complete: {updated} rows updated")
+                return updated
+            checked += len(ids)
+            print(f"    [{label}] updating next {len(ids)} rows (seen {checked})...")
+            # Each batch is one short UPDATE and is intentionally idempotent.
+            # If the command is interrupted, these rows no longer match on the
+            # next run and remaining rows continue from DB state.
+            updated += Snapshot.objects.filter(id__in=ids).update(**updates)
+            print(f"    [{label}] updated {updated} rows so far")
 
-        # Skip snapshots with missing crawl references (orphaned by migration errors)
-        if _get_snapshot_crawl(snapshot) is None:
-            continue
+    now = timezone.now()
+    updated_rows = update_in_batches(
+        queryset.exclude(
+            status__in=[
+                Snapshot.StatusChoices.QUEUED,
+                Snapshot.StatusChoices.STARTED,
+                Snapshot.StatusChoices.PAUSED,
+                Snapshot.StatusChoices.SEALED,
+            ],
+        ),
+        label="snapshot status normalization",
+        status=Snapshot.StatusChoices.SEALED,
+        retry_at=None,
+        modified_at=now,
+    )
+    stats["sealed"] += updated_rows
+    stats["updated_db"] += updated_rows
 
+    fs_version_rows = queryset.exclude(fs_version=current_fs_version)
+    stale_batch: list[tuple[uuid.UUID, uuid.UUID | None, str]] = []
+
+    def queue_stale_fs_batch() -> None:
+        if not stale_batch:
+            return
+        now = timezone.now()
+        snapshot_ids = [snapshot_id for snapshot_id, _crawl_id, _timestamp in stale_batch]
+        # Do not bump fs_version here. The orchestrator calls Snapshot.save(),
+        # which performs the idempotent filesystem migration and commits the new
+        # fs_version in the same serialized worker path as normal crawls.
+        updated = Snapshot.objects.filter(id__in=snapshot_ids).update(
+            retry_at=now,
+            modified_at=now,
+        )
+        stats["processed"] += len(stale_batch)
+        stats["updated_db"] += updated
+        stats["queued"] += updated
+        print(f"    [{stats['processed']}/{total}] Queued {updated} filesystem migrations for orchestrator...")
+        stale_batch.clear()
+
+    for snapshot in fs_version_rows.only("id", "crawl_id", "timestamp").order_by("-timestamp").paged_iterator(chunk_size=batch_size):
         try:
-            # Check if snapshot has a directory on disk
-            from pathlib import Path
+            stale_batch.append((snapshot.id, snapshot.crawl_id, snapshot.timestamp))
+            if len(stale_batch) >= batch_size:
+                queue_stale_fs_batch()
+        except KeyboardInterrupt as err:
+            err.archivebox_resume = snapshot.timestamp
+            raise
+    queue_stale_fs_batch()
 
-            output_dir = Path(snapshot.get_storage_path_for_version(snapshot.fs_version, config=runtime_config))
-            has_directory = output_dir.exists() and output_dir.is_dir()
-            current_fs_version = Snapshot._fs_current_version()
-            update_values = {
-                "status": Snapshot.StatusChoices.SEALED,
-                "retry_at": None,
-            }
-
-            # Only reconcile if directory exists (don't create empty directories for orphans)
-            if has_directory:
-                old_title = snapshot.title
-                snapshot.reconcile_with_index_json(output_dir=output_dir, update_existing_archive_results=False)
-                metadata_updates = []
-                for archiveresult in ArchiveResult.objects.filter(snapshot=snapshot).only(
-                    "id",
-                    "snapshot_id",
-                    "plugin",
-                    "output_str",
-                    "output_files",
-                    "output_size",
-                    "output_mimetypes",
-                    "modified_at",
-                ):
-                    if archiveresult.update_output_metadata_from_filesystem(snapshot_dir=output_dir, save=False):
-                        metadata_updates.append(archiveresult)
-                if metadata_updates:
-                    ArchiveResult.objects.bulk_update(
-                        metadata_updates,
-                        ["output_files", "output_size", "output_mimetypes", "modified_at"],
-                        batch_size=batch_size,
-                    )
-                if snapshot.title != old_title:
-                    update_values["title"] = snapshot.title
-                    update_values["modified_at"] = timezone.now()
-
-            # Clean up invalid field values from old migrations
-            if not isinstance(snapshot.current_step, int):
-                update_values["current_step"] = 0
-
-            if snapshot.fs_migration_needed:
-                legacy_dir = snapshot.get_storage_path_for_version("0.8.0", config=runtime_config)
-                current_dir = snapshot.get_storage_path_for_version(current_fs_version, config=runtime_config)
-                if legacy_dir.exists() or current_dir.exists():
-                    snapshot.migrate_filesystem_to_current_version(config=runtime_config)
-                    update_values["fs_version"] = snapshot.fs_version
-                    Snapshot.objects.filter(pk=snapshot.pk).update(**update_values)
-                else:
-                    update_values["fs_version"] = current_fs_version
-                    Snapshot.objects.filter(pk=snapshot.pk).update(**update_values)
-            else:
-                Snapshot.objects.filter(pk=snapshot.pk).update(**update_values)
-
-            stats["reconciled"] += 1 if has_directory else 0
-            stats["sealed"] += 1
-        except Exception as e:
-            # Skip snapshots that can't be processed (e.g., missing crawl)
-            print(f"    [!] Skipping snapshot {snapshot.id}: {e}")
-            continue
-
-        if stats["processed"] % batch_size == 0:
-            transaction.commit()
-            print(f"    [{stats['processed']}/{total}] Processed...")
-
-    transaction.commit()
     now = timezone.now()
     stats["crawls_sealed"] = (
         Crawl.objects.filter(
             status__in=[Crawl.StatusChoices.QUEUED, Crawl.StatusChoices.STARTED],
         )
         .exclude(
-            snapshot_set__status__in=[Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED],
+            snapshot_set__status__in=[
+                Snapshot.StatusChoices.QUEUED,
+                Snapshot.StatusChoices.STARTED,
+                Snapshot.StatusChoices.PAUSED,
+            ],
         )
         .update(
             status=Crawl.StatusChoices.SEALED,
@@ -553,26 +638,44 @@ def process_all_db_snapshots(batch_size: int = 100, resume: str | None = None) -
             modified_at=now,
         )
     )
+    stats["updated_db"] += stats["crawls_sealed"]
     return stats
 
 
 def process_filtered_snapshots(
     filter_patterns: Iterable[str],
     filter_type: str,
+    status: str | None,
+    url__icontains: str | None,
+    url__istartswith: str | None,
+    tag: str | None,
+    crawl_id: str | None,
+    limit: int | None,
+    sort: str | None,
+    search: str | None,
     before: float | None,
     after: float | None,
     resume: str | None,
     batch_size: int,
-) -> dict[str, int]:
+    queue_for_archiving: bool = True,
+) -> dict[str, Any]:
     """Process snapshots matching filters (DB query only)."""
-    from django.db import transaction
+    from archivebox.core.models import Snapshot
     from django.utils import timezone
 
-    stats = {"processed": 0, "reconciled": 0, "queued": 0}
+    stats: dict[str, Any] = {"processed": 0, "updated_json": 0, "updated_db": 0, "queued": 0, "snapshot_ids": []}
 
     snapshots = _build_filtered_snapshots_queryset(
         filter_patterns=filter_patterns,
         filter_type=filter_type,
+        status=status,
+        url__icontains=url__icontains,
+        url__istartswith=url__istartswith,
+        tag=tag,
+        crawl_id=crawl_id,
+        limit=limit,
+        sort=sort,
+        search=search,
         before=before,
         after=after,
         resume=resume,
@@ -581,7 +684,7 @@ def process_filtered_snapshots(
     total = snapshots.count()
     print(f"[*] Found {total} matching snapshots")
 
-    for snapshot in snapshots.select_related("crawl").iterator(chunk_size=batch_size):
+    for snapshot in snapshots.select_related("crawl").paged_iterator(chunk_size=batch_size):
         stats["processed"] += 1
 
         # Skip snapshots with missing crawl references
@@ -589,30 +692,40 @@ def process_filtered_snapshots(
             continue
 
         try:
-            # Reconcile index.json with DB
-            snapshot.reconcile_with_index_json()
-
-            # Clean up invalid field values from old migrations
+            stats["snapshot_ids"].append(str(snapshot.id))
+            update_values = {}
             if not isinstance(snapshot.current_step, int):
-                snapshot.current_step = 0
+                update_values["current_step"] = 0
+            if queue_for_archiving:
+                update_values.update(
+                    {
+                        "status": Snapshot.StatusChoices.QUEUED,
+                        "retry_at": timezone.now(),
+                        "modified_at": timezone.now(),
+                    },
+                )
+            if update_values:
+                # update() is intentionally used instead of save(); save()
+                # runs output-dir hooks, which must not happen while SQLite
+                # is holding the write lock for this state change. Index-only
+                # maintenance goes through reindex_snapshots/run_plugins instead
+                # so paused snapshots keep status=paused while only their
+                # targeted search ArchiveResult rows run.
+                Snapshot.objects.filter(pk=snapshot.pk).update(**update_values)
+                stats["updated_db"] += 1
 
-            # Queue for archiving
-            snapshot.status = Snapshot.StatusChoices.QUEUED
-            snapshot.retry_at = timezone.now()
-            snapshot.save()
-
-            stats["reconciled"] += 1
-            stats["queued"] += 1
+            stats["queued"] += 1 if queue_for_archiving else 0
+        except KeyboardInterrupt as err:
+            err.archivebox_resume = snapshot.timestamp
+            raise
         except Exception as e:
             # Skip snapshots that can't be processed
             print(f"    [!] Skipping snapshot {snapshot.id}: {e}")
             continue
 
         if stats["processed"] % batch_size == 0:
-            transaction.commit()
             print(f"    [{stats['processed']}/{total}] Processed...")
 
-    transaction.commit()
     return stats
 
 
@@ -622,9 +735,10 @@ def print_stats(stats: dict):
 
     print(f"""
 [green]Update Complete[/green]
-  Processed:   {stats["processed"]}
-  Reconciled:  {stats["reconciled"]}
-  Queued:      {stats["queued"]}
+  Scanned rows:     {stats["processed"]}
+  Updated JSON:     {stats.get("updated_json", 0)}
+  Updated DB rows:  {stats.get("updated_db", 0)}
+  Queued snapshots: {stats["queued"]}
 """)
 
 
@@ -639,16 +753,17 @@ def print_combined_stats(stats_combined: dict):
 [green]Archive Update Complete[/green]
 
 Phase 1 (Drain Old Dirs):
-  Checked:     {s1.get("processed", 0)}
-  Migrated:    {s1.get("migrated", 0)}
-  Skipped:     {s1.get("skipped", 0)}
-  Invalid:     {s1.get("invalid", 0)}
+  Scanned dirs:     {s1.get("processed", 0)}
+  Moved files:      {s1.get("migrated", 0)}
+  Skipped dirs:     {s1.get("skipped", 0)}
+  Invalid dirs:     {s1.get("invalid", 0)}
 
 Phase 2 (Process DB):
-  Processed:   {s2.get("processed", 0)}
-  Reconciled:  {s2.get("reconciled", 0)}
-  Sealed:      {s2.get("sealed", 0)}
-  Crawls:      {s2.get("crawls_sealed", 0)} sealed
+  Scanned dirs:     {s2.get("scanned_dirs", 0)}
+  Updated JSON:     {s2.get("updated_json", 0)}
+  Updated DB rows:  {s2.get("updated_db", 0)}
+  Sealed snapshots: {s2.get("sealed", 0)}
+  Sealed crawls:    {s2.get("crawls_sealed", 0)}
 """)
 
 
@@ -657,21 +772,28 @@ def print_index_stats(stats: dict[str, Any]) -> None:
 
     print(f"""
 [green]Search Reindex Complete[/green]
-  Processed:   {stats["processed"]}
-  Reconciled:  {stats["reconciled"]}
-  Queued:      {stats["queued"]}
-  Reindexed:   {stats["reindexed"]}
+  Scanned rows:      {stats["processed"]}
+  Queued index jobs: {stats["queued"]}
 """)
 
 
 @click.command()
 @click.option("--resume", type=str, help="Resume from timestamp")
+@click.option("--status", "-s", help="Filter by status (queued, started, sealed)")
+@click.option("--url__icontains", help="Filter by URL contains")
+@click.option("--url__istartswith", help="Filter by URL starts with")
+@click.option("--tag", "-t", help="Filter by tag name")
+@click.option("--crawl-id", help="Filter by crawl ID")
+@click.option("--limit", "-n", type=int, help="Limit number of snapshots to update")
+@click.option("--sort", "-o", type=str, help="Field to sort by, e.g. url, created_at, bookmarked_at, downloaded_at")
+@click.option("--search", type=click.Choice(["meta", "content", "contents", "deep"]), help="Search mode to use for positional query")
 @click.option("--before", type=float, help="Only snapshots before timestamp")
 @click.option("--after", type=float, help="Only snapshots after timestamp")
-@click.option("--filter-type", "-t", type=click.Choice(["exact", "substring", "regex", "domain", "tag", "timestamp"]), default="exact")
+@click.option("--filter-type", type=click.Choice(["exact", "substring", "regex", "domain", "tag", "timestamp"]), default="exact")
 @click.option("--batch-size", type=int, default=100, help="Commit every N snapshots")
 @click.option("--continuous", is_flag=True, help="Run continuously as background worker")
 @click.option("--index-only", is_flag=True, help="Backfill available search indexes from existing archived content")
+@click.option("--migrate-only", is_flag=True, help="Only migrate filesystem and update database/index state")
 @click.argument("filter_patterns", nargs=-1)
 @docstring(update.__doc__)
 def main(**kwargs):

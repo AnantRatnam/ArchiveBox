@@ -1,3 +1,4 @@
+# ruff: noqa
 """Template tags for accessing config values in templates."""
 
 from typing import Any

@@ -4,17 +4,23 @@
 import os
 import re
 import socket
-import sqlite3
 import subprocess
 import sys
 import textwrap
 import time
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
 import requests
+from django.utils import timezone
 
+from archivebox.core.models import ArchiveResult, Snapshot, Tag
+from archivebox.crawls.models import Crawl, CrawlSchedule
+from archivebox.tests.orm_helpers import use_archivebox_db
 from .conftest import run_python_cwd
+
+pytestmark = pytest.mark.django_db(transaction=True)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -120,24 +126,13 @@ def wait_for_http(port: int, host: str, path: str = "/", timeout: int = 30) -> r
 
 
 def make_latest_schedule_due(cwd: Path) -> None:
-    conn = sqlite3.connect(cwd / "index.sqlite3")
-    try:
-        conn.execute(
-            """
-            UPDATE crawls_crawl
-            SET created_at = datetime('now', '-2 day'),
-                modified_at = datetime('now', '-2 day')
-            WHERE id = (
-                SELECT template_id
-                FROM crawls_crawlschedule
-                ORDER BY created_at DESC
-                LIMIT 1
-            )
-            """,
+    with use_archivebox_db(cwd):
+        schedule = CrawlSchedule.objects.order_by("-created_at").select_related("template").first()
+        assert schedule is not None
+        Crawl.objects.filter(pk=schedule.template_id).update(
+            created_at=timezone.now() - timedelta(days=2),
+            modified_at=timezone.now() - timedelta(days=2),
         )
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def get_snapshot_file_text(cwd: Path, url: str) -> str:
@@ -182,7 +177,7 @@ def get_snapshot_file_text(cwd: Path, url: str) -> str:
                     continue
                 if candidate.suffix not in ('.html', '.htm', '.txt'):
                     continue
-                if candidate.name in ('stdout.log', 'stderr.log', 'cmd.sh'):
+                if candidate.name in ('stdout.log', 'stderr.log'):
                     continue
                 candidates.append(candidate)
 
@@ -208,36 +203,52 @@ def wait_for_snapshot_capture(cwd: Path, url: str, timeout: int = 180) -> str:
 
 
 def get_counts(cwd: Path, scheduled_url: str, one_shot_url: str) -> tuple[int, int, int]:
-    conn = sqlite3.connect(cwd / "index.sqlite3")
-    try:
-        scheduled_snapshots = conn.execute(
-            "SELECT COUNT(*) FROM core_snapshot WHERE url = ?",
-            (scheduled_url,),
-        ).fetchone()[0]
-        one_shot_snapshots = conn.execute(
-            "SELECT COUNT(*) FROM core_snapshot WHERE url = ?",
-            (one_shot_url,),
-        ).fetchone()[0]
-        scheduled_crawls = conn.execute(
-            """
-            SELECT COUNT(*)
-            FROM crawls_crawl
-            WHERE schedule_id IS NOT NULL
-              AND urls = ?
-            """,
-            (scheduled_url,),
-        ).fetchone()[0]
-        return scheduled_snapshots, one_shot_snapshots, scheduled_crawls
-    finally:
-        conn.close()
+    with use_archivebox_db(cwd):
+        scheduled_snapshots = Snapshot.objects.filter(url=scheduled_url).count()
+        one_shot_snapshots = Snapshot.objects.filter(url=one_shot_url).count()
+        scheduled_crawls = Crawl.objects.filter(schedule__isnull=False, urls=scheduled_url).count()
+    return scheduled_snapshots, one_shot_snapshots, scheduled_crawls
 
 
 def get_depth_counts(cwd: Path) -> dict[int, int]:
-    conn = sqlite3.connect(cwd / "index.sqlite3")
-    try:
-        return dict(conn.execute("SELECT depth, COUNT(*) FROM core_snapshot GROUP BY depth").fetchall())
-    finally:
-        conn.close()
+    with use_archivebox_db(cwd):
+        return {depth: Snapshot.objects.filter(depth=depth).count() for depth in set(Snapshot.objects.values_list("depth", flat=True))}
+
+
+def get_crawl_runtime_state(cwd: Path, crawl_id: str) -> dict[str, object]:
+    from archivebox.workers.models import RETRY_AT_MAX
+
+    with use_archivebox_db(cwd):
+        crawl = Crawl.objects.get(id=crawl_id)
+        snapshots = list(
+            crawl.snapshot_set.order_by("created_at").values(
+                "id",
+                "url",
+                "status",
+                "retry_at",
+            ),
+        )
+        results = list(
+            ArchiveResult.objects.filter(snapshot__crawl=crawl)
+            .order_by("snapshot_id", "plugin", "hook_name")
+            .values(
+                "snapshot_id",
+                "plugin",
+                "hook_name",
+                "status",
+                "retry_at",
+                "output_files",
+                "output_size",
+            ),
+        )
+
+    return {
+        "retry_at_max": RETRY_AT_MAX,
+        "crawl_status": crawl.status,
+        "crawl_retry_at": crawl.retry_at,
+        "snapshots": snapshots,
+        "results": results,
+    }
 
 
 def create_admin_and_token(cwd: Path) -> str:
@@ -415,19 +426,9 @@ def test_schedule_web_ui_post_works_over_running_server(tmp_path, recursive_test
 
         assert response.status_code in (302, 303), response.text
 
-        conn = sqlite3.connect(tmp_path / "index.sqlite3")
-        try:
-            row = conn.execute(
-                """
-                SELECT cs.schedule, c.urls, c.tags_str
-                FROM crawls_crawlschedule cs
-                JOIN crawls_crawl c ON c.schedule_id = cs.id
-                ORDER BY cs.created_at DESC
-                LIMIT 1
-                """,
-            ).fetchone()
-        finally:
-            conn.close()
+        with use_archivebox_db(tmp_path):
+            schedule = CrawlSchedule.objects.select_related("template").order_by("-created_at").first()
+            row = (schedule.schedule, schedule.template.urls, schedule.template.tags_str) if schedule else None
 
         assert row == ("daily", recursive_test_site["root_url"], "web-ui")
     finally:
@@ -493,22 +494,15 @@ def test_web_ui_add_depth_two_crawls_and_renders_real_outputs_over_running_serve
         else:
             raise AssertionError(f"timed out waiting for depth=2 crawl, got depth counts {get_depth_counts(tmp_path)}")
 
-        conn = sqlite3.connect(tmp_path / "index.sqlite3")
-        try:
-            depth_counts = dict(conn.execute("SELECT depth, COUNT(*) FROM core_snapshot GROUP BY depth").fetchall())
-            crawl = conn.execute(
-                "SELECT max_depth, max_urls, tags_str, notes FROM crawls_crawl ORDER BY created_at DESC LIMIT 1",
-            ).fetchone()
-            snapshot_rows = conn.execute(
-                "SELECT url, depth, status, parent_snapshot_id FROM core_snapshot ORDER BY depth, url",
-            ).fetchall()
-            archive_results = conn.execute(
-                "SELECT plugin, status, output_files, output_size FROM core_archiveresult ORDER BY plugin, status",
-            ).fetchall()
-        finally:
-            conn.close()
+        with use_archivebox_db(tmp_path):
+            depth_counts = get_depth_counts(tmp_path)
+            crawl_obj = Crawl.objects.order_by("-created_at").first()
+            crawl = (crawl_obj.max_depth, crawl_obj.tags_str, crawl_obj.notes, crawl_obj.config) if crawl_obj else None
+            snapshot_rows = list(Snapshot.objects.order_by("depth", "url").values_list("url", "depth", "status", "parent_snapshot_id"))
+            archive_results = list(ArchiveResult.objects.order_by("plugin", "status").values_list("plugin", "status", "output_files", "output_size"))
 
-        assert crawl == (2, 20, "web-depth-two", "created from running-server web ui")
+        assert crawl[:3] == (2, "web-depth-two", "created from running-server web ui")
+        assert (crawl[3] or {})["CRAWL_MAX_URLS"] == 20
         assert depth_counts.get(0, 0) >= 1
         assert depth_counts.get(1, 0) >= len(recursive_test_site["child_urls"])
         assert depth_counts.get(2, 0) >= len(recursive_test_site["deep_urls"])
@@ -735,13 +729,202 @@ def test_core_rest_api_crud_uses_token_auth_and_persists_side_effects_over_runni
         assert delete_crawl.status_code == 200, delete_crawl.text
         assert delete_crawl.json()["success"] is True
 
-        conn = sqlite3.connect(tmp_path / "index.sqlite3")
-        try:
-            assert conn.execute("SELECT COUNT(*) FROM crawls_crawl WHERE id = ?", (crawl_id,)).fetchone()[0] == 0
-            assert conn.execute("SELECT COUNT(*) FROM core_snapshot WHERE id = ?", (snapshot_id,)).fetchone()[0] == 0
-            assert conn.execute("SELECT COUNT(*) FROM core_tag WHERE name = 'api-extra'").fetchone()[0] == 1
-        finally:
-            conn.close()
+        with use_archivebox_db(tmp_path):
+            assert Crawl.objects.filter(pk=crawl_id).count() == 0
+            assert Snapshot.objects.filter(pk=snapshot_id).count() == 0
+            assert Tag.objects.filter(name="api-extra").count() == 1
+    finally:
+        stop_server(tmp_path)
+
+
+@pytest.mark.timeout(240)
+def test_pause_resume_crawl_api_survives_server_restart_and_processes_after_resume(tmp_path, recursive_test_site):
+    os.chdir(tmp_path)
+    init_archive(tmp_path)
+
+    port = get_free_port()
+    env = build_test_env(port, PLUGINS="wget", SAVE_WGET="True")
+    api_token = create_admin_and_token(tmp_path)
+    api_headers = {
+        "Host": f"api.archivebox.localhost:{port}",
+        "X-ArchiveBox-API-Key": api_token,
+    }
+
+    try:
+        start_server(tmp_path, env=env, port=port)
+        wait_for_http(port, host=f"api.archivebox.localhost:{port}", path="/api/v1/docs")
+
+        crawl_response = requests.post(
+            f"http://127.0.0.1:{port}/api/v1/crawls/crawls",
+            headers=api_headers,
+            json={
+                "urls": [recursive_test_site["root_url"]],
+                "max_depth": 0,
+                "tags": ["pause-resume-e2e"],
+                "config": {"PLUGINS": "wget", "URL_ALLOWLIST": r"127\.0\.0\.1[:/].*"},
+            },
+            timeout=10,
+        )
+        assert crawl_response.status_code == 200, crawl_response.text
+        crawl_id = crawl_response.json()["id"]
+
+        pause_response = requests.patch(
+            f"http://127.0.0.1:{port}/api/v1/crawls/crawl/{crawl_id}",
+            headers=api_headers,
+            json={"action": "pause"},
+            timeout=10,
+        )
+        assert pause_response.status_code == 200, pause_response.text
+        assert pause_response.json()["status"] == "paused"
+
+        paused_state = get_crawl_runtime_state(tmp_path, crawl_id)
+        assert paused_state["crawl_status"] == "paused"
+        assert paused_state["crawl_retry_at"] == paused_state["retry_at_max"]
+        assert len(paused_state["snapshots"]) == 1
+        assert paused_state["snapshots"][0]["status"] == "paused"
+        assert paused_state["snapshots"][0]["retry_at"] == paused_state["retry_at_max"]
+
+        stop_server(tmp_path)
+        start_server(tmp_path, env=env, port=port)
+        wait_for_http(port, host=f"api.archivebox.localhost:{port}", path="/api/v1/docs")
+        time.sleep(3)
+
+        restarted_state = get_crawl_runtime_state(tmp_path, crawl_id)
+        assert restarted_state["crawl_status"] == "paused"
+        assert restarted_state["crawl_retry_at"] == restarted_state["retry_at_max"]
+        assert restarted_state["snapshots"][0]["status"] == "paused"
+        assert restarted_state["snapshots"][0]["retry_at"] == restarted_state["retry_at_max"]
+        assert not any(result["status"] == "succeeded" for result in restarted_state["results"])
+
+        resume_response = requests.patch(
+            f"http://127.0.0.1:{port}/api/v1/crawls/crawl/{crawl_id}",
+            headers=api_headers,
+            json={"action": "resume"},
+            timeout=10,
+        )
+        assert resume_response.status_code == 200, resume_response.text
+        assert resume_response.json()["status"] == "queued"
+
+        captured_text = wait_for_snapshot_capture(tmp_path, recursive_test_site["root_url"], timeout=180)
+        assert "Root" in captured_text
+        assert "About" in captured_text
+
+        final_state = get_crawl_runtime_state(tmp_path, crawl_id)
+        assert final_state["snapshots"][0]["status"] == "sealed"
+        wget_results = [result for result in final_state["results"] if result["plugin"] == "wget"]
+        assert wget_results
+        assert any(result["status"] == "succeeded" and result["output_size"] > 0 for result in wget_results)
+    finally:
+        stop_server(tmp_path)
+
+
+@pytest.mark.timeout(180)
+def test_index_only_update_processes_paused_snapshot_search_rows_without_resuming_it(tmp_path, recursive_test_site):
+    os.chdir(tmp_path)
+    init_archive(tmp_path)
+
+    port = get_free_port()
+    env = build_test_env(port, PLUGINS="wget", SAVE_WGET="True")
+    api_token = create_admin_and_token(tmp_path)
+    api_headers = {
+        "Host": f"api.archivebox.localhost:{port}",
+        "X-ArchiveBox-API-Key": api_token,
+    }
+
+    try:
+        start_server(tmp_path, env=env, port=port)
+        wait_for_http(port, host=f"api.archivebox.localhost:{port}", path="/api/v1/docs")
+
+        crawl_response = requests.post(
+            f"http://127.0.0.1:{port}/api/v1/crawls/crawls",
+            headers=api_headers,
+            json={
+                "urls": [recursive_test_site["root_url"]],
+                "max_depth": 0,
+                "tags": ["paused-index-e2e"],
+                "config": {"PLUGINS": "wget", "URL_ALLOWLIST": r"127\.0\.0\.1[:/].*"},
+            },
+            timeout=10,
+        )
+        assert crawl_response.status_code == 200, crawl_response.text
+        crawl_id = crawl_response.json()["id"]
+
+        pause_response = requests.patch(
+            f"http://127.0.0.1:{port}/api/v1/crawls/crawl/{crawl_id}",
+            headers=api_headers,
+            json={"action": "pause"},
+            timeout=10,
+        )
+        assert pause_response.status_code == 200, pause_response.text
+        assert pause_response.json()["status"] == "paused"
+    finally:
+        stop_server(tmp_path)
+
+    update_env = build_test_env(
+        port,
+        PLUGINS="search_backend_sqlite",
+        SEARCH_BACKEND_ENGINE="sqlite",
+        USE_INDEXING_BACKEND="True",
+        USE_SEARCHING_BACKEND="True",
+    )
+    update_process = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "archivebox",
+            "update",
+            "--index-only",
+            "--crawl-id",
+            crawl_id,
+            "--limit",
+            "1",
+            "--batch-size",
+            "1",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        env=update_env,
+        timeout=120,
+    )
+    assert update_process.returncode == 0, update_process.stderr
+
+    indexed_state = get_crawl_runtime_state(tmp_path, crawl_id)
+    assert indexed_state["crawl_status"] == "paused"
+    assert indexed_state["crawl_retry_at"] == indexed_state["retry_at_max"]
+    assert indexed_state["snapshots"][0]["status"] == "paused"
+    assert indexed_state["snapshots"][0]["retry_at"] == indexed_state["retry_at_max"]
+    search_results = [result for result in indexed_state["results"] if result["plugin"] == "search_backend_sqlite"]
+    assert search_results
+    assert all(result["status"] not in {"queued", "started", "paused"} for result in search_results)
+
+    try:
+        start_server(tmp_path, env=env, port=port)
+        wait_for_http(port, host=f"api.archivebox.localhost:{port}", path="/api/v1/docs")
+
+        still_paused_state = get_crawl_runtime_state(tmp_path, crawl_id)
+        assert still_paused_state["crawl_status"] == "paused"
+        assert still_paused_state["snapshots"][0]["status"] == "paused"
+        assert not any(result["plugin"] == "wget" and result["status"] == "succeeded" for result in still_paused_state["results"])
+
+        resume_response = requests.patch(
+            f"http://127.0.0.1:{port}/api/v1/crawls/crawl/{crawl_id}",
+            headers=api_headers,
+            json={"action": "resume"},
+            timeout=10,
+        )
+        assert resume_response.status_code == 200, resume_response.text
+        assert resume_response.json()["status"] == "queued"
+
+        captured_text = wait_for_snapshot_capture(tmp_path, recursive_test_site["root_url"], timeout=180)
+        assert "Root" in captured_text
+        assert "About" in captured_text
+
+        resumed_state = get_crawl_runtime_state(tmp_path, crawl_id)
+        assert resumed_state["snapshots"][0]["status"] == "sealed"
+        wget_results = [result for result in resumed_state["results"] if result["plugin"] == "wget"]
+        assert wget_results
+        assert any(result["status"] == "succeeded" and result["output_size"] > 0 for result in wget_results)
     finally:
         stop_server(tmp_path)
 
@@ -824,19 +1007,14 @@ def test_cli_rest_api_add_search_update_remove_over_running_server(tmp_path, rec
         assert update_response.status_code == 200, update_response.text
         assert update_response.json()["success"] is True
 
-        conn = sqlite3.connect(tmp_path / "index.sqlite3")
-        try:
-            crawl = conn.execute(
-                "SELECT max_depth, tags_str, config FROM crawls_crawl WHERE id IN (?, ?)",
-                (crawl_id, crawl_id.replace("-", "")),
-            ).fetchone()
-        finally:
-            conn.close()
+        with use_archivebox_db(tmp_path):
+            crawl_obj = Crawl.objects.filter(pk=crawl_id).first()
+            crawl = (crawl_obj.max_depth, crawl_obj.tags_str, crawl_obj.config) if crawl_obj else None
 
         assert crawl is not None
         assert crawl[0] == 1
         assert crawl[1] == "api-cli"
-        assert '"INDEX_ONLY": true' in crawl[2] or '"INDEX_ONLY":true' in crawl[2]
+        assert crawl[2]["INDEX_ONLY"] is True
 
         remove_response = requests.post(
             f"http://127.0.0.1:{port}/api/v1/cli/remove",
@@ -856,11 +1034,8 @@ def test_cli_rest_api_add_search_update_remove_over_running_server(tmp_path, rec
         assert remove_payload["result"]["removed_count"] == 1
         assert snapshot_id in remove_payload["result"]["removed_snapshot_ids"]
 
-        conn = sqlite3.connect(tmp_path / "index.sqlite3")
-        try:
-            snapshot_count = conn.execute("SELECT COUNT(*) FROM core_snapshot WHERE id = ?", (snapshot_id,)).fetchone()[0]
-        finally:
-            conn.close()
+        with use_archivebox_db(tmp_path):
+            snapshot_count = Snapshot.objects.filter(pk=snapshot_id).count()
 
         assert snapshot_count == 0
     finally:

@@ -3,7 +3,6 @@ from __future__ import annotations
 __package__ = "archivebox.machine"
 
 import os
-import shlex
 import sys
 import uuid
 import socket
@@ -196,8 +195,10 @@ class Machine(ModelWithHealthStats):
         app_label = "machine"
 
     @classmethod
-    def current(cls) -> Machine:
+    def current(cls, refresh: bool = False) -> Machine:
         global _CURRENT_MACHINE
+        if refresh:
+            _CURRENT_MACHINE = None
         if _CURRENT_MACHINE:
             if timezone.now() < _CURRENT_MACHINE.modified_at + timedelta(seconds=MACHINE_RECHECK_INTERVAL):
                 return _CURRENT_MACHINE
@@ -335,7 +336,7 @@ class NetworkInterface(ModelWithHealthStats):
     @classmethod
     def current(cls, refresh: bool = False) -> NetworkInterface:
         global _CURRENT_INTERFACE
-        machine = Machine.current()
+        machine = Machine.current(refresh=refresh)
         if _CURRENT_INTERFACE:
             if (
                 not refresh
@@ -928,6 +929,10 @@ class Process(ModelWithDeleteAfter, models.Model):
     class TypeChoices(models.TextChoices):
         SUPERVISORD = "supervisord", "Supervisord"
         ORCHESTRATOR = "orchestrator", "Orchestrator"
+        SERVER = "server", "Server"
+        UPDATE = "update", "Update"
+        ADD = "add", "Add"
+        SEARCH = "search", "Search"
         WORKER = "worker", "Worker"
         CLI = "cli", "CLI"
         HOOK = "hook", "Hook"
@@ -1107,8 +1112,8 @@ class Process(ModelWithDeleteAfter, models.Model):
             models.Index(fields=["binary", "exit_code"]),
             models.Index(fields=["pid", "started_at"]),
             models.Index(fields=["process_type", "worker_type", "pwd", "started_at"]),
-            models.Index(fields=["machine", "process_type", "-modified_at"], name="machine_pro_progress_recent_idx"),
-            models.Index(fields=["machine", "status", "process_type"], name="machine_pro_progress_running_idx"),
+            models.Index(fields=["machine", "process_type", "-modified_at"], name="mach_proc_recent_idx"),
+            models.Index(fields=["machine", "status", "process_type"], name="mach_proc_running_idx"),
         ]
 
     def __str__(self) -> str:
@@ -1225,7 +1230,7 @@ class Process(ModelWithDeleteAfter, models.Model):
         """Parse JSONL records from this process's stdout."""
         stdout = self.stdout
         if not stdout and self.stdout_file and self.stdout_file.exists():
-            stdout = self.stdout_file.read_text()
+            stdout = self.stdout_file.read_text(errors="replace")
         return self.parse_records_from_text(stdout or "")
 
     @staticmethod
@@ -1258,6 +1263,50 @@ class Process(ModelWithDeleteAfter, models.Model):
         self.modified_at = timezone.now()
         self.save()
         return True
+
+    def mark_running(
+        self,
+        *,
+        process_type: str | None = None,
+        pwd: str | Path | None = None,
+        url: str | None = None,
+        worker_type: str = "",
+        timeout: int | None = None,
+    ) -> None:
+        """Record the current process role without changing ownership state elsewhere."""
+        updates = ["status", "retry_at", "modified_at"]
+        self.status = self.StatusChoices.RUNNING
+        self.retry_at = None
+        if process_type is not None and self.process_type != process_type:
+            self.process_type = process_type
+            updates.append("process_type")
+        if worker_type and self.worker_type != worker_type:
+            self.worker_type = worker_type
+            updates.append("worker_type")
+        if pwd is not None and self.pwd != str(pwd):
+            self.pwd = str(pwd)
+            updates.append("pwd")
+        if url is not None and self.url != url:
+            self.url = url
+            updates.append("url")
+        if timeout is not None and self.timeout != timeout:
+            self.timeout = timeout
+            updates.append("timeout")
+        self.save(update_fields=updates)
+
+    def heartbeat(self) -> None:
+        """Touch modified_at so standby/leader selection can see this parent is alive."""
+        self.save(update_fields=["modified_at"])
+
+    def mark_exited(self, *, exit_code: int = 0) -> None:
+        """Mark a foreground/internal process row exited after command cleanup."""
+        if self.status == self.StatusChoices.EXITED and self.exit_code == exit_code:
+            return
+        self.status = self.StatusChoices.EXITED
+        self.exit_code = exit_code
+        self.ended_at = self.ended_at or timezone.now()
+        self.retry_at = None
+        self.save(update_fields=["status", "exit_code", "ended_at", "retry_at", "modified_at"])
 
     # =========================================================================
     # Process.current() and hierarchy methods
@@ -1426,6 +1475,14 @@ class Process(ModelWithDeleteAfter, models.Model):
             return cls.TypeChoices.SUPERVISORD
         elif "runner_watch" in argv_str:
             return cls.TypeChoices.WORKER
+        elif "archivebox server" in argv_str:
+            return cls.TypeChoices.SERVER
+        elif "archivebox update" in argv_str:
+            return cls.TypeChoices.UPDATE
+        elif "archivebox add" in argv_str:
+            return cls.TypeChoices.ADD
+        elif "archivebox search" in argv_str or "archivebox list" in argv_str:
+            return cls.TypeChoices.SEARCH
         elif "archivebox run" in argv_str:
             return cls.TypeChoices.ORCHESTRATOR
         elif "archivebox" in argv_str:
@@ -1451,7 +1508,9 @@ class Process(ModelWithDeleteAfter, models.Model):
         if machine is not None:
             stale = stale.filter(machine=machine)
 
-        for proc in stale:
+        # Recovery can run against damaged DB state; stream rows so a large
+        # stale Process backlog cannot be materialized in memory at once.
+        for proc in stale.iterator(chunk_size=100):
             if proc.poll() is not None:
                 cleaned += 1
                 continue
@@ -1461,7 +1520,7 @@ class Process(ModelWithDeleteAfter, models.Model):
             if proc.started_at:
                 timeout_seconds = max(int(proc.timeout or 0), 0)
                 timeout_deadline = proc.started_at + timedelta(seconds=timeout_seconds) + PROCESS_TIMEOUT_GRACE
-                if timezone.now() >= timeout_deadline:
+                if timeout_seconds > 0 and timezone.now() >= timeout_deadline:
                     is_stale = True
 
             # Check if too old (PID definitely reused)
@@ -1483,7 +1542,7 @@ class Process(ModelWithDeleteAfter, models.Model):
                 proc.status = cls.StatusChoices.EXITED
                 proc.ended_at = proc.ended_at or timezone.now()
                 proc.exit_code = proc.exit_code if proc.exit_code is not None else 0
-                proc.save(update_fields=["status", "ended_at", "exit_code"])
+                proc.save(update_fields=["status", "ended_at", "exit_code", "modified_at"])
                 cleaned += 1
 
         return cleaned
@@ -1653,18 +1712,6 @@ class Process(ModelWithDeleteAfter, models.Model):
     # =========================================================================
 
     @property
-    def pid_file(self) -> Path | None:
-        """Path to PID file for this process."""
-        runtime_dir = self.runtime_dir
-        return runtime_dir / "process.pid" if runtime_dir else None
-
-    @property
-    def cmd_file(self) -> Path | None:
-        """Path to cmd.sh script for this process."""
-        runtime_dir = self.runtime_dir
-        return runtime_dir / "cmd.sh" if runtime_dir else None
-
-    @property
     def stdout_file(self) -> Path | None:
         """Path to stdout log."""
         runtime_dir = self.runtime_dir
@@ -1694,7 +1741,7 @@ class Process(ModelWithDeleteAfter, models.Model):
 
     @property
     def runtime_dir(self) -> Path | None:
-        """Directory where this process stores runtime logs/pid/cmd metadata."""
+        """Directory where this process stores runtime stdout/stderr logs."""
         if not self.pwd:
             return None
 
@@ -1830,32 +1877,6 @@ class Process(ModelWithDeleteAfter, models.Model):
         for line in self.tail_stderr(lines=lines, follow=follow):
             print(line, file=sys.stderr, flush=True)
 
-    def _write_pid_file(self) -> None:
-        """Write PID file with mtime set to process start time."""
-        if self.pid and self.started_at and self.pid_file:
-            self.pid_file.parent.mkdir(parents=True, exist_ok=True)
-            # Write PID to file
-            self.pid_file.write_text(str(self.pid))
-            # Set mtime to process start time for validation
-            try:
-                start_time = self.started_at.timestamp()
-                os.utime(self.pid_file, (start_time, start_time))
-            except OSError:
-                pass  # mtime optional, validation degrades gracefully
-
-    def _write_cmd_file(self) -> None:
-        """Write cmd.sh script for debugging/validation."""
-        if self.cmd and self.cmd_file:
-            self.cmd_file.parent.mkdir(parents=True, exist_ok=True)
-
-            # Write executable shell script
-            script = "#!/bin/bash\n" + shlex.join(self.cmd) + "\n"
-            self.cmd_file.write_text(script)
-            try:
-                self.cmd_file.chmod(0o755)
-            except OSError:
-                pass
-
     def ensure_log_files(self) -> None:
         """Ensure stdout/stderr log files exist for this process."""
         runtime_dir = self.runtime_dir
@@ -1918,9 +1939,6 @@ class Process(ModelWithDeleteAfter, models.Model):
         # Use provided cwd or default to pwd
         working_dir = cwd or self.pwd
 
-        # Write cmd.sh for debugging
-        self._write_cmd_file()
-
         stdout_path = self.stdout_file
         stderr_path = self.stderr_file
         if stdout_path:
@@ -1956,8 +1974,6 @@ class Process(ModelWithDeleteAfter, models.Model):
             self.status = self.StatusChoices.RUNNING
             self.save()
 
-            self._write_pid_file()
-
             if not background:
                 try:
                     proc.wait(timeout=self.timeout)
@@ -1971,9 +1987,9 @@ class Process(ModelWithDeleteAfter, models.Model):
 
                 self.ended_at = timezone.now()
                 if stdout_path.exists():
-                    self.stdout = stdout_path.read_text()
+                    self.stdout = stdout_path.read_text(errors="replace")
                 if stderr_path.exists():
-                    self.stderr = stderr_path.read_text()
+                    self.stderr = stderr_path.read_text(errors="replace")
                 self.status = self.StatusChoices.EXITED
                 self.save()
 
@@ -2013,10 +2029,6 @@ class Process(ModelWithDeleteAfter, models.Model):
             self.status = self.StatusChoices.EXITED
             self.save()
 
-            # Clean up PID file
-            if self.pid_file and self.pid_file.exists():
-                self.pid_file.unlink(missing_ok=True)
-
             return True
         except (psutil.NoSuchProcess, psutil.AccessDenied, ProcessLookupError):
             # Process already exited between proc check and kill
@@ -2052,23 +2064,13 @@ class Process(ModelWithDeleteAfter, models.Model):
                     pass
             # Process exited - read output and copy to DB
             if self.stdout_file and self.stdout_file.exists():
-                self.stdout = self.stdout_file.read_text()
+                self.stdout = self.stdout_file.read_text(errors="replace")
                 # TODO: Uncomment to cleanup (keeping for debugging for now)
                 # self.stdout_file.unlink(missing_ok=True)
             if self.stderr_file and self.stderr_file.exists():
-                self.stderr = self.stderr_file.read_text()
+                self.stderr = self.stderr_file.read_text(errors="replace")
                 # TODO: Uncomment to cleanup (keeping for debugging for now)
                 # self.stderr_file.unlink(missing_ok=True)
-
-            # Clean up PID file (not needed for debugging)
-            if self.pid_file and self.pid_file.exists():
-                self.pid_file.unlink(missing_ok=True)
-
-            # TODO: Uncomment to cleanup cmd.sh (keeping for debugging for now)
-            # if self.pwd:
-            #     cmd_file = Path(self.pwd) / 'cmd.sh'
-            #     if cmd_file.exists():
-            #         cmd_file.unlink(missing_ok=True)
 
             # Try to get exit code from proc or default to unknown
             self.exit_code = self.exit_code if self.exit_code is not None else 0
@@ -2433,12 +2435,14 @@ class Process(ModelWithDeleteAfter, models.Model):
             status=cls.StatusChoices.RUNNING,
         )
 
-        for proc in running_children:
+        # Recovery can run against damaged DB state; stream rows so a large
+        # orphaned Process backlog cannot be materialized in memory at once.
+        for proc in running_children.iterator(chunk_size=100):
             if not proc.is_running:
                 proc.status = cls.StatusChoices.EXITED
                 proc.ended_at = proc.ended_at or timezone.now()
                 proc.exit_code = proc.exit_code if proc.exit_code is not None else 0
-                proc.save(update_fields=["status", "ended_at", "exit_code"])
+                proc.save(update_fields=["status", "ended_at", "exit_code", "modified_at"])
                 cleaned += 1
                 continue
 
@@ -2447,14 +2451,21 @@ class Process(ModelWithDeleteAfter, models.Model):
             if root.id == proc.id and root.process_type in (cls.TypeChoices.WORKER, cls.TypeChoices.HOOK):
                 continue
 
-            # If root is an active orchestrator/cli, keep it
-            if root.process_type in (cls.TypeChoices.ORCHESTRATOR, cls.TypeChoices.CLI) and root.is_running:
+            # If root is an active ArchiveBox command/orchestrator, keep it.
+            if root.process_type in (
+                cls.TypeChoices.ORCHESTRATOR,
+                cls.TypeChoices.SERVER,
+                cls.TypeChoices.UPDATE,
+                cls.TypeChoices.ADD,
+                cls.TypeChoices.SEARCH,
+                cls.TypeChoices.CLI,
+            ) and root.is_running:
                 continue
 
             proc.status = cls.StatusChoices.EXITED
             proc.ended_at = proc.ended_at or timezone.now()
             proc.exit_code = proc.exit_code if proc.exit_code is not None else 0
-            proc.save(update_fields=["status", "ended_at", "exit_code"])
+            proc.save(update_fields=["status", "ended_at", "exit_code", "modified_at"])
             cleaned += 1
 
         if cleaned:

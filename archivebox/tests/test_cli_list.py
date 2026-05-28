@@ -6,8 +6,14 @@ Verify list emits snapshot JSONL and applies the documented filters.
 
 import json
 import os
-import sqlite3
 import subprocess
+
+import pytest
+
+from archivebox.core.models import Snapshot
+from archivebox.tests.orm_helpers import use_archivebox_db
+
+pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def _parse_jsonl(stdout: str) -> list[dict]:
@@ -75,15 +81,8 @@ def test_list_filters_by_crawl_id_and_limit(tmp_path, process, disable_extractor
             check=True,
         )
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    crawl_id = str(
-        c.execute(
-            "SELECT crawl_id FROM core_snapshot WHERE url = ?",
-            ("https://example.com",),
-        ).fetchone()[0],
-    )
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        crawl_id = str(Snapshot.objects.values_list("crawl_id", flat=True).get(url="https://example.com"))
 
     result = subprocess.run(
         ["archivebox", "list", "--crawl-id", crawl_id, "--limit", "1"],
@@ -109,10 +108,8 @@ def test_list_filters_by_status(tmp_path, process, disable_extractors_dict):
         check=True,
     )
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    status = c.execute("SELECT status FROM core_snapshot LIMIT 1").fetchone()[0]
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        status = Snapshot.objects.values_list("status", flat=True).get()
 
     result = subprocess.run(
         ["archivebox", "list", "--status", status],

@@ -2,8 +2,19 @@
 
 import os
 import subprocess
-import sqlite3
 import json
+
+import pytest
+
+from archivebox.core.models import ArchiveResult, Snapshot
+from archivebox.tests.orm_helpers import use_archivebox_db
+
+pytestmark = pytest.mark.django_db(transaction=True)
+
+
+def _snapshot_id(data_dir):
+    with use_archivebox_db(data_dir):
+        return Snapshot.objects.values_list("id", flat=True).first()
 
 
 def test_extract_runs_on_snapshot_id(tmp_path, process, disable_extractors_dict):
@@ -17,11 +28,7 @@ def test_extract_runs_on_snapshot_id(tmp_path, process, disable_extractors_dict)
         env=disable_extractors_dict,
     )
 
-    # Get the snapshot ID
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    snapshot_id = c.execute("SELECT id FROM core_snapshot LIMIT 1").fetchone()[0]
-    conn.close()
+    snapshot_id = _snapshot_id(tmp_path)
 
     # Run extract on the snapshot
     result = subprocess.run(
@@ -46,11 +53,7 @@ def test_extract_with_enabled_extractor_creates_archiveresult(tmp_path, process,
         env=disable_extractors_dict,
     )
 
-    # Get the snapshot ID
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    snapshot_id = c.execute("SELECT id FROM core_snapshot LIMIT 1").fetchone()[0]
-    conn.close()
+    snapshot_id = _snapshot_id(tmp_path)
 
     # Run extract with title extractor enabled
     env = disable_extractors_dict.copy()
@@ -63,14 +66,8 @@ def test_extract_with_enabled_extractor_creates_archiveresult(tmp_path, process,
         env=env,
     )
 
-    # Check for archiveresults (may be queued, not completed with --no-wait)
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    count = c.execute(
-        "SELECT COUNT(*) FROM core_archiveresult WHERE snapshot_id = ?",
-        (snapshot_id,),
-    ).fetchone()[0]
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        count = ArchiveResult.objects.filter(snapshot_id=snapshot_id).count()
 
     # May or may not have results depending on timing
     assert count >= 0
@@ -87,11 +84,7 @@ def test_extract_plugin_option_accepted(tmp_path, process, disable_extractors_di
         env=disable_extractors_dict,
     )
 
-    # Get the snapshot ID
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    snapshot_id = c.execute("SELECT id FROM core_snapshot LIMIT 1").fetchone()[0]
-    conn.close()
+    snapshot_id = _snapshot_id(tmp_path)
 
     result = subprocess.run(
         ["archivebox", "extract", "--plugin=title", "--no-wait", str(snapshot_id)],
@@ -114,11 +107,7 @@ def test_extract_stdin_snapshot_id(tmp_path, process, disable_extractors_dict):
         env=disable_extractors_dict,
     )
 
-    # Get the snapshot ID
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    snapshot_id = c.execute("SELECT id FROM core_snapshot LIMIT 1").fetchone()[0]
-    conn.close()
+    snapshot_id = _snapshot_id(tmp_path)
 
     result = subprocess.run(
         ["archivebox", "extract", "--no-wait"],
@@ -143,11 +132,7 @@ def test_extract_stdin_jsonl_input(tmp_path, process, disable_extractors_dict):
         env=disable_extractors_dict,
     )
 
-    # Get the snapshot ID
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    snapshot_id = c.execute("SELECT id FROM core_snapshot LIMIT 1").fetchone()[0]
-    conn.close()
+    snapshot_id = _snapshot_id(tmp_path)
 
     jsonl_input = json.dumps({"type": "Snapshot", "id": str(snapshot_id)}) + "\n"
 
@@ -185,14 +170,8 @@ def test_extract_pipeline_from_snapshot(tmp_path, process, disable_extractors_di
 
     snapshot_proc.wait()
 
-    # Check database for snapshot
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    snapshot = c.execute(
-        "SELECT id, url FROM core_snapshot WHERE url = ?",
-        ("https://example.com",),
-    ).fetchone()
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        snapshot = Snapshot.objects.filter(url="https://example.com").first()
 
     assert snapshot is not None, "Snapshot should be created by pipeline"
 
@@ -213,16 +192,13 @@ def test_extract_multiple_snapshots(tmp_path, process, disable_extractors_dict):
         env=disable_extractors_dict,
     )
 
-    # Get all snapshot IDs
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    snapshot_ids = c.execute("SELECT id FROM core_snapshot").fetchall()
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        snapshot_ids = list(Snapshot.objects.values_list("id", flat=True))
 
     assert len(snapshot_ids) >= 2, "Should have at least 2 snapshots"
 
     # Extract from all snapshots
-    ids_input = "\n".join(str(s[0]) for s in snapshot_ids) + "\n"
+    ids_input = "\n".join(str(snapshot_id) for snapshot_id in snapshot_ids) + "\n"
     result = subprocess.run(
         ["archivebox", "extract", "--no-wait"],
         input=ids_input,
@@ -232,11 +208,8 @@ def test_extract_multiple_snapshots(tmp_path, process, disable_extractors_dict):
     )
     assert result.returncode == 0, result.stderr
 
-    # Should not error
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    count = c.execute("SELECT COUNT(*) FROM core_snapshot").fetchone()[0]
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        count = Snapshot.objects.count()
 
     assert count >= 2, "Both snapshots should still exist after extraction"
 

@@ -2,33 +2,58 @@
 {% if cl.search_fields %}
 <div id="toolbar">
 <h2 id="changelist-search-form" class="visually-hidden">{% blocktranslate with name=cl.opts.verbose_name_plural %}Search {{ name }}{% endblocktranslate %}</h2>
+<div class="changelist-toolbar-row">
+{% if cl.opts.model_name == 'snapshot' and not cl.embedded_changelist %}
+    {% if cl.snapshot_is_grid_view %}
+      <button
+        type="button"
+        class="button snapshot-view-icon-toggle"
+        id="snapshot-view-toggle"
+        aria-label="{% translate 'Switch to list view' %}"
+        title="{% translate 'Switch to list view' %}"
+        onclick="window.location.href='{% url 'admin:core_snapshot_changelist' %}{% if request.GET.urlencode %}?{{ request.GET.urlencode }}{% endif %}'"
+      ><span class="snapshot-view-icon snapshot-view-icon-list" aria-hidden="true"><span></span><span></span><span></span></span></button>
+    {% else %}
+      <button
+        type="button"
+        class="button snapshot-view-icon-toggle"
+        id="snapshot-view-toggle"
+        aria-label="{% translate 'Switch to grid view' %}"
+        title="{% translate 'Switch to grid view' %}"
+        onclick="window.location.href='{% url 'admin:grid' %}{% if request.GET.urlencode %}?{{ request.GET.urlencode }}{% endif %}'"
+      ><span class="snapshot-view-icon snapshot-view-icon-grid" aria-hidden="true"><span></span><span></span><span></span><span></span></span></button>
+    {% endif %}
+{% endif %}
+{% if cl.embedded_changelist %}
+<div id="changelist-search" data-embedded-search="1" role="search" aria-labelledby="changelist-search-form">
+{% else %}
 <form id="changelist-search" method="get" role="search" aria-labelledby="changelist-search-form">
+{% endif %}
 <div><!-- DIV needed for valid HTML -->
-<label for="searchbar"><img src="{% static "admin/img/search.svg" %}" alt="Search"></label>
-<input type="text" size="40" name="{{ search_var }}" value="{{ cl.query }}" id="searchbar"{% if cl.search_help_text %} aria-describedby="searchbar_helptext"{% endif %}>
-<input type="submit" value="{% translate 'Search' %}">
 {% if cl.model_admin.show_search_mode_selector %}
     {% with current_search_mode=cl.params.search_mode|default:cl.model_admin.get_default_search_mode %}
-    <span style="display:inline-flex; flex:0 0 auto; flex-wrap:nowrap; gap:8px; align-items:center; margin-left:10px; font-size:12px; white-space:nowrap; vertical-align:middle;">
-        <label style="display:inline-flex; align-items:center; gap:6px; min-width:88px; padding:4px 20px 4px 10px; border-radius:999px; border:1px solid {% if current_search_mode == 'meta' %}#93c5fd{% else %}#d1d5db{% endif %}; background:{% if current_search_mode == 'meta' %}#dbeafe{% else %}#fff{% endif %}; color:{% if current_search_mode == 'meta' %}#1d4ed8{% else %}#374151{% endif %}; box-sizing:border-box;">
-            <input type="radio" name="search_mode" value="meta"{% if current_search_mode == "meta" %} checked{% endif %} style="margin:0;">
-            <span aria-hidden="true">🗂️</span>
-            <span>meta</span>
-        </label>
-        <label style="display:inline-flex; align-items:center; gap:6px; min-width:112px; padding:4px 20px 4px 10px; border-radius:999px; border:1px solid {% if current_search_mode == 'contents' %}#86efac{% else %}#d1d5db{% endif %}; background:{% if current_search_mode == 'contents' %}#dcfce7{% else %}#fff{% endif %}; color:{% if current_search_mode == 'contents' %}#166534{% else %}#374151{% endif %}; box-sizing:border-box;">
-            <input type="radio" name="search_mode" value="contents"{% if current_search_mode == "contents" %} checked{% endif %} style="margin:0;">
-            <span aria-hidden="true">🔎</span>
-            <span>contents</span>
-        </label>
-        <label style="display:inline-flex; align-items:center; gap:6px; min-width:88px; padding:4px 20px 4px 10px; border-radius:999px; border:1px solid {% if current_search_mode == 'deep' %}#c4b5fd{% else %}#d1d5db{% endif %}; background:{% if current_search_mode == 'deep' %}#ede9fe{% else %}#fff{% endif %}; color:{% if current_search_mode == 'deep' %}#6d28d9{% else %}#374151{% endif %}; box-sizing:border-box;">
-            <input type="radio" name="search_mode" value="deep"{% if current_search_mode == "deep" %} checked{% endif %} style="margin:0;">
-            <span aria-hidden="true">🪜</span>
-            <span>deep</span>
-        </label>
+    <span class="search-input-wrap search-input-wrap-with-mode">
+        <span class="search-input-addon">
+            <select name="search_mode" class="search-mode-select" aria-label="{% translate 'Search mode' %}">
+                {% for option in cl.model_admin.get_search_mode_options %}
+                <option value="{{ option.value }}"{% if current_search_mode == option.value %} selected{% endif %}>{{ option.label }}</option>
+                {% endfor %}
+            </select>
+            <span class="search-mode-caret" aria-hidden="true">▾</span>
+        </span>
+        <input type="text" size="40" name="{{ search_var }}" value="{{ cl.query }}" id="searchbar"{% if cl.search_help_text %} aria-describedby="searchbar_helptext"{% endif %}>
     </span>
     {% endwith %}
+{% else %}
+<span class="search-input-wrap">
+    <span class="search-input-addon">
+        <label for="searchbar"><img src="{% static "admin/img/search.svg" %}" alt="Search"></label>
+    </span>
+    <input type="text" size="40" name="{{ search_var }}" value="{{ cl.query }}" id="searchbar"{% if cl.search_help_text %} aria-describedby="searchbar_helptext"{% endif %}>
+</span>
 {% endif %}
-{% if show_result_count %}
+<button type="{% if cl.embedded_changelist %}button{% else %}submit{% endif %}" class="changelist-search-submit">{% translate 'Search' %}</button>
+{% if show_result_count and cl.opts.model_name != 'snapshot' %}
     <span class="small quiet">{% blocktranslate count counter=cl.result_count %}{{ counter }} result{% plural %}{{ counter }} results{% endblocktranslate %} (<a href="?{% if cl.is_popup %}{{ is_popup_var }}=1{% if cl.add_facets %}&{% endif %}{% endif %}{% if cl.add_facets %}{{ is_facets_var }}{% endif %}">{% if cl.show_full_result_count %}{% blocktranslate with full_result_count=cl.full_result_count %}{{ full_result_count }} total{% endblocktranslate %}{% else %}{% translate "Show all" %}{% endif %}</a>)</span>
 {% endif %}
 {% for pair in cl.params.items %}
@@ -39,5 +64,19 @@
 <br class="clear">
 <div class="help" id="searchbar_helptext">{{ cl.search_help_text }}</div>
 {% endif %}
-</form></div>
+{% if cl.embedded_changelist %}
+</div>
+{% else %}
+</form>
+{% endif %}
+{% if cl.has_filters and not cl.embedded_changelist %}
+  <button
+    type="button"
+    class="button filter-pane-toggle"
+    id="changelist-toolbar-filter-toggle"
+    aria-expanded="true"
+  >{% translate "Filters" %} ◂</button>
+{% endif %}
+</div>
+</div>
 {% endif %}

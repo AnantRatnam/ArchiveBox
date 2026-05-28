@@ -1,10 +1,14 @@
-import os
-import sqlite3
 import subprocess
 import sys
 
+import pytest
+
+from archivebox.core.models import Snapshot
+from archivebox.tests.orm_helpers import use_archivebox_db
 from .conftest import _find_system_browser
 from .fixtures import disable_extractors_dict, process
+
+pytestmark = pytest.mark.django_db(transaction=True)
 
 FIXTURES = (disable_extractors_dict, process)
 
@@ -39,16 +43,11 @@ def test_title_is_extracted(tmp_path, process, disable_extractors_dict):
     )
     assert add_process.returncode == 0, add_process.stderr or add_process.stdout
 
-    os.chdir(tmp_path)
-    conn = sqlite3.connect("index.sqlite3")
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    c.execute("SELECT title FROM core_snapshot")
-    snapshot = c.fetchone()
-    conn.close()
+    with use_archivebox_db(tmp_path):
+        title = Snapshot.objects.values_list("title", flat=True).get()
 
-    assert snapshot[0] is not None
-    assert "Example" in snapshot[0]
+    assert title is not None
+    assert "Example" in title
 
 
 def test_title_is_htmlencoded_in_index_html(tmp_path, process, disable_extractors_dict):

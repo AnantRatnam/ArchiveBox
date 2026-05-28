@@ -1,15 +1,24 @@
 __package__ = "archivebox.core"
 
-from functools import lru_cache
+import asyncio
 import json
+import threading
+from copy import copy
+from functools import lru_cache
+from queue import Full, Queue
+from types import SimpleNamespace
+from urllib.parse import urlsplit
+from uuid import UUID
 
 from django.contrib import admin, messages
-from django.urls import path
+from django.urls import path, reverse
 from django.shortcuts import get_object_or_404, redirect
-from django.utils.html import format_html
+from django.core.cache import cache
+from django.http import JsonResponse, HttpResponseBadRequest, HttpResponseNotAllowed, QueryDict, StreamingHttpResponse
+from django.utils import timezone
+from django.utils.html import format_html, format_html_join
 from django.utils.safestring import mark_safe
-from django.db.models import Q, Sum, Count, Prefetch
-from django.db.models.functions import Coalesce
+from django.db.models import Q, Count, Exists, F, OuterRef, Prefetch
 from django import forms
 from django.template import Template, RequestContext
 from django.contrib.admin.helpers import ActionForm
@@ -18,8 +27,9 @@ from archivebox.config.common import get_config
 from archivebox.misc.util import htmldecode, urldecode
 from archivebox.misc.paginators import AcceleratedPaginator
 from archivebox.misc.logging_util import printable_filesize
-from archivebox.search.admin import SearchResultsAdminMixin
+from archivebox.search.admin import SEARCH_RESULT_CACHE_TTL, SearchResultsAdminMixin, SearchResultsChangeList, get_admin_search_cache_key
 from archivebox.core.host_utils import build_snapshot_url, build_web_url
+from archivebox.core.tag_utils import get_or_create_tag
 from archivebox.hooks import discover_hooks, get_plugin_icon, get_plugin_name, get_plugins
 
 from archivebox.base_models.admin import BaseModelAdmin, ConfigEditorMixin
@@ -27,12 +37,26 @@ from archivebox.workers.tasks import bg_archive_snapshots, bg_add
 
 from archivebox.core.models import Tag, Snapshot, ArchiveResult
 from archivebox.core.admin_archiveresults import render_archiveresults_list
+from archivebox.core.permissions import (
+    PERMISSIONS_CHOICES,
+    PERMISSIONS_PRIVATE,
+    PERMISSIONS_PUBLIC,
+    PERMISSIONS_UNLISTED,
+    get_snapshot_permissions,
+)
 from archivebox.core.widgets import TagEditorWidget, InlineTagEditorWidget
 from archivebox.crawls.models import Crawl
+from archivebox.personas.models import Persona
 
 
 # GLOBAL_CONTEXT = {'VERSION': VERSION, 'VERSIONS_AVAILABLE': [], 'CAN_UPGRADE': False}
 GLOBAL_CONTEXT = {}
+
+SNAPSHOT_PERMISSION_META = {
+    PERMISSIONS_PUBLIC: ("👥", "Public", "#047857", "#d1fae5"),
+    PERMISSIONS_UNLISTED: ("🔗", "Unlisted", "#1d4ed8", "#dbeafe"),
+    PERMISSIONS_PRIVATE: ("🔒", "Private", "#991b1b", "#fee2e2"),
+}
 
 
 @lru_cache(maxsize=1)
@@ -51,22 +75,12 @@ class SnapshotActionForm(ActionForm):
         )
 
     def clean_tags(self):
-        """Parse comma-separated tag names into Tag objects."""
+        """Parse comma-separated tag names without touching the DB."""
         tags_str = self.cleaned_data.get("tags", "")
         if not tags_str:
             return []
 
-        tag_names = [name.strip() for name in tags_str.split(",") if name.strip()]
-        tags = []
-        for name in tag_names:
-            tag, _ = Tag.objects.get_or_create(
-                name__iexact=name,
-                defaults={"name": name},
-            )
-            # Use the existing tag if found by case-insensitive match
-            tag = Tag.objects.filter(name__iexact=name).first() or tag
-            tags.append(tag)
-        return tags
+        return [name.strip() for name in tags_str.split(",") if name.strip()]
 
     # TODO: allow selecting actions for specific extractor plugins? is this useful?
     # plugin = forms.ChoiceField(
@@ -95,6 +109,268 @@ class TagNameListFilter(admin.SimpleListFilter):
         return queryset
 
 
+class SnapshotPermissionsListFilter(admin.SimpleListFilter):
+    title = "permission"
+    parameter_name = "permissions"
+
+    def lookups(self, request, model_admin):
+        return PERMISSIONS_CHOICES
+
+    def queryset(self, request, queryset):
+        value = self.value()
+        if value:
+            global_permissions = str(get_config(resolve_plugins=False).PERMISSIONS).strip().lower()
+            has_overrides = (
+                Snapshot.objects.filter(permissions__gt="").exists()
+                or Crawl.objects.filter(permissions__gt="").exists()
+                or Persona.objects.filter(permissions__gt="").exists()
+            )
+            if not has_overrides:
+                return queryset if value == global_permissions else queryset.none()
+
+            persona_query = Q(crawl__persona_id__in=self.persona_ids_for_value())
+            if global_permissions == value:
+                valid_persona_ids = Persona.objects.values_list("id", flat=True)
+                persona_query |= Q(crawl__persona_id__isnull=True) | ~Q(crawl__persona_id__in=valid_persona_ids)
+            return queryset.filter(
+                Q(permissions=value)
+                | (Q(permissions__isnull=True) & Q(crawl__permissions=value))
+                | (Q(permissions__isnull=True) & Q(crawl__permissions__isnull=True) & persona_query)
+            )
+        return queryset
+
+    def persona_ids_for_value(self):
+        global_permissions = str(get_config(resolve_plugins=False).PERMISSIONS).strip().lower()
+        query = Q(permissions=self.value())
+        if global_permissions == self.value():
+            query |= Q(permissions__isnull=True)
+        return Persona.objects.filter(query).values_list("id", flat=True)
+
+
+class SnapshotStatusListFilter(admin.SimpleListFilter):
+    title = "snapshot status"
+    parameter_name = "snapshot_status"
+
+    def lookups(self, request, model_admin):
+        return Snapshot.StatusChoices.choices
+
+    def queryset(self, request, queryset):
+        value = self.value()
+        if value in Snapshot.StatusChoices.values:
+            return queryset.filter(status=value)
+        return queryset
+
+
+class SnapshotDepthListFilter(admin.SimpleListFilter):
+    title = "depth"
+    parameter_name = "depth_bucket"
+
+    def lookups(self, request, model_admin):
+        return (
+            ("0", "0 root"),
+            ("1", "1"),
+            ("2", "2"),
+            ("3plus", "3+"),
+        )
+
+    def queryset(self, request, queryset):
+        value = self.value()
+        if value == "0":
+            return queryset.filter(depth=0)
+        if value == "1":
+            return queryset.filter(depth=1)
+        if value == "2":
+            return queryset.filter(depth=2)
+        if value == "3plus":
+            return queryset.filter(depth__gte=3)
+        return queryset
+
+
+class SnapshotRelationListFilter(admin.SimpleListFilter):
+    title = "crawl position"
+    parameter_name = "position"
+
+    def lookups(self, request, model_admin):
+        return (
+            ("root", "Root URL"),
+            ("discovered", "Discovered URL"),
+            ("has_children", "Has discovered URLs"),
+            ("no_children", "No discovered URLs"),
+        )
+
+    def queryset(self, request, queryset):
+        value = self.value()
+        if value == "root":
+            return queryset.filter(parent_snapshot__isnull=True)
+        if value == "discovered":
+            return queryset.filter(parent_snapshot__isnull=False)
+        if value in {"has_children", "no_children"}:
+            child_snapshots = Snapshot.objects.filter(parent_snapshot_id=OuterRef("pk"))
+            queryset = queryset.annotate(has_child_snapshots=Exists(child_snapshots))
+            return queryset.filter(has_child_snapshots=value == "has_children")
+        return queryset
+
+
+class SnapshotArchiveStateListFilter(admin.SimpleListFilter):
+    title = "archive state"
+    parameter_name = "archive_state"
+
+    def lookups(self, request, model_admin):
+        return (
+            ("downloaded", "Downloaded"),
+            ("not_downloaded", "Not downloaded"),
+            ("has_output", "Has saved files"),
+            ("empty_output", "No saved files"),
+            ("has_title", "Has title"),
+            ("missing_title", "Missing title"),
+        )
+
+    def queryset(self, request, queryset):
+        value = self.value()
+        if value == "downloaded":
+            return queryset.filter(downloaded_at__isnull=False)
+        if value == "not_downloaded":
+            return queryset.filter(downloaded_at__isnull=True)
+        if value == "has_output":
+            return queryset.filter(output_size__gt=0)
+        if value == "empty_output":
+            return queryset.filter(output_size=0)
+        if value == "has_title":
+            return queryset.exclude(Q(title__isnull=True) | Q(title=""))
+        if value == "missing_title":
+            return queryset.filter(Q(title__isnull=True) | Q(title=""))
+        return queryset
+
+
+class SnapshotSizeListFilter(admin.SimpleListFilter):
+    title = "size"
+    parameter_name = "size"
+
+    def lookups(self, request, model_admin):
+        return (
+            ("1gb", ">1GB"),
+            ("500mb", ">500MB"),
+            ("250mb", ">250MB"),
+            ("100mb", ">100MB"),
+            ("50mb", ">50MB"),
+            ("25mb", ">25MB"),
+        )
+
+    def queryset(self, request, queryset):
+        value = self.value()
+        thresholds = {
+            "1gb": 1024 * 1024 * 1024,
+            "500mb": 500 * 1024 * 1024,
+            "250mb": 250 * 1024 * 1024,
+            "100mb": 100 * 1024 * 1024,
+            "50mb": 50 * 1024 * 1024,
+            "25mb": 25 * 1024 * 1024,
+        }
+        if value in thresholds:
+            return queryset.filter(output_size__gt=thresholds[value])
+        return queryset
+
+
+class SnapshotRetryListFilter(admin.SimpleListFilter):
+    title = "retry"
+    parameter_name = "retry"
+
+    def lookups(self, request, model_admin):
+        return (
+            ("due", "Due now"),
+            ("future", "Scheduled later"),
+            ("none", "No retry time"),
+        )
+
+    def queryset(self, request, queryset):
+        value = self.value()
+        if value == "due":
+            return queryset.filter(retry_at__isnull=False, retry_at__lte=timezone.now())
+        if value == "future":
+            return queryset.filter(retry_at__gt=timezone.now())
+        if value == "none":
+            return queryset.filter(retry_at__isnull=True)
+        return queryset
+
+
+class SnapshotResultHealthListFilter(admin.SimpleListFilter):
+    title = "ArchiveResult status"
+    parameter_name = "archiveresult_status"
+
+    def lookups(self, request, model_admin):
+        return (
+            ("none", "No ArchiveResults"),
+            ("has_results", "Has ArchiveResults"),
+            ("succeeded", ">50% succeeded"),
+            ("failed", ">50% failed"),
+            ("running", ">50% running"),
+            ("pending", ">50% queued"),
+            ("backoff", ">50% waiting to retry"),
+            ("noresults", ">50% noresults"),
+        )
+
+    def queryset(self, request, queryset):
+        value = self.value()
+        if value:
+            results = ArchiveResult.objects.filter(snapshot_id=OuterRef("pk"))
+            if value == "none":
+                return queryset.annotate(has_results=Exists(results)).filter(has_results=False)
+            if value == "has_results":
+                return queryset.annotate(has_results=Exists(results)).filter(has_results=True)
+            status_by_value = {
+                "succeeded": ArchiveResult.StatusChoices.SUCCEEDED,
+                "failed": ArchiveResult.StatusChoices.FAILED,
+                "running": ArchiveResult.StatusChoices.STARTED,
+                "pending": ArchiveResult.StatusChoices.QUEUED,
+                "backoff": ArchiveResult.StatusChoices.BACKOFF,
+                "noresults": ArchiveResult.StatusChoices.NORESULTS,
+            }
+            if value in status_by_value:
+                queryset = queryset.annotate(
+                    total_results=Count("archiveresult"),
+                    matching_results=Count(
+                        "archiveresult",
+                        filter=Q(archiveresult__status=status_by_value[value]),
+                    ),
+                )
+                return queryset.filter(matching_results__gt=F("total_results") / 2)
+        return queryset
+
+
+class SnapshotChangeList(SearchResultsChangeList):
+    def __init__(self, request, *args, **kwargs):
+        super().__init__(request, *args, **kwargs)
+        resolver_name = getattr(getattr(request, "resolver_match", None), "url_name", "")
+        self.embedded_changelist = request.GET.get("_embedded") == "crawl"
+        self.snapshot_is_grid_view = not self.embedded_changelist and (resolver_name == "grid" or request.path.rstrip("/").endswith("/grid"))
+
+    def get_results(self, request):
+        super().get_results(request)
+        if request.GET.get("_embedded") == "crawl":
+            self.full_result_count = self.result_count
+        else:
+            self.full_result_count = self.model_admin.get_paginator(request, self.model._default_manager.all().order_by(), self.list_per_page).count
+        self.show_full_result_count = True
+
+        snapshot_ids = [obj.pk for obj in self.result_list]
+        if snapshot_ids:
+            results_by_snapshot = {snapshot_id: [] for snapshot_id in snapshot_ids}
+            seen_plugins = {snapshot_id: set() for snapshot_id in snapshot_ids}
+            rows = (
+                ArchiveResult.objects.filter(snapshot_id__in=snapshot_ids, status=ArchiveResult.StatusChoices.SUCCEEDED, output_size__gt=0)
+                .order_by("snapshot_id", "plugin")
+                .values_list("snapshot_id", "plugin", "status", "output_size")
+            )
+            for snapshot_id, plugin, status, output_size in rows.iterator(chunk_size=1000):
+                if plugin in seen_plugins[snapshot_id]:
+                    continue
+                seen_plugins[snapshot_id].add(plugin)
+                results_by_snapshot[snapshot_id].append(SimpleNamespace(plugin=plugin, status=status, output_size=output_size))
+
+            for obj in self.result_list:
+                obj.__dict__["_admin_archiveresults"] = results_by_snapshot[obj.pk]
+
+
 class SnapshotAdminForm(forms.ModelForm):
     """Custom form for Snapshot admin with tag editor widget."""
 
@@ -103,6 +379,12 @@ class SnapshotAdminForm(forms.ModelForm):
         required=False,
         widget=TagEditorWidget(),
         help_text="Type tag names and press Enter or Space to add. Click × to remove.",
+    )
+    permissions_config = forms.ChoiceField(
+        label="Permissions",
+        choices=PERMISSIONS_CHOICES,
+        required=True,
+        help_text="Per-snapshot visibility. Matching the crawl/persona default clears the per-snapshot override.",
     )
 
     class Meta:
@@ -116,9 +398,18 @@ class SnapshotAdminForm(forms.ModelForm):
             self.initial["tags_editor"] = ",".join(
                 sorted(tag.name for tag in self.instance.tags.all()),
             )
+            self.initial["permissions_config"] = get_snapshot_permissions(self.instance)
 
     def save(self, commit=True):
         instance = super().save(commit=False)
+        permissions = self.cleaned_data["permissions_config"]
+        inherited_permissions = str(get_config(crawl=instance.crawl, resolve_plugins=False).PERMISSIONS).strip().lower()
+        config = dict(instance.config or {})
+        if permissions == inherited_permissions:
+            config.pop("PERMISSIONS", None)
+        else:
+            config["PERMISSIONS"] = permissions
+        instance.config = config
 
         # Handle tags_editor field
         if commit:
@@ -150,7 +441,8 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
     form = SnapshotAdminForm
     raw_id_fields = ("crawl", "parent_snapshot")
     list_select_related = ()
-    list_display = ("created_at", "preview_icon", "title_str", "tags_inline", "status_with_progress", "files", "size_with_stats")
+    list_display = ("permissions_badge", "created_at", "preview_icon", "title_str", "tags_inline", "status_with_progress", "files", "size_with_stats")
+    list_display_links = ("created_at",)
     sort_fields = ("title_str", "created_at", "status", "crawl")
     readonly_fields = (
         "admin_actions",
@@ -165,7 +457,20 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         "archiveresults_list",
     )
     search_fields = ("id", "url", "timestamp", "title", "tags__name")
-    list_filter = ("created_at", "downloaded_at", "archiveresult__status", "crawl__created_by", TagNameListFilter)
+    list_filter = (
+        SnapshotPermissionsListFilter,
+        SnapshotStatusListFilter,
+        SnapshotResultHealthListFilter,
+        SnapshotDepthListFilter,
+        SnapshotRelationListFilter,
+        SnapshotArchiveStateListFilter,
+        SnapshotSizeListFilter,
+        SnapshotRetryListFilter,
+        "created_at",
+        "downloaded_at",
+        "crawl__created_by",
+        TagNameListFilter,
+    )
 
     fieldsets = (
         (
@@ -192,7 +497,7 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         (
             "Tags",
             {
-                "fields": ("tags_editor",),
+                "fields": ("tags_editor", "permissions_config"),
                 "classes": ("card",),
             },
         ),
@@ -244,13 +549,21 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
     ordering = ["-timestamp"]
     actions = ["add_tags", "remove_tags", "resnapshot_snapshot", "update_snapshots", "overwrite_snapshots", "delete_snapshots"]
     inlines = []  # Removed TagInline, using TagEditorWidget instead
-    list_per_page = 40
+    list_per_page = 50
 
     action_form = SnapshotActionForm
     paginator = AcceleratedPaginator
 
     save_on_top = True
     show_full_result_count = False
+
+    def get_changelist(self, request, **kwargs):
+        return SnapshotChangeList
+
+    def get_ordering(self, request):
+        if request.GET.get("o"):
+            return []
+        return super().get_ordering(request)
 
     def change_view(self, request, object_id, form_url="", extra_context=None):
         request.archivebox_config = getattr(request, "archivebox_config", None) or get_config()
@@ -262,8 +575,17 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         self.request = request
         request.archivebox_config = getattr(request, "archivebox_config", None) or get_config()
         saved_list_per_page = self.list_per_page
-        self.list_per_page = min(max(5, request.archivebox_config.SNAPSHOTS_PER_PAGE), 25)
+        embedded_changelist = request.GET.get("_embedded") == "crawl"
+        if embedded_changelist:
+            try:
+                requested_per_page = int(request.GET.get("per_page", "200"))
+            except ValueError:
+                requested_per_page = 200
+            self.list_per_page = min(max(200, requested_per_page), 500)
+        else:
+            self.list_per_page = min(max(50, request.archivebox_config.SNAPSHOTS_PER_PAGE), 500)
         extra_context = extra_context or {}
+        extra_context["embedded_changelist"] = embedded_changelist
         extra_context["CONFIG"] = request.archivebox_config
         try:
             try:
@@ -281,6 +603,11 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         actions.pop("delete_selected", None)
         return actions
 
+    def lookup_allowed(self, lookup, value, request=None):
+        if lookup in {"crawl__id__exact", "crawl_id__exact", "crawl_id"}:
+            return True
+        return super().lookup_allowed(lookup, value, request=request)
+
     def get_snapshot_view_url(self, obj: Snapshot) -> str:
         request = getattr(self, "request", None)
         return build_snapshot_url(str(obj.id), request=request, config=getattr(request, "archivebox_config", None))
@@ -296,9 +623,184 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         urls = super().get_urls()
         custom_urls = [
             path("grid/", self.admin_site.admin_view(self.grid_view), name="grid"),
+            path("search-stream/", self.admin_site.admin_view(self.search_stream_view), name="core_snapshot_search_stream"),
             path("<path:object_id>/redo-failed/", self.admin_site.admin_view(self.redo_failed_view), name="core_snapshot_redo_failed"),
+            path("<path:object_id>/set-permissions/", self.admin_site.admin_view(self.set_permissions_view), name="core_snapshot_set_permissions"),
         ]
         return custom_urls + urls
+
+    def search_stream_view(self, request):
+        from archivebox.search import iter_query_search_ids
+
+        query = (request.GET.get("q") or "").strip()
+        from archivebox.search import get_search_mode, get_search_mode_base
+
+        search_mode = get_search_mode(request.GET.get("search_mode"), config=getattr(request, "archivebox_config", None))
+        if not query:
+            return StreamingHttpResponse((), content_type="text/plain")
+
+        search_url = request.GET.get("search_url") or request.get_full_path()
+        target_url = urlsplit(search_url)
+        target_get = QueryDict(target_url.query, mutable=True)
+        for key in ("q", "search_mode", "p", "search_url"):
+            target_get.pop(key, None)
+
+        filter_request = copy(request)
+        filter_request.path = target_url.path or request.path
+        filter_request.path_info = target_url.path or request.path_info
+        filter_request.GET = target_get
+        filter_request.archivebox_config = getattr(request, "archivebox_config", None)
+
+        # Build the same filtered base queryset the changelist uses, but with
+        # the search params stripped. The stream then intersects each wave with
+        # this queryset before writing IDs into the short-lived cache.
+        current_request = getattr(self, "request", None)
+        try:
+            base_queryset = self.get_changelist_instance(filter_request).queryset
+        finally:
+            self.request = current_request
+
+        async def snapshot_ids():
+            seen = set()
+            ids = []
+            last_sent = 0
+            stream_batch_size = 100
+            stream_padding = " " * 4096
+            cache_key = get_admin_search_cache_key(request, search_url)
+            cache.set(cache_key, {"ids": ids, "done": False}, SEARCH_RESULT_CACHE_TTL)
+            yield f"0{stream_padding}\n"
+            queue = Queue(maxsize=8)
+            stop_event = threading.Event()
+
+            def emit(item):
+                while not stop_event.is_set():
+                    try:
+                        queue.put(item, timeout=0.1)
+                        return
+                    except Full:
+                        continue
+
+            def run_search():
+                nonlocal last_sent
+                iterator = None
+                try:
+                    search_mode_base = get_search_mode_base(search_mode, config=getattr(request, "archivebox_config", None))
+                    iterator = (
+                        self.iter_meta_search_ids(query, base_queryset)
+                        if search_mode_base == "meta"
+                        else self.iter_backend_search_ids(
+                            iter_query_search_ids(query, search_mode=search_mode, config=getattr(request, "archivebox_config", None)),
+                            base_queryset,
+                        )
+                    )
+                    for snapshot_id in iterator:
+                        if stop_event.is_set():
+                            break
+                        snapshot_id = str(snapshot_id).strip().lower()
+                        if len(snapshot_id.replace("-", "")) != 32 or snapshot_id in seen:
+                            continue
+                        seen.add(snapshot_id)
+                        ids.append(snapshot_id)
+                        if len(ids) - last_sent >= stream_batch_size:
+                            cache.set(cache_key, {"ids": ids, "done": False}, SEARCH_RESULT_CACHE_TTL)
+                            last_sent = len(ids)
+                            emit(f"{last_sent}{stream_padding}\n")
+                    if not stop_event.is_set() and len(ids) != last_sent:
+                        cache.set(cache_key, {"ids": ids, "done": False}, SEARCH_RESULT_CACHE_TTL)
+                        emit(f"{len(ids)}{stream_padding}\n")
+                except BaseException as err:
+                    emit(err)
+                finally:
+                    if iterator is not None:
+                        try:
+                            iterator.close()
+                        except AttributeError:
+                            pass
+                    cache.set(cache_key, {"ids": ids, "done": True}, SEARCH_RESULT_CACHE_TTL)
+                    emit(None)
+
+            threading.Thread(target=run_search, name="admin-snapshot-search-stream", daemon=True).start()
+            try:
+                while True:
+                    item = await asyncio.to_thread(queue.get)
+                    if item is None:
+                        break
+                    if isinstance(item, BaseException):
+                        raise item
+                    yield item
+            finally:
+                stop_event.set()
+
+        response = StreamingHttpResponse(snapshot_ids(), content_type="text/plain")
+        response["X-Accel-Buffering"] = "no"
+        return response
+
+    def iter_meta_search_ids(self, query, queryset):
+        seen = set()
+        try:
+            snapshot_id = UUID(query)
+        except ValueError:
+            snapshot_id = None
+        if snapshot_id:
+            for pk in queryset.filter(pk=snapshot_id).values_list("pk", flat=True):
+                seen.add(pk)
+                yield pk
+
+        for wave in (
+            Q(timestamp__startswith=query) | Q(url__istartswith=query) | Q(title__istartswith=query),
+            Q(url__icontains=query),
+            Q(title__icontains=query),
+            Q(tags__name__icontains=query),
+        ):
+            for pk in queryset.filter(wave).values_list("pk", flat=True).distinct().iterator(chunk_size=500):
+                if pk in seen:
+                    continue
+                seen.add(pk)
+                yield pk
+
+    def iter_backend_search_ids(self, iterator, queryset):
+        batch = []
+        seen = set()
+
+        def flush_batch():
+            valid = {str(pk) for pk in queryset.filter(pk__in=batch).values_list("pk", flat=True)}
+            for snapshot_id in batch:
+                if snapshot_id in valid and snapshot_id not in seen:
+                    seen.add(snapshot_id)
+                    yield snapshot_id
+
+        for snapshot_id in iterator:
+            snapshot_id = str(snapshot_id).strip().lower()
+            if len(snapshot_id.replace("-", "")) != 32:
+                continue
+            batch.append(snapshot_id)
+            if len(batch) >= 200:
+                yield from flush_batch()
+                batch = []
+        if batch:
+            yield from flush_batch()
+
+    def set_permissions_view(self, request, object_id):
+        if request.method != "POST":
+            return HttpResponseNotAllowed(["POST"])
+
+        permissions = (request.POST.get("permissions") or "").strip().lower()
+        if permissions not in dict(PERMISSIONS_CHOICES):
+            return HttpResponseBadRequest("Invalid permissions value")
+
+        snapshot = get_object_or_404(Snapshot.objects.select_related("crawl"), pk=object_id)
+        config = dict(snapshot.config or {})
+        inherited_permissions = str(get_config(crawl=snapshot.crawl, resolve_plugins=False).PERMISSIONS).strip().lower()
+        if permissions == inherited_permissions:
+            config.pop("PERMISSIONS", None)
+        else:
+            config["PERMISSIONS"] = permissions
+
+        # Keep the quick-edit write to one targeted UPDATE so SQLite only holds
+        # the write lock for the permission/config change itself.
+        Snapshot.objects.filter(pk=snapshot.pk).update(config=config, modified_at=timezone.now())
+        icon, label, fg, bg = SNAPSHOT_PERMISSION_META[permissions]
+        return JsonResponse({"permissions": permissions, "icon": icon, "label": label, "fg": fg, "bg": bg})
 
     def redo_failed_view(self, request, object_id):
         snapshot = get_object_or_404(Snapshot, pk=object_id)
@@ -327,42 +829,56 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
     def get_queryset(self, request):
         self.request = request
         ordering_fields = self._get_ordering_fields(request)
-        needs_size_sort = "size_with_stats" in ordering_fields
         needs_files_sort = "files" in ordering_fields
         needs_tags_sort = "tags_inline" in ordering_fields
         is_change_view = getattr(getattr(request, "resolver_match", None), "url_name", "") == "core_snapshot_change"
+        request.archivebox_default_permissions = str(get_config(resolve_plugins=False).PERMISSIONS).strip().lower()
 
-        prefetch_qs = ArchiveResult.objects.only(
-            "id",
-            "snapshot_id",
-            "plugin",
-            "status",
-            "output_size",
-            "output_files",
-            "output_str",
-        )
-        if not is_change_view:
-            prefetch_qs = prefetch_qs.filter(Q(status="succeeded"))
-
-        qs = (
-            super()
-            .get_queryset(request)
-            .defer("config", "notes")
-            .prefetch_related(
-                Prefetch("crawl", queryset=Crawl.objects.select_related("created_by")),
-                "tags",
-                Prefetch("archiveresult_set", queryset=prefetch_qs),
-            )
-        )
-
-        if needs_size_sort:
-            qs = qs.annotate(
-                output_size_sum=Coalesce(
-                    Sum("archiveresult__output_size"),
-                    0,
+        prefetches = [
+            Prefetch(
+                "crawl",
+                queryset=Crawl.objects.only(
+                    "id",
+                    "permissions",
+                    "persona_id",
+                    "status",
+                    "created_by_id",
+                ).prefetch_related("created_by"),
+            ),
+            "tags",
+        ]
+        if is_change_view:
+            prefetches.append(
+                Prefetch(
+                    "archiveresult_set",
+                    queryset=ArchiveResult.objects.only(
+                        "id",
+                        "snapshot_id",
+                        "plugin",
+                        "status",
+                        "output_size",
+                    ),
                 ),
             )
 
+        qs = super().get_queryset(request)
+        if is_change_view:
+            qs = qs.defer("notes")
+        else:
+            qs = qs.only(
+                "id",
+                "created_at",
+                "url",
+                "timestamp",
+                "bookmarked_at",
+                "crawl_id",
+                "title",
+                "status",
+                "fs_version",
+                "output_size",
+                "permissions",
+            )
+        qs = qs.prefetch_related(*prefetches)
         if needs_files_sort:
             qs = qs.annotate(
                 ar_succeeded_count=Count(
@@ -374,6 +890,66 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
             qs = qs.annotate(tag_count=Count("tags", distinct=True))
 
         return qs
+
+    @admin.display(description="👁", ordering="permissions")
+    def permissions_badge(self, obj):
+        request = self.request
+        permissions = getattr(obj, "snapshot_permissions", None)
+        if permissions is None:
+            if obj.permissions:
+                permissions = obj.permissions
+            elif obj.crawl.permissions:
+                permissions = obj.crawl.permissions
+            elif obj.crawl.persona_id:
+                persona_permissions = getattr(request, "archivebox_persona_permissions", None)
+                if persona_permissions is None:
+                    persona_permissions = {
+                        str(persona.id): persona.permissions or request.archivebox_default_permissions
+                        for persona in Persona.objects.only("id", "permissions")
+                    }
+                    request.archivebox_persona_permissions = persona_permissions
+                permissions = persona_permissions.get(str(obj.crawl.persona_id), request.archivebox_default_permissions)
+            else:
+                permissions = request.archivebox_default_permissions
+        icon, label, fg, bg = SNAPSHOT_PERMISSION_META[permissions]
+        menu_items = format_html_join(
+            "",
+            (
+                '<button type="button" class="snapshot-permissions-menu-item{}" data-permissions="{}">'
+                '<span class="snapshot-permissions-icon" aria-hidden="true" style="color:{}; background:{};">{}</span>'
+                "<span>{}</span>"
+                "</button>"
+            ),
+            (
+                (
+                    " is-active" if choice_value == permissions else "",
+                    choice_value,
+                    choice_fg,
+                    choice_bg,
+                    choice_icon,
+                    choice_label,
+                )
+                for choice_value, choice_label in PERMISSIONS_CHOICES
+                for choice_icon, _choice_title, choice_fg, choice_bg in [SNAPSHOT_PERMISSION_META[choice_value]]
+            ),
+        )
+        return format_html(
+            '<span class="snapshot-permissions-quick" data-current-permissions="{}" data-permissions-url="{}">'
+            '<button type="button" class="snapshot-permissions-button snapshot-permissions-{}" title="{}" aria-label="Change snapshot permissions: {}" aria-expanded="false">'
+            '<span class="snapshot-permissions-icon" aria-hidden="true" style="color:{}; background:{};">{}</span>'
+            "</button>"
+            '<span class="snapshot-permissions-menu" role="menu" hidden>{}</span>'
+            "</span>",
+            permissions,
+            reverse(f"{self.admin_site.name}:core_snapshot_set_permissions", args=[obj.pk]),
+            permissions,
+            label,
+            label,
+            fg,
+            bg,
+            icon,
+            menu_items,
+        )
 
     @admin.display(description="Imported Timestamp")
     def imported_timestamp(self, obj):
@@ -555,15 +1131,15 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
 
     @admin.display(description="Tags", ordering="tag_count")
     def tags_inline(self, obj):
-        widget = InlineTagEditorWidget(snapshot_id=str(obj.pk))
+        widget = InlineTagEditorWidget(snapshot_id=str(obj.pk), editable=True)
         tags = self._get_prefetched_tags(obj)
         tags_html = widget.render(
-            name=f"tags_{obj.pk}",
+            name=f"tags_inline_{obj.pk}",
             value=tags if tags is not None else obj.tags.all(),
-            attrs={"id": f"tags_{obj.pk}"},
+            attrs={"id": f"tags_inline_{obj.pk}"},
             snapshot_id=str(obj.pk),
         )
-        return mark_safe(f'<span class="tags-inline-editor">{tags_html}</span>')
+        return mark_safe(f'<span class="tags-inline-editor tags-inline-editor--compact">{tags_html}</span>')
 
     @admin.display(description="Tags")
     def tags_badges(self, obj):
@@ -716,13 +1292,13 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
     def files(self, obj):
         results = self._get_prefetched_results(obj)
         if results is None:
-            results = obj.archiveresult_set.only("plugin", "status", "output_files", "output_str")
+            results = obj.archiveresult_set.only("plugin", "status", "output_size")
 
         plugins_with_output: dict[str, ArchiveResult] = {}
         for result in results:
             if result.status != ArchiveResult.StatusChoices.SUCCEEDED:
                 continue
-            if not (result.output_files or str(result.output_str or "").strip()):
+            if not result.output_size:
                 continue
             plugins_with_output.setdefault(result.plugin, result)
 
@@ -734,15 +1310,21 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
             key=lambda result: (_plugin_sort_order().get(result.plugin, 9999), result.plugin),
         )
         visible_results = sorted_results[:14]
-        output = [
-            format_html(
-                '<a href="{}" class="exists-True" title="{}">{}</a>',
-                f"/{obj.archive_path_from_db}/{result.plugin}/",
-                result.plugin,
-                get_plugin_icon(result.plugin),
+        output = []
+        request = getattr(self, "request", None)
+        config = getattr(request, "archivebox_config", None)
+        for result in visible_results:
+            icon = mark_safe(get_plugin_icon(result.plugin))
+            if not icon.strip():
+                continue
+            output.append(
+                format_html(
+                    '<a href="{}" class="exists-True" title="{}">{}</a>',
+                    build_web_url(f"/{obj.archive_path_from_db}/{result.plugin}/", request=request, config=config),
+                    result.plugin,
+                    icon,
+                ),
             )
-            for result in visible_results
-        ]
         if len(sorted_results) > len(visible_results):
             output.append(
                 format_html(
@@ -788,6 +1370,7 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         status_colors = {
             "queued": ("#f59e0b", "#fef3c7"),  # amber
             "started": ("#3b82f6", "#dbeafe"),  # blue
+            "paused": ("#1d4ed8", "#dbeafe"),  # blue
             "sealed": ("#10b981", "#d1fae5"),  # green
             "succeeded": ("#10b981", "#d1fae5"),  # green
             "failed": ("#ef4444", "#fee2e2"),  # red
@@ -840,7 +1423,7 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
 
     @admin.display(
         description="Size",
-        ordering="output_size_sum",
+        ordering="output_size",
     )
     def size_with_stats(self, obj):
         """Show archive size with output size from archive results."""
@@ -902,14 +1485,7 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         pending = max(total - succeeded - failed - running - skipped - noresults, 0)
         completed = succeeded + failed + skipped + noresults
         percent = int((completed / total * 100) if total > 0 else 0)
-        is_sealed = obj.status not in (obj.StatusChoices.QUEUED, obj.StatusChoices.STARTED)
-        output_size = None
-
-        if hasattr(obj, "output_size_sum"):
-            output_size = obj.output_size_sum or 0
-        else:
-            output_size = sum(r.output_size or 0 for r in results)
-
+        is_sealed = obj.status not in (obj.StatusChoices.QUEUED, obj.StatusChoices.STARTED, obj.StatusChoices.PAUSED)
         stats = {
             "total": total,
             "succeeded": succeeded,
@@ -919,13 +1495,15 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
             "skipped": skipped,
             "noresults": noresults,
             "percent": percent,
-            "output_size": output_size or 0,
+            "output_size": obj.output_size or 0,
             "is_sealed": is_sealed,
         }
         obj._admin_progress_stats = stats
         return stats
 
     def _get_prefetched_results(self, obj):
+        if "_admin_archiveresults" in obj.__dict__:
+            return obj.__dict__["_admin_archiveresults"]
         if hasattr(obj, "_prefetched_objects_cache") and "archiveresult_set" in obj._prefetched_objects_cache:
             return obj.archiveresult_set.all()
         return None
@@ -1009,31 +1587,9 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         return format_html('<span style="color: {};">{}</span>', color, h)
 
     def grid_view(self, request, extra_context=None):
-
-        # cl = self.get_changelist_instance(request)
-
-        # Save before monkey patching to restore for changelist list view
-        admin_cls = type(self)
-        saved_change_list_template = admin_cls.change_list_template
-        saved_list_per_page = admin_cls.list_per_page
-        saved_list_max_show_all = admin_cls.list_max_show_all
-
-        # Monkey patch here plus core_tags.py
-        admin_cls.change_list_template = "private_index_grid.html"
-        config = getattr(request, "archivebox_config", None) or get_config()
-        request.archivebox_config = config
-        admin_cls.list_per_page = config.SNAPSHOTS_PER_PAGE
-        admin_cls.list_max_show_all = admin_cls.list_per_page
-
-        # Call monkey patched view
-        rendered_response = self.changelist_view(request, extra_context=extra_context)
-
-        # Restore values
-        admin_cls.change_list_template = saved_change_list_template
-        admin_cls.list_per_page = saved_list_per_page
-        admin_cls.list_max_show_all = saved_list_max_show_all
-
-        return rendered_response
+        extra_context = extra_context or {}
+        extra_context["snapshot_is_grid_view"] = True
+        return self.changelist_view(request, extra_context=extra_context)
 
     # for debugging, uncomment this to print all requests:
     # def changelist_view(self, request, extra_context=None):
@@ -1123,28 +1679,24 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
             messages.warning(request, "No tags specified.")
             return
 
-        # Parse comma-separated tag names and get/create Tag objects
         tag_names = [name.strip() for name in tags_str.split(",") if name.strip()]
         tags = []
         for name in tag_names:
-            tag, _ = Tag.objects.get_or_create(
-                name__iexact=name,
-                defaults={"name": name},
+            tag, _ = get_or_create_tag(
+                name,
+                created_by=request.user if request.user.is_authenticated else None,
             )
-            tag = Tag.objects.filter(name__iexact=name).first() or tag
             tags.append(tag)
 
         # Get snapshot IDs efficiently (works with select_across for all pages)
         snapshot_ids = list(queryset.values_list("id", flat=True))
         num_snapshots = len(snapshot_ids)
 
-        print("[+] Adding tags", [t.name for t in tags], "to", num_snapshots, "Snapshots")
-
-        # Bulk create M2M relationships (1 query per tag, not per snapshot)
         for tag in tags:
             SnapshotTag.objects.bulk_create(
-                [SnapshotTag(snapshot_id=sid, tag=tag) for sid in snapshot_ids],
-                ignore_conflicts=True,  # Skip if relationship already exists
+                [SnapshotTag(snapshot_id=sid, tag_id=tag.pk) for sid in snapshot_ids],
+                ignore_conflicts=True,
+                batch_size=1000,
             )
 
         messages.success(
@@ -1181,9 +1733,6 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         num_snapshots = len(snapshot_ids)
         tag_ids = [t.pk for t in tags]
 
-        print("[-] Removing tags", [t.name for t in tags], "from", num_snapshots, "Snapshots")
-
-        # Bulk delete M2M relationships (1 query total, not per snapshot)
         deleted_count, _ = SnapshotTag.objects.filter(
             snapshot_id__in=snapshot_ids,
             tag_id__in=tag_ids,

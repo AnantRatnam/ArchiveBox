@@ -14,7 +14,6 @@ from ninja.errors import HttpError
 
 from archivebox.core.models import Snapshot
 from archivebox.crawls.models import Crawl
-from archivebox.config.common import get_config
 
 from .auth import API_AUTH_METHODS
 
@@ -33,21 +32,14 @@ class CrawlSchema(Schema):
 
     status: str
     retry_at: datetime | None
+    is_paused: bool
 
     urls: str
     max_depth: int
-    max_urls: int
-    crawl_max_size: int
-    snapshot_max_size: int
-    crawl_max_concurrent_snapshots: int
     tags_str: str
     config: dict
 
     # snapshots: List[SnapshotSchema]
-
-    @staticmethod
-    def resolve_crawl_max_concurrent_snapshots(obj):
-        return int(get_config(crawl=obj).CRAWL_MAX_CONCURRENT_SNAPSHOTS)
 
     @staticmethod
     def resolve_created_by_id(obj):
@@ -68,6 +60,7 @@ class CrawlSchema(Schema):
 
 
 class CrawlUpdateSchema(Schema):
+    action: str | None = None
     status: str | None = None
     retry_at: datetime | None = None
     tags: list[str] | None = None
@@ -77,10 +70,6 @@ class CrawlUpdateSchema(Schema):
 class CrawlCreateSchema(Schema):
     urls: list[str]
     max_depth: int = 0
-    max_urls: int = 0
-    crawl_max_size: int = 0
-    snapshot_max_size: int = 0
-    crawl_max_concurrent_snapshots: int | None = None
     tags: list[str] | None = None
     tags_str: str = ""
     label: str = ""
@@ -113,25 +102,12 @@ def create_crawl(request: HttpRequest, data: CrawlCreateSchema):
         raise HttpError(400, "At least one URL is required")
     if data.max_depth not in (0, 1, 2, 3, 4):
         raise HttpError(400, "max_depth must be between 0 and 4")
-    if data.max_urls < 0:
-        raise HttpError(400, "max_urls must be >= 0")
-    if data.crawl_max_size < 0:
-        raise HttpError(400, "crawl_max_size must be >= 0")
-    if data.snapshot_max_size < 0:
-        raise HttpError(400, "snapshot_max_size must be >= 0")
-    if data.crawl_max_concurrent_snapshots is not None and data.crawl_max_concurrent_snapshots < 1:
-        raise HttpError(400, "crawl_max_concurrent_snapshots must be >= 1")
 
     tags = normalize_tag_list(data.tags, data.tags_str)
     config = dict(data.config or {})
-    if data.crawl_max_concurrent_snapshots is not None:
-        config["CRAWL_MAX_CONCURRENT_SNAPSHOTS"] = data.crawl_max_concurrent_snapshots
     crawl = Crawl.objects.create(
         urls="\n".join(urls),
         max_depth=data.max_depth,
-        max_urls=data.max_urls,
-        crawl_max_size=data.crawl_max_size,
-        snapshot_max_size=data.snapshot_max_size,
         tags_str=",".join(tags),
         label=data.label,
         notes=data.notes,
@@ -167,6 +143,19 @@ def patch_crawl(request: HttpRequest, crawl_id: str, data: CrawlUpdateSchema):
     payload = data.dict(exclude_unset=True)
     update_fields = ["modified_at"]
 
+    action = payload.pop("action", None)
+    if action:
+        if action == "pause":
+            crawl.pause()
+            return crawl
+        if action in ("resume", "unpause"):
+            crawl.resume()
+            return crawl
+        if action == "cancel":
+            crawl.cancel()
+            return crawl
+        raise HttpError(400, f"Invalid action: {action}")
+
     tags = payload.pop("tags", None)
     tags_str = payload.pop("tags_str", None)
     if tags is not None or tags_str is not None:
@@ -186,19 +175,7 @@ def patch_crawl(request: HttpRequest, crawl_id: str, data: CrawlUpdateSchema):
         update_fields.append("retry_at")
 
     if payload.get("status") == Crawl.StatusChoices.SEALED:
-        cancelled_at = timezone.now()
-        crawl.retry_at = None
-        if "retry_at" not in update_fields:
-            update_fields.append("retry_at")
-        crawl.save(update_fields=update_fields)
-        Snapshot.objects.filter(
-            crawl=crawl,
-            status__in=[Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED],
-        ).update(
-            status=Snapshot.StatusChoices.SEALED,
-            retry_at=None,
-            modified_at=cancelled_at,
-        )
+        crawl.cancel()
     else:
         crawl.save(update_fields=update_fields)
     return crawl

@@ -118,8 +118,8 @@
           toggle.textContent = collapsed ? toggle.dataset.showLabel : toggle.dataset.hideLabel;
           toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
           if (toolbarToggle) {
-            toolbarToggle.textContent = toggle.dataset.showLabel;
-            toolbarToggle.style.display = collapsed ? 'inline-block' : 'none';
+            toolbarToggle.textContent = collapsed ? 'Filters ▸' : 'Filters ◂';
+            toolbarToggle.style.display = 'inline-flex';
           }
         }
 

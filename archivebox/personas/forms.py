@@ -7,6 +7,7 @@ from django.utils.safestring import mark_safe
 
 from archivebox.config.common import get_config
 from archivebox.core.forms import PluginConfigFormMixin
+from archivebox.core.permissions import PERMISSIONS_CHOICES
 from archivebox.personas.importers import (
     PersonaImportResult,
     PersonaImportSource,
@@ -25,6 +26,12 @@ def _mode_label(title: str, description: str) -> str:
 
 
 class PersonaAdminForm(PluginConfigFormMixin, forms.ModelForm):
+    permissions = forms.ChoiceField(
+        label="Permissions",
+        choices=PERMISSIONS_CHOICES,
+        required=True,
+        help_text="Default visibility for crawls and snapshots that use this persona.",
+    )
     import_mode = forms.ChoiceField(
         required=False,
         initial="none",
@@ -102,6 +109,7 @@ class PersonaAdminForm(PluginConfigFormMixin, forms.ModelForm):
 
         self.fields["import_mode"].widget.attrs["class"] = "abx-import-mode"
         self.fields["import_discovered_profile"].widget.attrs["class"] = "abx-profile-picker"
+        self.fields["permissions"].initial = str((self.instance.config or {}).get("PERMISSIONS") or "public").strip().lower()
 
         if self.discovered_profiles:
             self.fields["import_discovered_profile"].choices = [
@@ -131,6 +139,7 @@ class PersonaAdminForm(PluginConfigFormMixin, forms.ModelForm):
         manual_config = cleaned_data.get("config") or {}
         if not isinstance(manual_config, dict):
             manual_config = {}
+        manual_config["PERMISSIONS"] = cleaned_data.get("permissions") or "public"
         plugin_config_overrides = self.clean_plugin_config_overrides(get_config())
         cleaned_data["plugin_config"] = plugin_config_overrides
         cleaned_data["config"] = {

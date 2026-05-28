@@ -105,6 +105,7 @@ def render_archiveresults_list(archiveresults_qs, limit=50, config=None):
         "failed": ("#991b1b", "#fee2e2"),  # red
         "queued": ("#6b7280", "#f3f4f6"),  # gray
         "started": ("#92400e", "#fef3c7"),  # amber
+        "paused": ("#1d4ed8", "#dbeafe"),  # blue
         "backoff": ("#92400e", "#fef3c7"),
         "skipped": ("#475569", "#f1f5f9"),
         "noresults": ("#475569", "#f1f5f9"),
@@ -152,7 +153,7 @@ def render_archiveresults_list(archiveresults_qs, limit=50, config=None):
             '''
 
         # Truncate output for display
-        full_output = result.output_str or "-"
+        full_output = result.output_str_for_display() or "-"
         output_display = full_output[:60]
         if len(full_output) > 60:
             output_display += "..."
@@ -718,12 +719,12 @@ class ArchiveResultAdmin(BaseModelAdmin):
         return format_html(
             '<a href="{}" class="output-link">↗️</a><pre>{}</pre>',
             build_snapshot_url(snapshot_id, output_path, request=request, config=config),
-            result.output_str,
+            result.output_str_for_display(),
         )
 
     @admin.display(description="Output", ordering="output_str")
     def output_str_display(self, result):
-        output_text = str(result.output_str or "").strip()
+        output_text = str(result.output_str_for_display() or "").strip()
         if not output_text:
             return "-"
 
@@ -787,7 +788,7 @@ class ArchiveResultAdmin(BaseModelAdmin):
         snapshot_dir = Path(DATA_DIR) / str(result.pwd).split("data/", 1)[-1]
         output_html = format_html(
             '<pre style="display: inline-block">{}</pre><br/>',
-            result.output_str,
+            result.output_str_for_display(),
         )
         snapshot_id = str(result.snapshot_id)
         request = getattr(self, "request", None)

@@ -40,6 +40,7 @@ Examples:
 __package__ = "archivebox.cli"
 __command__ = "archivebox run"
 
+import os
 import sys
 from collections import defaultdict
 
@@ -111,10 +112,10 @@ def process_stdin_records() -> int:
                     crawl = Crawl.from_json(record, overrides={"created_by_id": created_by_id})
 
                 if crawl:
-                    crawl.retry_at = timezone.now()
-                    if crawl.status not in [Crawl.StatusChoices.SEALED]:
-                        crawl.status = Crawl.StatusChoices.QUEUED
-                    crawl.save()
+                    crawl.update_and_requeue(
+                        status=Crawl.StatusChoices.QUEUED,
+                        retry_at=timezone.now(),
+                    )
                     full_crawl_ids.add(str(crawl.id))
                     run_all_plugins_for_crawl.add(str(crawl.id))
                     output_records.append(crawl.to_json())
@@ -132,15 +133,7 @@ def process_stdin_records() -> int:
                     snapshot = Snapshot.from_json(record, overrides={"created_by_id": created_by_id})
 
                 if snapshot:
-                    snapshot.retry_at = timezone.now()
-                    if snapshot.status not in [Snapshot.StatusChoices.SEALED]:
-                        snapshot.status = Snapshot.StatusChoices.QUEUED
-                    snapshot.save()
-                    crawl = snapshot.crawl
-                    crawl.retry_at = timezone.now()
-                    if crawl.status != Crawl.StatusChoices.STARTED:
-                        crawl.status = Crawl.StatusChoices.QUEUED
-                    crawl.save(update_fields=["status", "retry_at", "modified_at"])
+                    snapshot.queue_for_extraction()
                     crawl_id = str(snapshot.crawl_id)
                     snapshot_ids_by_crawl[crawl_id].add(str(snapshot.id))
                     run_all_plugins_for_crawl.add(crawl_id)
@@ -177,15 +170,7 @@ def process_stdin_records() -> int:
                         snapshot = None
 
                 if snapshot:
-                    snapshot.retry_at = timezone.now()
-                    if snapshot.status != Snapshot.StatusChoices.STARTED:
-                        snapshot.status = Snapshot.StatusChoices.QUEUED
-                    snapshot.save(update_fields=["status", "retry_at", "modified_at"])
-                    crawl = snapshot.crawl
-                    crawl.retry_at = timezone.now()
-                    if crawl.status != Crawl.StatusChoices.STARTED:
-                        crawl.status = Crawl.StatusChoices.QUEUED
-                    crawl.save(update_fields=["status", "retry_at", "modified_at"])
+                    snapshot.queue_for_extraction()
                     crawl_id = str(snapshot.crawl_id)
                     snapshot_ids_by_crawl[crawl_id].add(str(snapshot.id))
                     if plugin_name:
@@ -236,6 +221,13 @@ def process_stdin_records() -> int:
     targeted_crawl_ids = full_crawl_ids | set(snapshot_ids_by_crawl)
     if targeted_crawl_ids:
         for crawl_id in sorted(targeted_crawl_ids):
+            try:
+                crawl = Crawl.objects.get(id=crawl_id)
+            except Crawl.DoesNotExist:
+                continue
+            if not crawl.claim_processing_lock(lock_seconds=10):
+                rprint(f"[yellow]Crawl {crawl_id} is already owned by another runner[/yellow]", file=sys.stderr)
+                return 1
             run_crawl(
                 crawl_id,
                 snapshot_ids=None if crawl_id in full_crawl_ids else sorted(snapshot_ids_by_crawl[crawl_id]),
@@ -253,17 +245,20 @@ def run_runner(daemon: bool = False, crawl_id: str | None = None) -> int:
 
     Returns exit code (0 = success, 1 = error).
     """
-    from django.utils import timezone
+    from archivebox.config import CONSTANTS
     from archivebox.machine.models import Machine, Process
-    from archivebox.services.runner import cleanup_orchestrator_state, run_pending_crawls
+    from archivebox.services.supervision_service import healthy_orchestrator
+    from archivebox.services.runner import recover_orchestrator_state, run_pending_crawls
 
-    cleanup_orchestrator_state(include_chrome=True)
+    recover_orchestrator_state(include_chrome=True)
     Machine.current()
+    existing = healthy_orchestrator(data_dir=CONSTANTS.DATA_DIR)
     current = Process.current()
-    if current.process_type != Process.TypeChoices.ORCHESTRATOR:
-        current.process_type = Process.TypeChoices.ORCHESTRATOR
-        current.save(update_fields=["process_type", "modified_at"])
-
+    existing_pid = existing.get("pid") if isinstance(existing, dict) else getattr(existing, "pid", None)
+    if existing_pid and existing_pid != os.getpid():
+        rprint(f"[green][*] Existing ArchiveBox orchestrator pid={existing_pid} is already running.[/green]", file=sys.stderr)
+        return 0
+    current.mark_running(process_type=Process.TypeChoices.ORCHESTRATOR, pwd=str(CONSTANTS.DATA_DIR), timeout=0)
     try:
         run_pending_crawls(daemon=daemon, crawl_id=crawl_id)
         return 0
@@ -275,9 +270,7 @@ def run_runner(daemon: bool = False, crawl_id: str | None = None) -> int:
     finally:
         current.refresh_from_db()
         if current.status != Process.StatusChoices.EXITED:
-            current.status = Process.StatusChoices.EXITED
-            current.ended_at = current.ended_at or timezone.now()
-            current.save(update_fields=["status", "ended_at", "modified_at"])
+            current.mark_exited()
 
 
 @click.command()
@@ -328,11 +321,15 @@ def main(daemon: bool, crawl_id: str, snapshot_id: str, binary_id: str):
 
 def run_snapshot_worker(snapshot_id: str) -> int:
     from archivebox.core.models import Snapshot
-    from archivebox.services.runner import run_crawl
+    from archivebox.services.runner import run_due_snapshot
+    from django.utils import timezone
 
     try:
         snapshot = Snapshot.objects.select_related("crawl").get(id=snapshot_id)
-        run_crawl(str(snapshot.crawl_id), snapshot_ids=[str(snapshot.id)])
+        if snapshot.retry_at is None:
+            Snapshot.objects.filter(pk=snapshot.pk).update(retry_at=timezone.now(), modified_at=timezone.now())
+            snapshot.refresh_from_db()
+        run_due_snapshot(snapshot, lock_seconds=60)
         return 0
     except KeyboardInterrupt:
         return 0

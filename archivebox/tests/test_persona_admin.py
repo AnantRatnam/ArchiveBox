@@ -170,6 +170,7 @@ def test_persona_admin_add_post_runs_shared_importer(client, admin_user, monkeyp
         {
             "name": "ImportedPersona",
             "created_by": str(admin_user.pk),
+            "permissions": "public",
             "config": "{}",
             "import_mode": "discovered",
             "import_discovered_profile": source.choice_value,
@@ -204,6 +205,7 @@ def test_persona_admin_saves_typed_plugin_config(client, admin_user, monkeypatch
         {
             "name": "PluginConfigPersona",
             "created_by": str(admin_user.pk),
+            "permissions": "public",
             "config": "{}",
             "import_mode": "none",
             "plugin_config__wget__WGET_TIMEOUT": "77",

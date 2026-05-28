@@ -32,6 +32,7 @@ __command__ = "archivebox extract"
 
 import sys
 from collections import defaultdict
+from itertools import product
 
 import rich_click as click
 
@@ -45,7 +46,6 @@ def process_archiveresult_by_id(archiveresult_id: str) -> int:
     through the shared crawl runner with the corresponding plugin selected.
     """
     from rich import print as rprint
-    from django.utils import timezone
     from archivebox.core.models import ArchiveResult
     from archivebox.services.runner import run_crawl
 
@@ -58,19 +58,29 @@ def process_archiveresult_by_id(archiveresult_id: str) -> int:
     rprint(f"[blue]Extracting {archiveresult.plugin} for {archiveresult.snapshot.url}[/blue]", file=sys.stderr)
 
     try:
+        was_paused = archiveresult.snapshot.is_paused
         archiveresult.reset_for_retry()
         snapshot = archiveresult.snapshot
-        snapshot.status = snapshot.StatusChoices.QUEUED
-        snapshot.retry_at = timezone.now()
-        snapshot.save(update_fields=["status", "retry_at", "modified_at"])
-
+        if not was_paused:
+            snapshot.queue_for_extraction()
+        else:
+            # A paused snapshot may still accept explicit maintenance for one
+            # ArchiveResult, but this path must not transition it back to
+            # queued/startable work.
+            snapshot.save(update_fields=["retry_at", "modified_at"])
         crawl = snapshot.crawl
-        if crawl.status != crawl.StatusChoices.STARTED:
-            crawl.status = crawl.StatusChoices.QUEUED
-        crawl.retry_at = timezone.now()
-        crawl.save(update_fields=["status", "retry_at", "modified_at"])
+        if not crawl.claim_processing_lock(lock_seconds=10):
+            rprint(
+                f"[yellow]Crawl {crawl.id} is already owned by another runner[/yellow]",
+                file=sys.stderr,
+            )
+            return 1
 
-        run_crawl(str(crawl.id), snapshot_ids=[str(snapshot.id)], selected_plugins=[archiveresult.plugin])
+        try:
+            run_crawl(str(snapshot.crawl_id), snapshot_ids=[str(snapshot.id)], selected_plugins=[archiveresult.plugin])
+        finally:
+            if was_paused:
+                snapshot.restore_paused_scheduler_marker()
         archiveresult.refresh_from_db()
 
         if archiveresult.status == ArchiveResult.StatusChoices.SUCCEEDED:
@@ -98,6 +108,7 @@ def run_plugins(
     plugins: str = "",
     wait: bool = True,
     emit_results: bool = True,
+    show_progress: bool = True,
 ) -> int:
     """
     Run plugins on Snapshots from input.
@@ -118,7 +129,9 @@ def run_plugins(
         TYPE_ARCHIVERESULT,
     )
     from archivebox.core.models import Snapshot
+    from archivebox.core.models import ArchiveResult
     from archivebox.services.runner import run_crawl
+    from abx_dl.models import discover_plugins
 
     is_tty = sys.stdout.isatty()
 
@@ -145,7 +158,7 @@ def run_plugins(
         if record_type == TYPE_SNAPSHOT:
             snapshot_id = record.get("id")
             if snapshot_id:
-                snapshot_ids.add(snapshot_id)
+                snapshot_ids.add(str(snapshot_id))
             elif record.get("url"):
                 # Look up by URL (get most recent if multiple exist)
                 snap = Snapshot.objects.filter(url=record["url"]).order_by("-created_at").first()
@@ -157,41 +170,124 @@ def run_plugins(
         elif record_type == TYPE_ARCHIVERESULT:
             snapshot_id = record.get("snapshot_id")
             if snapshot_id:
-                snapshot_ids.add(snapshot_id)
+                snapshot_ids.add(str(snapshot_id))
                 plugin_name = record.get("plugin")
                 if plugin_name and not plugins_list:
                     requested_plugins_by_snapshot[str(snapshot_id)].add(str(plugin_name))
 
         elif "id" in record:
             # Assume it's a snapshot ID
-            snapshot_ids.add(record["id"])
+            snapshot_ids.add(str(record["id"]))
 
     if not snapshot_ids:
         rprint("[red]No valid snapshot IDs found in input[/red]", file=sys.stderr)
         return 1
 
-    # Get snapshots and ensure they have pending ArchiveResults
-    processed_count = 0
-    for snapshot_id in snapshot_ids:
-        try:
-            snapshot = Snapshot.objects.get(id=snapshot_id)
-        except Snapshot.DoesNotExist:
-            rprint(f"[yellow]Snapshot {snapshot_id} not found[/yellow]", file=sys.stderr)
-            continue
+    existing_snapshots = list(Snapshot.objects.filter(id__in=snapshot_ids).values_list("id", "crawl_id"))
+    existing_snapshot_ids = {str(snapshot_id) for snapshot_id, _crawl_id in existing_snapshots}
+    existing_crawl_ids = {str(crawl_id) for _snapshot_id, crawl_id in existing_snapshots}
+    missing_snapshot_ids = sorted(str(snapshot_id) for snapshot_id in snapshot_ids - existing_snapshot_ids)
+    for snapshot_id in missing_snapshot_ids:
+        rprint(f"[yellow]Snapshot {snapshot_id} not found[/yellow]", file=sys.stderr)
 
-        requested_plugin_names = set(plugins_list) | requested_plugins_by_snapshot.get(str(snapshot.id), set())
-        for plugin_name in requested_plugin_names:
-            existing_result = snapshot.archiveresult_set.filter(plugin=plugin_name).order_by("-created_at").first()
-            if existing_result:
-                existing_result.reset_for_retry()
+    # Queue only the target plugin rows. Bulk updates keep large reindex runs
+    # from doing one SELECT+UPDATE per snapshot/plugin before hooks even start.
+    requested_pairs: set[tuple[str, str]] = set()
+    if plugins_list:
+        requested_pairs.update((snapshot_id, plugin_name) for snapshot_id, plugin_name in product(existing_snapshot_ids, plugins_list))
+    else:
+        requested_pairs.update(
+            (snapshot_id, plugin_name)
+            for snapshot_id, plugin_names in requested_plugins_by_snapshot.items()
+            if snapshot_id in existing_snapshot_ids
+            for plugin_name in plugin_names
+        )
+    plugins_by_name = discover_plugins()
+    requested_rows: set[tuple[str, str, str]] = set()
+    for snapshot_id, plugin_name in requested_pairs:
+        plugin = plugins_by_name.get(plugin_name)
+        hooks = plugin.filter_hooks("Snapshot") if plugin is not None else []
+        if hooks:
+            requested_rows.update((snapshot_id, plugin_name, hook.name) for hook in hooks)
+        else:
+            requested_rows.add((snapshot_id, plugin_name, ""))
 
-        # Reset snapshot status to allow processing
-        if snapshot.status == Snapshot.StatusChoices.SEALED:
-            snapshot.status = Snapshot.StatusChoices.STARTED
-            snapshot.retry_at = timezone.now()
-            snapshot.save()
+    reset_fields = {
+        "status": ArchiveResult.StatusChoices.QUEUED,
+        "output_str": "",
+        "output_json": None,
+        "output_files": {},
+        "output_size": 0,
+        "output_mimetypes": "",
+        "start_ts": None,
+        "end_ts": None,
+        "modified_at": timezone.now(),
+    }
+    if plugins_list:
+        ArchiveResult.objects.filter(snapshot_id__in=existing_snapshot_ids, plugin__in=plugins_list).update(**reset_fields)
+    elif requested_plugins_by_snapshot:
+        snapshot_ids_by_plugin: dict[str, set[str]] = defaultdict(set)
+        for snapshot_id, plugin_names in requested_plugins_by_snapshot.items():
+            if snapshot_id in existing_snapshot_ids:
+                for plugin_name in plugin_names:
+                    snapshot_ids_by_plugin[plugin_name].add(snapshot_id)
+        for plugin_name, plugin_snapshot_ids in snapshot_ids_by_plugin.items():
+            ArchiveResult.objects.filter(snapshot_id__in=plugin_snapshot_ids, plugin=plugin_name).update(**reset_fields)
+    existing_rows = set(
+        ArchiveResult.objects.filter(
+            snapshot_id__in=existing_snapshot_ids,
+            plugin__in={plugin_name for _snapshot_id, plugin_name, _hook_name in requested_rows},
+        ).values_list("snapshot_id", "plugin", "hook_name"),
+    )
+    missing_rows = requested_rows - {(str(snapshot_id), plugin_name, hook_name) for snapshot_id, plugin_name, hook_name in existing_rows}
+    if missing_rows:
+        ArchiveResult.objects.bulk_create(
+            [
+                ArchiveResult(
+                    snapshot_id=snapshot_id,
+                    plugin=plugin_name,
+                    hook_name=hook_name,
+                    status=ArchiveResult.StatusChoices.QUEUED,
+                )
+                for snapshot_id, plugin_name, hook_name in sorted(missing_rows)
+            ],
+            batch_size=500,
+        )
 
-        processed_count += 1
+    processed_count = len(existing_snapshot_ids)
+    queue_at = timezone.now()
+    if existing_snapshot_ids:
+        if requested_rows:
+            # Targeted ArchiveResult retries use retry_at as the scheduling
+            # signal and keep sealed snapshots sealed so extractors are not
+            # re-run outside the explicitly queued plugin rows. Paused snapshots
+            # also keep status=paused here: `retry_at` only asks the orchestrator
+            # to process the queued plugin rows, and run_due_snapshot restores
+            # retry_at=MAX afterward instead of resuming the snapshot lifecycle.
+            Snapshot.objects.filter(id__in=existing_snapshot_ids).update(
+                retry_at=queue_at,
+                modified_at=queue_at,
+            )
+        else:
+            # No plugin rows were requested, so this is a full snapshot retry.
+            Snapshot.objects.filter(id__in=existing_snapshot_ids).update(
+                status=Snapshot.StatusChoices.QUEUED,
+                retry_at=queue_at,
+                current_step=0,
+                modified_at=queue_at,
+            )
+    if existing_crawl_ids and not requested_rows:
+        from archivebox.crawls.models import Crawl
+
+        Crawl.objects.filter(id__in=existing_crawl_ids).exclude(status=Crawl.StatusChoices.STARTED).update(
+            status=Crawl.StatusChoices.QUEUED,
+            retry_at=queue_at,
+            modified_at=queue_at,
+        )
+        Crawl.objects.filter(id__in=existing_crawl_ids, status=Crawl.StatusChoices.STARTED).update(
+            retry_at=queue_at,
+            modified_at=queue_at,
+        )
 
     if processed_count == 0:
         rprint("[red]No snapshots to process[/red]", file=sys.stderr)
@@ -203,14 +299,19 @@ def run_plugins(
     if wait:
         rprint("[blue]Running plugins...[/blue]", file=sys.stderr)
         snapshot_ids_by_crawl: dict[str, set[str]] = defaultdict(set)
-        for snapshot_id in snapshot_ids:
-            try:
-                snapshot = Snapshot.objects.only("id", "crawl_id").get(id=snapshot_id)
-            except Snapshot.DoesNotExist:
-                continue
-            snapshot_ids_by_crawl[str(snapshot.crawl_id)].add(str(snapshot.id))
+        for snapshot_id, crawl_id in existing_snapshots:
+            snapshot_ids_by_crawl[str(crawl_id)].add(str(snapshot_id))
 
         for crawl_id, crawl_snapshot_ids in snapshot_ids_by_crawl.items():
+            from archivebox.crawls.models import Crawl
+
+            crawl = Crawl.objects.get(id=crawl_id)
+            if not crawl.claim_processing_lock(lock_seconds=10):
+                rprint(
+                    f"[yellow]Crawl {crawl_id} is already owned by another runner[/yellow]",
+                    file=sys.stderr,
+                )
+                return 1
             selected_plugins = (
                 plugins_list
                 or sorted(
@@ -222,6 +323,7 @@ def run_plugins(
                 crawl_id,
                 snapshot_ids=sorted(crawl_snapshot_ids),
                 selected_plugins=selected_plugins,
+                show_progress=show_progress,
             )
 
     if not emit_results:

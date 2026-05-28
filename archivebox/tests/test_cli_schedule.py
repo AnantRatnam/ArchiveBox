@@ -2,8 +2,14 @@
 """CLI-specific tests for archivebox schedule."""
 
 import os
-import sqlite3
 import subprocess
+
+import pytest
+
+from archivebox.crawls.models import Crawl
+from archivebox.tests.orm_helpers import use_archivebox_db
+
+pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def test_schedule_run_all_enqueues_scheduled_crawl(tmp_path, process, disable_extractors_dict):
@@ -26,12 +32,9 @@ def test_schedule_run_all_enqueues_scheduled_crawl(tmp_path, process, disable_ex
     assert result.returncode == 0
     assert "Enqueued 1 scheduled crawl" in result.stdout
 
-    conn = sqlite3.connect(tmp_path / "index.sqlite3")
-    try:
-        crawl_count = conn.execute("SELECT COUNT(*) FROM crawls_crawl").fetchone()[0]
-        queued_count = conn.execute("SELECT COUNT(*) FROM crawls_crawl WHERE status = 'queued'").fetchone()[0]
-    finally:
-        conn.close()
+    with use_archivebox_db(tmp_path):
+        crawl_count = Crawl.objects.count()
+        queued_count = Crawl.objects.filter(status="queued").count()
 
     assert crawl_count >= 2
     assert queued_count >= 1
@@ -49,12 +52,7 @@ def test_schedule_without_import_path_creates_maintenance_schedule(tmp_path, pro
     assert result.returncode == 0
     assert "Created scheduled maintenance update" in result.stdout
 
-    conn = sqlite3.connect(tmp_path / "index.sqlite3")
-    try:
-        row = conn.execute(
-            "SELECT urls, status FROM crawls_crawl ORDER BY created_at DESC LIMIT 1",
-        ).fetchone()
-    finally:
-        conn.close()
+    with use_archivebox_db(tmp_path):
+        row = Crawl.objects.order_by("-created_at").values_list("urls", "status").first()
 
     assert row == ("archivebox://update", "sealed")

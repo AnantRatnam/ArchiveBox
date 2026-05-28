@@ -2,7 +2,7 @@ __package__ = "archivebox.workers"
 
 from typing import ClassVar
 from collections.abc import Iterable
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from statemachine.mixins import MachineMixin
 
 from django.db import models
@@ -17,6 +17,7 @@ from statemachine import registry, StateMachine, State
 class DefaultStatusChoices(models.TextChoices):
     QUEUED = "queued", "Queued"
     STARTED = "started", "Started"
+    PAUSED = "paused", "Paused"
     SEALED = "sealed", "Sealed"
 
 
@@ -29,6 +30,7 @@ default_status_field: models.CharField = models.CharField(
     db_index=True,
 )
 default_retry_at_field: models.DateTimeField = models.DateTimeField(default=timezone.now, null=True, blank=True, db_index=True)
+RETRY_AT_MAX = datetime.max.replace(tzinfo=UTC)
 
 ObjectState = State | str
 ObjectStateList = Iterable[ObjectState]
@@ -192,6 +194,70 @@ class BaseModelWithStateMachine(models.Model, MachineMixin):
 
     def bump_retry_at(self, seconds: int = 10):
         self.RETRY_AT = timezone.now() + timedelta(seconds=seconds)
+
+    @property
+    def is_paused(self) -> bool:
+        paused_state = getattr(self.StatusChoices, "PAUSED", None)
+        return paused_state is not None and self.STATE == paused_state
+
+    def pause(self, *, save: bool = True) -> bool:
+        paused_state = getattr(self.StatusChoices, "PAUSED", None)
+        if paused_state is None:
+            return False
+        if self.STATE in self.FINAL_STATES or self.is_paused:
+            return False
+        if save:
+            transition = getattr(getattr(self, self.state_machine_attr, None), "pause_requested", None)
+            if callable(transition):
+                transition()
+                self.refresh_from_db()
+                return self.is_paused
+            self.STATE = paused_state
+            self.RETRY_AT = RETRY_AT_MAX
+            updated = type(self).objects.filter(pk=self.pk).exclude(
+                **{self.state_field_name + "__in": [*self.FINAL_STATES, paused_state]},
+            ).update(
+                **{
+                    self.state_field_name: paused_state,
+                    self.retry_at_field_name: RETRY_AT_MAX,
+                    "modified_at": timezone.now(),
+                },
+            )
+            self.refresh_from_db()
+            return updated == 1
+        self.STATE = paused_state
+        self.RETRY_AT = RETRY_AT_MAX
+        return True
+
+    def resume(self, *, when: datetime | None = None, save: bool = True) -> bool:
+        paused_state = getattr(self.StatusChoices, "PAUSED", None)
+        if paused_state is None:
+            return False
+        if not self.is_paused:
+            return False
+        if save:
+            transition = getattr(getattr(self, self.state_machine_attr, None), "resume_requested", None)
+            if callable(transition) and when is None:
+                transition()
+                self.refresh_from_db()
+                return self.STATE == self.StatusChoices.QUEUED
+            self.STATE = self.StatusChoices.QUEUED
+            self.RETRY_AT = when or timezone.now()
+            updated = type(self).objects.filter(
+                pk=self.pk,
+                **{self.state_field_name: paused_state},
+            ).update(
+                **{
+                    self.state_field_name: self.StatusChoices.QUEUED,
+                    self.retry_at_field_name: self.RETRY_AT,
+                    "modified_at": timezone.now(),
+                },
+            )
+            self.refresh_from_db()
+            return updated == 1
+        self.STATE = self.StatusChoices.QUEUED
+        self.RETRY_AT = when or timezone.now()
+        return True
 
     def update_and_requeue(self, **kwargs) -> bool:
         """

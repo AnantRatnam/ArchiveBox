@@ -22,6 +22,8 @@ class CrawlService(BaseService):
         from archivebox.crawls.models import Crawl
 
         crawl = await Crawl.objects.aget(id=self.crawl_id)
+        if crawl.is_paused:
+            return
         if crawl.status != Crawl.StatusChoices.SEALED:
             crawl.status = Crawl.StatusChoices.STARTED
         crawl.retry_at = None
@@ -31,6 +33,8 @@ class CrawlService(BaseService):
         from archivebox.crawls.models import Crawl
 
         crawl = await Crawl.objects.aget(id=self.crawl_id)
+        if crawl.is_paused:
+            return
         if crawl.status != Crawl.StatusChoices.SEALED:
             crawl.status = Crawl.StatusChoices.STARTED
         crawl.retry_at = None
@@ -41,8 +45,10 @@ class CrawlService(BaseService):
         from archivebox.core.models import Snapshot
 
         crawl = await Crawl.objects.aget(id=self.crawl_id)
+        if crawl.is_paused:
+            return
         is_finished = not await crawl.snapshot_set.filter(
-            status__in=[Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED],
+            status__in=[Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED, Snapshot.StatusChoices.PAUSED],
         ).aexists()
         if is_finished:
             crawl.status = Crawl.StatusChoices.SEALED
@@ -59,8 +65,10 @@ class CrawlService(BaseService):
         from archivebox.core.models import Snapshot
 
         crawl = await Crawl.objects.aget(id=self.crawl_id)
+        if crawl.is_paused:
+            return
         is_finished = not await crawl.snapshot_set.filter(
-            status__in=[Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED],
+            status__in=[Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED, Snapshot.StatusChoices.PAUSED],
         ).aexists()
         if not is_finished:
             if crawl.status != Crawl.StatusChoices.SEALED:

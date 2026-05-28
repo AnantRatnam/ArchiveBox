@@ -61,6 +61,10 @@ class AddCommandSchema(Schema):
     snapshot_ids: list[str] | None = None
     tag: str = ""
     depth: int = 0
+    max_urls: int = 0
+    crawl_max_size: int = 0
+    crawl_timeout: int = 0
+    snapshot_max_size: int = 0
     parser: str = "auto"
     plugins: str = ""
     update: bool = Field(default_factory=lambda: not get_config().ONLY_NEW)
@@ -122,6 +126,10 @@ def cli_add(request: HttpRequest, args: AddCommandSchema):
         snapshot_ids=args.snapshot_ids,
         tag=args.tag,
         depth=args.depth,
+        max_urls=args.max_urls,
+        crawl_max_size=args.crawl_max_size,
+        crawl_timeout=args.crawl_timeout,
+        snapshot_max_size=args.snapshot_max_size,
         update=args.update,
         index_only=args.index_only,
         overwrite=args.overwrite,

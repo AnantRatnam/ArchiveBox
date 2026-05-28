@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from django.db import models
+from django.db.models.fields.json import KT
 from django.conf import settings
 from django.utils import timezone
 
@@ -83,6 +84,13 @@ class Persona(ModelWithConfig):
     name = models.CharField(max_length=64, unique=True)
     created_at = models.DateTimeField(default=timezone.now, db_index=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, default=get_or_create_system_user_pk)
+    permissions = models.GeneratedField(
+        expression=KT("config__PERMISSIONS"),
+        output_field=models.CharField(max_length=16, null=True),
+        db_persist=True,
+        db_index=True,
+        editable=False,
+    )
 
     class Meta(ModelWithConfig.Meta):
         app_label = "personas"

@@ -2,13 +2,13 @@ from django.core.management.base import BaseCommand
 
 
 class Command(BaseCommand):
-    help = "Watch the runserver autoreload PID file and restart the background runner on reloads."
+    help = "Watch the debug runserver Process row and restart the background runner on autoreloads."
 
     def add_arguments(self, parser):
         parser.add_argument(
-            "--pidfile",
-            default=None,
-            help="Path to runserver pidfile to watch",
+            "--bind-url",
+            default="",
+            help="Runserver bind URL to watch, e.g. http://127.0.0.1:8000",
         )
         parser.add_argument(
             "--interval",
@@ -21,9 +21,7 @@ class Command(BaseCommand):
         import os
         import time
 
-        import psutil
-
-        from archivebox.config.common import get_config
+        from archivebox.config import CONSTANTS
         from archivebox.machine.models import Machine, Process
         from archivebox.workers.supervisord_util import (
             RUNNER_WORKER,
@@ -33,33 +31,31 @@ class Command(BaseCommand):
             stop_worker,
         )
 
-        pidfile = kwargs.get("pidfile") or os.environ.get("ARCHIVEBOX_RUNSERVER_PIDFILE")
-        if not pidfile:
-            pidfile = str(get_config().TMP_DIR / "runserver.pid")
+        bind_url = kwargs.get("bind_url") or os.environ.get("ARCHIVEBOX_RUNSERVER_BIND_URL") or ""
+        current = Process.current()
+        current.mark_running(
+            process_type=Process.TypeChoices.WORKER,
+            worker_type="worker_runner_watch",
+            pwd=str(CONSTANTS.DATA_DIR),
+            url=bind_url,
+            timeout=0,
+        )
 
         interval = max(0.2, float(kwargs.get("interval", 1.0)))
-        last_pid = None
+        last_runserver_id = None
 
         def stop_duplicate_watchers() -> None:
-            current_pid = os.getpid()
-            for proc in psutil.process_iter(["pid", "cmdline"]):
-                if proc.info["pid"] == current_pid:
-                    continue
-                cmdline = proc.info.get("cmdline") or []
-                if not cmdline:
-                    continue
-                if "runner_watch" not in " ".join(cmdline):
-                    continue
-                if not any(str(arg) == f"--pidfile={pidfile}" or str(arg) == pidfile for arg in cmdline):
-                    continue
-                try:
-                    proc.terminate()
-                    proc.wait(timeout=2.0)
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.TimeoutExpired):
-                    try:
-                        proc.kill()
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        pass
+            machine = Machine.current()
+            for proc in Process.objects.filter(
+                machine=machine,
+                status=Process.StatusChoices.RUNNING,
+                process_type=Process.TypeChoices.WORKER,
+                worker_type="worker_runner_watch",
+                pwd=str(CONSTANTS.DATA_DIR),
+                url=bind_url,
+            ).exclude(id=current.id):
+                if proc.is_running:
+                    proc.terminate(graceful_timeout=2.0)
 
         def get_supervisor():
             supervisor = get_existing_supervisord_process()
@@ -67,30 +63,40 @@ class Command(BaseCommand):
                 raise RuntimeError("runner_watch requires a running supervisord process")
             return supervisor
 
+        def current_runserver():
+            machine = Machine.current()
+            for proc in Process.objects.filter(
+                machine=machine,
+                status=Process.StatusChoices.RUNNING,
+                process_type=Process.TypeChoices.WORKER,
+                worker_type="worker_runserver",
+                pwd=str(CONSTANTS.DATA_DIR),
+                url=bind_url,
+            ).order_by("-started_at", "-created_at"):
+                if proc.is_running:
+                    return proc
+            return None
+
         stop_duplicate_watchers()
         start_worker(get_supervisor(), RUNNER_WORKER, lazy=True)
 
         def restart_runner() -> None:
             machine = Machine.current()
 
-            running = Process.objects.filter(
+            for proc in Process.objects.filter(
                 machine=machine,
                 status=Process.StatusChoices.RUNNING,
                 process_type=Process.TypeChoices.ORCHESTRATOR,
-            )
-            for proc in running:
-                try:
+                pwd=str(CONSTANTS.DATA_DIR),
+            ):
+                if proc.is_running:
                     proc.kill_tree(graceful_timeout=0.5)
-                except Exception:
-                    continue
 
             supervisor = get_supervisor()
-
             try:
                 stop_worker(supervisor, RUNNER_WORKER["name"])
             except Exception:
                 pass
-
             start_worker(supervisor, RUNNER_WORKER)
 
         def runner_running() -> bool:
@@ -99,17 +105,14 @@ class Command(BaseCommand):
 
         while True:
             try:
-                if os.path.exists(pidfile):
-                    with open(pidfile) as handle:
-                        pid = handle.read().strip() or None
-                else:
-                    pid = None
-
-                if pid and pid != last_pid:
+                runserver = current_runserver()
+                runserver_id = str(runserver.id) if runserver else None
+                if runserver_id and runserver_id != last_runserver_id:
                     restart_runner()
-                    last_pid = pid
+                    last_runserver_id = runserver_id
                 elif not runner_running():
                     restart_runner()
+                current.heartbeat()
             except Exception:
                 pass
 

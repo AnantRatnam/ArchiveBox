@@ -5,10 +5,18 @@ Verify init creates correct database schema, filesystem structure, and config.
 """
 
 import os
-import sqlite3
 import subprocess
 
+import pytest
+from django.db.migrations.recorder import MigrationRecorder
+
 from archivebox.config.common import get_config
+from archivebox.core.models import ArchiveResult, Snapshot
+from archivebox.crawls.models import Crawl
+from archivebox.machine.models import Machine
+from archivebox.tests.orm_helpers import use_archivebox_db
+
+pytestmark = pytest.mark.django_db(transaction=True)
 
 
 DIR_PERMISSIONS = get_config().OUTPUT_PERMISSIONS.replace("6", "7").replace("4", "5")
@@ -87,21 +95,10 @@ def test_init_runs_migrations(tmp_path):
     os.chdir(tmp_path)
     subprocess.run(["archivebox", "init"], capture_output=True)
 
-    # Check that migrations were applied
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
+    with use_archivebox_db(tmp_path):
+        migration_count = MigrationRecorder.Migration.objects.count()
 
-    # Check django_migrations table exists
-    migrations = c.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='django_migrations'",
-    ).fetchall()
-    assert len(migrations) == 1
-
-    # Check that some migrations were applied
-    migration_count = c.execute("SELECT COUNT(*) FROM django_migrations").fetchone()[0]
     assert migration_count > 0
-
-    conn.close()
 
 
 def test_init_creates_core_snapshot_table(tmp_path):
@@ -109,16 +106,9 @@ def test_init_creates_core_snapshot_table(tmp_path):
     os.chdir(tmp_path)
     subprocess.run(["archivebox", "init"], capture_output=True)
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-
-    # Check core_snapshot table exists
-    tables = c.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='core_snapshot'",
-    ).fetchall()
-    assert len(tables) == 1
-
-    conn.close()
+    assert Snapshot._meta.db_table == "core_snapshot"
+    with use_archivebox_db(tmp_path):
+        assert Snapshot.objects.count() == 0
 
 
 def test_init_creates_crawls_crawl_table(tmp_path):
@@ -126,16 +116,9 @@ def test_init_creates_crawls_crawl_table(tmp_path):
     os.chdir(tmp_path)
     subprocess.run(["archivebox", "init"], capture_output=True)
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-
-    # Check crawls_crawl table exists
-    tables = c.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='crawls_crawl'",
-    ).fetchall()
-    assert len(tables) == 1
-
-    conn.close()
+    assert Crawl._meta.db_table == "crawls_crawl"
+    with use_archivebox_db(tmp_path):
+        assert Crawl.objects.count() == 0
 
 
 def test_init_creates_core_archiveresult_table(tmp_path):
@@ -143,16 +126,9 @@ def test_init_creates_core_archiveresult_table(tmp_path):
     os.chdir(tmp_path)
     subprocess.run(["archivebox", "init"], capture_output=True)
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-
-    # Check core_archiveresult table exists
-    tables = c.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='core_archiveresult'",
-    ).fetchall()
-    assert len(tables) == 1
-
-    conn.close()
+    assert ArchiveResult._meta.db_table == "core_archiveresult"
+    with use_archivebox_db(tmp_path):
+        assert ArchiveResult.objects.count() == 0
 
 
 def test_init_sets_correct_file_permissions(tmp_path):
@@ -184,11 +160,9 @@ def test_init_is_idempotent(tmp_path):
     assert "updating existing ArchiveBox" in result2.stdout or "up-to-date" in result2.stdout.lower()
 
     # Database should still be valid
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    count = c.execute("SELECT COUNT(*) FROM django_migrations").fetchone()[0]
+    with use_archivebox_db(tmp_path):
+        count = MigrationRecorder.Migration.objects.count()
     assert count > 0
-    conn.close()
 
 
 def test_init_with_existing_data_preserves_snapshots(tmp_path, process, disable_extractors_dict):
@@ -203,22 +177,18 @@ def test_init_with_existing_data_preserves_snapshots(tmp_path, process, disable_
     )
 
     # Check snapshot was created
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    count_before = c.execute("SELECT COUNT(*) FROM core_snapshot").fetchone()[0]
+    with use_archivebox_db(tmp_path):
+        count_before = Snapshot.objects.count()
     assert count_before == 1
-    conn.close()
 
     # Run init again
     result = subprocess.run(["archivebox", "init"], capture_output=True)
     assert result.returncode == 0
 
     # Snapshot should still exist
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-    count_after = c.execute("SELECT COUNT(*) FROM core_snapshot").fetchone()[0]
+    with use_archivebox_db(tmp_path):
+        count_after = Snapshot.objects.count()
     assert count_after == count_before
-    conn.close()
 
 
 def test_init_quick_flag_skips_checks(tmp_path):
@@ -238,16 +208,9 @@ def test_init_creates_machine_table(tmp_path):
     os.chdir(tmp_path)
     subprocess.run(["archivebox", "init"], capture_output=True)
 
-    conn = sqlite3.connect("index.sqlite3")
-    c = conn.cursor()
-
-    # Check machine_machine table exists
-    tables = c.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='machine_machine'",
-    ).fetchall()
-    conn.close()
-
-    assert len(tables) == 1
+    assert Machine._meta.db_table == "machine_machine"
+    with use_archivebox_db(tmp_path):
+        Machine.objects.count()
 
 
 def test_init_output_shows_collection_info(tmp_path):
