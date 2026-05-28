@@ -11,6 +11,7 @@ import sys
 import time
 from collections.abc import Mapping
 from contextlib import nullcontext
+from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -1104,14 +1105,17 @@ def recover_orphaned_crawls() -> int:
             retry_at__isnull=True,
         ).prefetch_related("snapshot_set"),
     )
-    running_processes = Process.objects.filter(
-        status=Process.StatusChoices.RUNNING,
-        process_type__in=[
-            Process.TypeChoices.WORKER,
-            Process.TypeChoices.HOOK,
-            Process.TypeChoices.BINARY,
-        ],
-    ).only("pwd")
+    running_processes = (
+        Process.get_running()
+        .filter(
+            process_type__in=[
+                Process.TypeChoices.WORKER,
+                Process.TypeChoices.HOOK,
+                Process.TypeChoices.BINARY,
+            ],
+        )
+        .only("pwd")
+    )
 
     for proc in running_processes:
         if not proc.pwd:
@@ -1161,8 +1165,10 @@ def recover_orphaned_snapshots() -> int:
     from archivebox.crawls.models import Crawl
     from archivebox.core.models import ArchiveResult, Snapshot
     from archivebox.machine.models import Process
+    from django.db.models import Exists, OuterRef
 
     active_snapshot_ids: set[str] = set()
+    now = timezone.now()
     orphaned_snapshots = list(
         Snapshot.objects.filter(status=Snapshot.StatusChoices.STARTED, retry_at__isnull=True)
         .select_related("crawl")
@@ -1180,28 +1186,39 @@ def recover_orphaned_snapshots() -> int:
             .prefetch_related("archiveresult_set")
             if snapshot.status == Snapshot.StatusChoices.SEALED
         )
-    empty_active_snapshot_ids = list(
-        Snapshot.objects.filter(
-            crawl__status__in=[Crawl.StatusChoices.STARTED, Crawl.StatusChoices.SEALED],
-            status=Snapshot.StatusChoices.SEALED,
-            downloaded_at__isnull=False,
-            archiveresult__isnull=True,
+
+    recent_active_crawl_ids = list(
+        Crawl.objects.filter(
+            status__in=[Crawl.StatusChoices.STARTED, Crawl.StatusChoices.SEALED],
+            modified_at__gte=now - timedelta(days=1),
         )
-        .values_list("id", flat=True)
-        .distinct(),
+        .order_by("-modified_at")
+        .values_list("id", flat=True)[:1000],
     )
-    if empty_active_snapshot_ids:
+    if recent_active_crawl_ids:
         orphaned_snapshots.extend(
-            Snapshot.objects.filter(id__in=empty_active_snapshot_ids).select_related("crawl").prefetch_related("archiveresult_set"),
+            Snapshot.objects.filter(
+                crawl_id__in=recent_active_crawl_ids,
+                status=Snapshot.StatusChoices.SEALED,
+                downloaded_at__isnull=False,
+            )
+            .annotate(has_results=Exists(ArchiveResult.objects.filter(snapshot_id=OuterRef("pk"))))
+            .filter(has_results=False)
+            .select_related("crawl")
+            .prefetch_related("archiveresult_set")
+            .order_by("-modified_at")[:1000],
         )
-    running_processes = Process.objects.filter(
-        status=Process.StatusChoices.RUNNING,
-        process_type__in=[
-            Process.TypeChoices.WORKER,
-            Process.TypeChoices.HOOK,
-            Process.TypeChoices.BINARY,
-        ],
-    ).only("pwd")
+    running_processes = (
+        Process.get_running()
+        .filter(
+            process_type__in=[
+                Process.TypeChoices.WORKER,
+                Process.TypeChoices.HOOK,
+                Process.TypeChoices.BINARY,
+            ],
+        )
+        .only("pwd")
+    )
 
     for proc in running_processes:
         if not proc.pwd:
@@ -1216,7 +1233,6 @@ def recover_orphaned_snapshots() -> int:
                 continue
 
     recovered = 0
-    now = timezone.now()
     for snapshot in orphaned_snapshots:
         if str(snapshot.id) in active_snapshot_ids:
             continue
