@@ -203,6 +203,17 @@ def update(
     from archivebox.config.django import setup_django
 
     setup_django()
+    from archivebox.misc.checks import check_migrations
+
+    # This must be the first database operation in `archivebox update`.
+    # Old 0.7.x/0.8.x collections may not have current machine/process/crawl
+    # tables yet, and even "harmless" runtime-stack bookkeeping uses current
+    # ORM models. Apply Django migrations before creating Process rows, checking
+    # runtime ownership, queuing retry_at maintenance ticks, or touching any
+    # lazy Snapshot.save() filesystem migration path.
+    print("[*] Checking for pending migrations...")
+    check_migrations(auto_apply=True)
+
     from archivebox.machine.models import Process
     from archivebox.core.shutdown_util import foreground_parent_watchdog, foreground_shutdown_signals
     from archivebox.services.supervision_service import (
@@ -210,12 +221,18 @@ def update(
         ensure_daemon_stack,
         standby_until_runtime_stack_needed,
     )
-    from archivebox.workers.supervisord_util import stop_existing_supervisord_process, stop_own_supervisord_process
+    from archivebox.workers.supervisord_util import run_runner_worker, stop_existing_supervisord_process, stop_own_supervisord_process
 
     command = current_command(Process.TypeChoices.UPDATE, data_dir=CONSTANTS.DATA_DIR)
 
     def wait_for_turn() -> None:
         standby_until_runtime_stack_needed(command, data_dir=CONSTANTS.DATA_DIR)
+
+    def run_scoped_runner(*args: str) -> None:
+        wait_for_turn()
+        exit_code = run_runner_worker(list(args), name=f"worker_runner_update_{os.getpid()}")
+        if exit_code != 0:
+            raise SystemExit(exit_code)
 
     is_filtered_update = any(
         (
@@ -234,12 +251,7 @@ def update(
     )
     touched_snapshot_ids: set[str] = set()
 
-    from archivebox.misc.checks import check_migrations
-
     try:
-        # Run migrations first to ensure DB schema is up-to-date
-        print("[*] Checking for pending migrations...")
-        check_migrations(auto_apply=True)
         wait_for_turn()
         if stop_daemon_stack:
             stop_existing_supervisord_process()
@@ -314,19 +326,13 @@ def update(
                         # the fs_version maintenance tick hidden behind that
                         # plugin work until another update pass.
                         print("[*] Phase 3: Running filesystem maintenance until idle...")
-                        from archivebox.cli.archivebox_run import run_runner, run_snapshot_worker
-
                         if is_filtered_update:
                             if not touched_snapshot_ids:
                                 print("[*] No matching snapshots queued work for the runner.")
                             for snapshot_id in sorted(touched_snapshot_ids):
-                                exit_code = run_snapshot_worker(snapshot_id)
-                                if exit_code != 0:
-                                    raise SystemExit(exit_code)
+                                run_scoped_runner("--snapshot-id", snapshot_id)
                         else:
-                            exit_code = run_runner(daemon=False, maintenance_only=True)
-                            if exit_code != 0:
-                                raise SystemExit(exit_code)
+                            run_scoped_runner("--maintenance-only")
                         ran_post_migrate_runner = True
 
                 if do_index:
@@ -369,19 +375,13 @@ def update(
                     # historical final pass broad enough to resume genuinely
                     # queued/interrupted crawl work after maintenance is done.
                     print("[*] Phase 3: Running queued/interrupted crawl work until idle...")
-                    from archivebox.cli.archivebox_run import run_runner, run_snapshot_worker
-
                     if is_filtered_update:
                         if not touched_snapshot_ids:
                             print("[*] No matching snapshots queued work for the runner.")
                         for snapshot_id in sorted(touched_snapshot_ids):
-                            exit_code = run_snapshot_worker(snapshot_id)
-                            if exit_code != 0:
-                                raise SystemExit(exit_code)
+                            run_scoped_runner("--snapshot-id", snapshot_id)
                     else:
-                        exit_code = run_runner(daemon=False, maintenance_only=index_only or migrate_only)
-                        if exit_code != 0:
-                            raise SystemExit(exit_code)
+                        run_scoped_runner(*(["--maintenance-only"] if index_only or migrate_only else []))
 
                 if not continuous:
                     break

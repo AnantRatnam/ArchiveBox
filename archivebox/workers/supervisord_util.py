@@ -56,6 +56,7 @@ def _record_supervisord_process(proc: subprocess.Popen, config_file: Path) -> No
 
         Process.objects.create(
             machine=Machine.current(),
+            parent=Process.current(),
             process_type=Process.TypeChoices.SUPERVISORD,
             worker_type="supervisord",
             pwd=str(CONSTANTS.DATA_DIR),
@@ -160,6 +161,14 @@ RUNNER_WORKER = {
     "stopwaitsecs": "30",
     "stdout_logfile": "logs/worker_runner.log",
     "redirect_stderr": "true",
+}
+
+RUNNER_ONCE_WORKER = lambda args, name="worker_runner_once": {
+    **RUNNER_WORKER,
+    "name": name,
+    "command": _shell_join([sys.executable, "-m", "archivebox", "run", *args]),
+    "autorestart": "false",
+    "stdout_logfile": f"logs/{name}.log",
 }
 
 RUNNER_WATCH_WORKER = lambda bind_url: {
@@ -678,6 +687,20 @@ def get_or_create_supervisord_process(daemonize=False):
 
 def start_worker(supervisor, daemon, lazy=False):
     return sync_supervisord_workers(supervisor, [(daemon, lazy)], prune=False).get(daemon["name"])
+
+
+def run_runner_worker(args: list[str], *, name: str = "worker_runner_once") -> int:
+    supervisor = get_or_create_supervisord_process(daemonize=False)
+    worker = RUNNER_ONCE_WORKER(args, name=name)
+    sync_supervisord_workers(supervisor, [(worker, False)], prune=False)
+    final_states = {"STOPPED", "EXITED", "FATAL", "UNKNOWN"}
+    while True:
+        proc = get_worker(supervisor, name)
+        if proc is None:
+            return 1
+        if proc["statename"] in final_states:
+            return int(proc.get("exitstatus") or 0) if proc["statename"] == "EXITED" else 1
+        time.sleep(0.5)
 
 
 def get_worker(supervisor, daemon_name):

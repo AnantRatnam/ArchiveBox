@@ -282,7 +282,8 @@ def run_runner(daemon: bool = False, crawl_id: str | None = None, maintenance_on
 @click.option("--crawl-id", help="Run the crawl runner for a specific crawl only")
 @click.option("--snapshot-id", help="Run one snapshot through its crawl")
 @click.option("--binary-id", help="Run one queued binary install directly on the bus")
-def main(daemon: bool, crawl_id: str, snapshot_id: str, binary_id: str):
+@click.option("--maintenance-only", is_flag=True, help="Only process due maintenance ticks on sealed/paused snapshots")
+def main(daemon: bool, crawl_id: str, snapshot_id: str, binary_id: str, maintenance_only: bool):
     """
     Process queued work.
 
@@ -315,15 +316,18 @@ def main(daemon: bool, crawl_id: str, snapshot_id: str, binary_id: str):
                 sys.exit(1)
 
         if crawl_id:
-            sys.exit(run_runner(daemon=False, crawl_id=crawl_id))
+            sys.exit(run_runner(daemon=False, crawl_id=crawl_id, maintenance_only=maintenance_only))
+
+        if maintenance_only:
+            sys.exit(run_runner(daemon=daemon, maintenance_only=True))
 
         if daemon:
-            sys.exit(run_runner(daemon=True))
+            sys.exit(run_runner(daemon=True, maintenance_only=maintenance_only))
 
         if not sys.stdin.isatty():
             sys.exit(process_stdin_records())
         else:
-            sys.exit(run_runner(daemon=daemon))
+            sys.exit(run_runner(daemon=daemon, maintenance_only=maintenance_only))
 
 
 def run_snapshot_worker(snapshot_id: str) -> int:

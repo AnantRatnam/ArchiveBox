@@ -6,6 +6,7 @@ __command__ = "archivebox add"
 
 import sys
 import json
+import os
 from pathlib import Path
 
 from typing import TYPE_CHECKING
@@ -112,7 +113,6 @@ def add(
     from archivebox.misc.logging_util import printable_filesize
     from archivebox.misc.system import get_dir_size
     from archivebox.core.shutdown_util import foreground_parent_watchdog, foreground_shutdown_signals
-    from archivebox.services.runner import run_crawl
     from django.utils import timezone
 
     created_by_id = created_by_id or get_or_create_system_user_pk()
@@ -219,14 +219,18 @@ def add(
         print("[green]\\[*] Starting crawl runner to process crawl...[/green]")
         from archivebox.machine.models import Process
         from archivebox.services.supervision_service import current_command, standby_until_runtime_stack_needed
+        from archivebox.workers.supervisord_util import run_runner_worker, stop_own_supervisord_process
 
         command = current_command(Process.TypeChoices.ADD, data_dir=CONSTANTS.DATA_DIR, url=first_url)
         try:
             standby_until_runtime_stack_needed(command, data_dir=CONSTANTS.DATA_DIR)
             with foreground_shutdown_signals(), foreground_parent_watchdog():
-                run_crawl(str(crawl.id))
+                exit_code = run_runner_worker(["--crawl-id", str(crawl.id)], name=f"worker_runner_add_{os.getpid()}")
+                if exit_code != 0:
+                    raise SystemExit(exit_code)
         finally:
             command.mark_exited()
+            stop_own_supervisord_process()
 
         # Print summary for foreground runs
         try:
