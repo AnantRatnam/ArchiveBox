@@ -12,6 +12,10 @@ FUZZ_ROUNDS="${FUZZ_ROUNDS:-8}"
 FUZZ_PARALLEL="${FUZZ_PARALLEL:-5}"
 FUZZ_KILL_MIN_SECONDS="${FUZZ_KILL_MIN_SECONDS:-60}"
 FUZZ_KILL_MAX_SECONDS="${FUZZ_KILL_MAX_SECONDS:-120}"
+FUZZ_CTRL_C_CHANCE="${FUZZ_CTRL_C_CHANCE:-60}"
+FUZZ_CTRL_C_MAX_SIGNALS="${FUZZ_CTRL_C_MAX_SIGNALS:-4}"
+FUZZ_CTRL_C_MIN_SECONDS="${FUZZ_CTRL_C_MIN_SECONDS:-2}"
+FUZZ_CTRL_C_MAX_SECONDS="${FUZZ_CTRL_C_MAX_SECONDS:-20}"
 SERVER_BASE_PORT="${FUZZ_SERVER_BASE_PORT:-8700}"
 SLEEP_BETWEEN_JOBS_MAX="${FUZZ_SLEEP_BETWEEN_JOBS_MAX:-5}"
 
@@ -20,6 +24,12 @@ if [[ "$FUZZ_PARALLEL" -gt 5 ]]; then
 fi
 if [[ "$FUZZ_KILL_MAX_SECONDS" -lt "$FUZZ_KILL_MIN_SECONDS" ]]; then
     FUZZ_KILL_MAX_SECONDS="$FUZZ_KILL_MIN_SECONDS"
+fi
+if [[ "$FUZZ_CTRL_C_MAX_SECONDS" -lt "$FUZZ_CTRL_C_MIN_SECONDS" ]]; then
+    FUZZ_CTRL_C_MAX_SECONDS="$FUZZ_CTRL_C_MIN_SECONDS"
+fi
+if [[ "$FUZZ_CTRL_C_MAX_SIGNALS" -lt 1 ]]; then
+    FUZZ_CTRL_C_MAX_SIGNALS=1
 fi
 
 if [[ -n "${ARCHIVEBOX_CMD:-}" ]]; then
@@ -73,15 +83,76 @@ random_start_delay() {
     random_between 0 "$SLEEP_BETWEEN_JOBS_MAX"
 }
 
-kill_tree() {
-    local pid="$1"
+random_ctrl_c_delay() {
+    random_between "$FUZZ_CTRL_C_MIN_SECONDS" "$FUZZ_CTRL_C_MAX_SECONDS"
+}
+
+random_subsecond_delay() {
+    printf '0.%03d\n' "$((100 + RANDOM % 400))"
+}
+
+signal_tree() {
+    local signal="$1"
+    local pid="$2"
     local child
     if command -v pgrep >/dev/null 2>&1; then
         for child in $(pgrep -P "$pid" 2>/dev/null || true); do
-            kill_tree "$child"
+            signal_tree "$signal" "$child"
         done
     fi
-    kill "$pid" >/dev/null 2>&1 || true
+    kill "-$signal" "$pid" >/dev/null 2>&1 || true
+}
+
+is_uv_wrapper_without_child() {
+    local pid="$1"
+    local comm
+    comm="$(ps -p "$pid" -o comm= 2>/dev/null | xargs basename 2>/dev/null || true)"
+    [[ "$comm" == "uv" ]] && ! pgrep -P "$pid" >/dev/null 2>&1
+}
+
+kill_tree() {
+    local pid="$1"
+    signal_tree TERM "$pid"
+}
+
+start_ctrl_c_injector() {
+    local label="$1"
+    local child="$2"
+    local logfile="$3"
+    local signals idx delay burst_gap
+
+    if [[ "$FUZZ_CTRL_C_CHANCE" -le 0 || $((RANDOM % 100)) -ge "$FUZZ_CTRL_C_CHANCE" ]]; then
+        return 0
+    fi
+
+    signals=$((1 + RANDOM % FUZZ_CTRL_C_MAX_SIGNALS))
+    (
+        for idx in $(seq 1 "$signals"); do
+            if [[ "$idx" -eq 1 || $((RANDOM % 2)) -eq 0 ]]; then
+                delay="$(random_ctrl_c_delay)"
+            else
+                delay="$(random_subsecond_delay)"
+            fi
+            sleep "$delay"
+            if ! kill -0 "$child" >/dev/null 2>&1; then
+                exit 0
+            fi
+            if is_uv_wrapper_without_child "$child"; then
+                exit 0
+            fi
+            echo "[$(ts)] CTRL_C label=$label pid=$child signal=$idx/$signals delay=${delay}s" >> "$logfile"
+            signal_tree INT "$child"
+            if [[ $((RANDOM % 3)) -eq 0 ]]; then
+                burst_gap="$(random_subsecond_delay)"
+                sleep "$burst_gap"
+                if kill -0 "$child" >/dev/null 2>&1 && ! is_uv_wrapper_without_child "$child"; then
+                    echo "[$(ts)] CTRL_C_BURST label=$label pid=$child gap=${burst_gap}s" >> "$logfile"
+                    signal_tree INT "$child"
+                fi
+            fi
+        done
+    ) &
+    echo "$!"
 }
 
 cleanup() {
@@ -112,30 +183,39 @@ run_with_timeout() {
         echo "[$(ts)] START label=$label shell=$$ data=$DATA_DIR"
         echo "[$(ts)] CMD DATA_DIR=$DATA_DIR $*"
         echo "[$(ts)] CHAOS kill_after=${timeout}s"
+        echo "[$(ts)] CTRL_C chance=${FUZZ_CTRL_C_CHANCE}% max_signals=${FUZZ_CTRL_C_MAX_SIGNALS}"
     } | tee -a "$logfile"
 
     (
         DATA_DIR="$DATA_DIR" "$@"
     ) >> "$logfile" 2>&1 &
     local child=$!
+    local interrupter
+    interrupter="$(start_ctrl_c_injector "$label" "$child" "$logfile")"
 
     (
         sleep "$timeout"
         if kill -0 "$child" >/dev/null 2>&1; then
             echo "[$(ts)] TIMEOUT label=$label pid=$child after=${timeout}s" >> "$logfile"
-            kill "$child" >/dev/null 2>&1 || true
+            signal_tree TERM "$child"
             sleep 5
-            kill -9 "$child" >/dev/null 2>&1 || true
+            signal_tree KILL "$child"
         fi
     ) &
     local watchdog=$!
 
-    trap '[[ -n "${child:-}" ]] && kill_tree "$child"; [[ -n "${watchdog:-}" ]] && kill "$watchdog" >/dev/null 2>&1 || true' INT TERM
+    trap '[[ -n "${child:-}" ]] && kill_tree "$child"; [[ -n "${watchdog:-}" ]] && kill "$watchdog" >/dev/null 2>&1 || true; [[ -n "${interrupter:-}" ]] && kill "$interrupter" >/dev/null 2>&1 || true' INT TERM
 
     wait "$child"
     local code=$?
     kill "$watchdog" >/dev/null 2>&1 || true
+    if [[ -n "$interrupter" ]]; then
+        kill "$interrupter" >/dev/null 2>&1 || true
+    fi
     wait "$watchdog" >/dev/null 2>&1 || true
+    if [[ -n "$interrupter" ]]; then
+        wait "$interrupter" >/dev/null 2>&1 || true
+    fi
     trap - INT TERM
 
     echo "[$(ts)] END label=$label pid=$child exit=$code log=$logfile" | tee -a "$logfile"
@@ -157,22 +237,29 @@ run_server_for_a_bit() {
         echo "[$(ts)] START label=$label shell=$$ data=$DATA_DIR"
         echo "[$(ts)] CMD DATA_DIR=$DATA_DIR ${ABX[*]} server $debug_flag 127.0.0.1:$port"
         echo "[$(ts)] CHAOS kill_after=${hold}s"
+        echo "[$(ts)] CTRL_C chance=${FUZZ_CTRL_C_CHANCE}% max_signals=${FUZZ_CTRL_C_MAX_SIGNALS}"
     } | tee -a "$logfile"
 
     (
         DATA_DIR="$DATA_DIR" "${ABX[@]}" server "${server_extra[@]}" "127.0.0.1:$port"
     ) >> "$logfile" 2>&1 &
     local child=$!
+    local interrupter
+    interrupter="$(start_ctrl_c_injector "$label" "$child" "$logfile")"
 
-    trap '[[ -n "${child:-}" ]] && kill_tree "$child"' INT TERM
+    trap '[[ -n "${child:-}" ]] && kill_tree "$child"; [[ -n "${interrupter:-}" ]] && kill "$interrupter" >/dev/null 2>&1 || true' INT TERM
 
     sleep "$hold"
     echo "[$(ts)] STOP label=$label pid=$child after=${hold}s" | tee -a "$logfile"
     kill_tree "$child"
     sleep 5
-    kill -9 "$child" >/dev/null 2>&1 || true
+    signal_tree KILL "$child"
     wait "$child" >/dev/null 2>&1
     local code=$?
+    if [[ -n "$interrupter" ]]; then
+        kill "$interrupter" >/dev/null 2>&1 || true
+        wait "$interrupter" >/dev/null 2>&1 || true
+    fi
     trap - INT TERM
 
     echo "[$(ts)] END label=$label pid=$child exit=$code log=$logfile" | tee -a "$logfile"
@@ -298,6 +385,7 @@ main() {
     echo "  rounds:     $FUZZ_ROUNDS"
     echo "  parallel:   $FUZZ_PARALLEL"
     echo "  kill after: ${FUZZ_KILL_MIN_SECONDS}s-${FUZZ_KILL_MAX_SECONDS}s"
+    echo "  ctrl+c:     ${FUZZ_CTRL_C_CHANCE}% chance, ${FUZZ_CTRL_C_MAX_SIGNALS} max, ${FUZZ_CTRL_C_MIN_SECONDS}s-${FUZZ_CTRL_C_MAX_SECONDS}s plus bursts"
     echo "  urls:       ${URLS[*]}"
     echo
 

@@ -5,9 +5,11 @@ import sys
 from importlib import import_module
 
 import rich_click as click
-from rich import print
+from rich.console import Console
 
 from archivebox.config.version import VERSION
+
+STDERR = Console(stderr=True)
 
 
 if "--debug" in sys.argv:
@@ -104,9 +106,8 @@ class ArchiveBoxGroup(click.Group):
         # handle renamed commands
         if cmd_name in self.renamed_commands:
             new_name = self.renamed_commands[cmd_name]
-            print(
+            STDERR.print(
                 f" [violet]Hint:[/violet] `archivebox {cmd_name}` has been renamed to `archivebox {new_name}`",
-                file=sys.stderr,
             )
             cmd_name = new_name
             ctx.invoked_subcommand = cmd_name
@@ -175,7 +176,7 @@ def cli(ctx, help=False):
             if subcommand != "update":
                 check_migrations(auto_apply=True)
         except Exception as e:
-            print(f"[red][X] Error setting up Django or checking data folder: {e}[/red]", file=sys.stderr)
+            STDERR.print(f"[red][X] Error setting up Django or checking data folder: {e}[/red]")
             if subcommand not in ("manage", "shell"):  # not all management commands need django to be setup beforehand
                 raise
 
@@ -189,10 +190,29 @@ def main(args=None, prog_name=None, stdin=None):
     # stdin param allows passing input data from caller (used by __main__.py)
     # currently not used by click-based CLI, but kept for backwards compatibility
 
+    previous_unraisablehook = sys.unraisablehook
+
+    def ignore_shutdown_unraisable(unraisable):
+        if isinstance(unraisable.exc_value, (KeyboardInterrupt, SystemExit)):
+            return
+        previous_unraisablehook(unraisable)
+
+    sys.unraisablehook = ignore_shutdown_unraisable
     try:
-        cli(args=args, prog_name=prog_name)
+        cli(args=args, prog_name=prog_name, standalone_mode=False)
+    except click.Abort:
+        STDERR.print("\n[red][X] Got CTRL+C. Exiting...[/red]")
+        raise SystemExit(130) from None
+    except click.ClickException as err:
+        err.show()
+        raise SystemExit(err.exit_code) from None
+    except click.exceptions.Exit as err:
+        raise SystemExit(err.exit_code) from None
     except KeyboardInterrupt:
-        print("\n\n[red][X] Got CTRL+C. Exiting...[/red]")
+        STDERR.print("\n[red][X] Got CTRL+C. Exiting...[/red]")
+        raise SystemExit(130) from None
+    finally:
+        sys.unraisablehook = previous_unraisablehook
 
 
 if __name__ == "__main__":

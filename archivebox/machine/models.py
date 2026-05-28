@@ -19,6 +19,7 @@ from django.db.models import Q, QuerySet
 from django.utils import timezone
 from django.utils.functional import cached_property
 
+from archivebox.config.common import rprint
 from archivebox.base_models.models import ModelWithDeleteAfter, ModelWithHealthStats
 from archivebox.workers.models import BaseStateMachine, ModelWithStateMachine
 from .detect import get_host_guid, get_os_info, get_vm_info, get_host_network, get_host_stats
@@ -2435,10 +2436,10 @@ class Process(ModelWithDeleteAfter, models.Model):
                 if result.returncode == 0:
                     killed += int(result.stdout.strip())
             if killed > 0:
-                print(f"[yellow]🧹 Cleaned up {killed} orphaned Chrome processes[/yellow]")
+                rprint(f"[yellow]🧹 Cleaned up {killed} orphaned Chrome processes[/yellow]")
             return killed
         except (subprocess.TimeoutExpired, ValueError, FileNotFoundError) as e:
-            print(f"[red]Failed to cleanup orphaned Chrome: {e}[/red]")
+            rprint(f"[red]Failed to cleanup orphaned Chrome: {e}[/red]")
 
         return 0
 
@@ -2498,7 +2499,7 @@ class Process(ModelWithDeleteAfter, models.Model):
             cleaned += 1
 
         if cleaned:
-            print(f"[yellow]🧹 Cleaned up {cleaned} orphaned worker/hook process record(s)[/yellow]")
+            rprint(f"[yellow]🧹 Cleaned up {cleaned} orphaned worker/hook process record(s)[/yellow]")
         return cleaned
 
 
@@ -2553,7 +2554,7 @@ class BinaryMachine(BaseStateMachine):
         """Called during queued→installed transition. Runs installation synchronously."""
         import sys
 
-        print(f"[cyan]      🔄 BinaryMachine.on_install() - installing {self.binary.name}[/cyan]", file=sys.stderr)
+        rprint(f"[cyan]      🔄 BinaryMachine.on_install() - installing {self.binary.name}[/cyan]", file=sys.stderr)
 
         # Run installation hooks (synchronous, updates abspath/version/sha256 and sets status)
         self.binary.run()
@@ -2564,7 +2565,7 @@ class BinaryMachine(BaseStateMachine):
 
         if self.binary.status != Binary.StatusChoices.INSTALLED:
             # Installation failed - abort transition, stay in queued
-            print(f"[red]      ❌ BinaryMachine - {self.binary.name} installation failed, retrying later[/red]", file=sys.stderr)
+            rprint(f"[red]      ❌ BinaryMachine - {self.binary.name} installation failed, retrying later[/red]", file=sys.stderr)
 
             # Bump retry_at to try again later
             self.binary.update_and_requeue(
@@ -2578,7 +2579,7 @@ class BinaryMachine(BaseStateMachine):
             # Abort the transition - this will raise an exception and keep us in queued
             raise Exception(f"Binary {self.binary.name} installation failed")
 
-        print(f"[cyan]      ✅ BinaryMachine - {self.binary.name} installed successfully[/cyan]", file=sys.stderr)
+        rprint(f"[cyan]      ✅ BinaryMachine - {self.binary.name} installed successfully[/cyan]", file=sys.stderr)
 
     @installed.enter
     def enter_installed(self):

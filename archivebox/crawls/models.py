@@ -21,7 +21,7 @@ from django.conf import settings
 from django.urls import reverse_lazy
 from django.utils import timezone
 from statemachine import State, registry
-from rich import print
+from archivebox.config.common import rprint as print
 
 from archivebox.base_models.models import (
     ModelWithUUID,

@@ -13,11 +13,11 @@ from typing import cast
 from pathlib import Path
 from functools import cache
 
-from rich import print
 from supervisor.xmlrpc import SupervisorTransport
 from xmlrpc.client import Fault, ServerProxy
 
 from archivebox.config import CONSTANTS
+from archivebox.config.common import rprint as print
 from archivebox.config.paths import get_or_create_working_tmp_dir
 from archivebox.config.permissions import ARCHIVEBOX_USER
 from archivebox.core.shutdown_util import (

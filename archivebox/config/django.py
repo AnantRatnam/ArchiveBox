@@ -162,6 +162,6 @@ def setup_django(check_db=False, in_memory_db=False) -> None:
             #     logfire.info(f'Started ArchiveBox v{CONSTANTS.VERSION}', argv=sys.argv)
 
     except KeyboardInterrupt:
-        raise SystemExit(2)
+        raise
 
     DJANGO_SET_UP = True

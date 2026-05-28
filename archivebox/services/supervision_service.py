@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 
 from django.utils import timezone
-from rich import print
+from archivebox.config.common import rprint
 
 
 def runtime_stack_owner_types():
@@ -109,7 +109,7 @@ def ensure_daemon_stack(*, reason: str = ""):
         return worker
 
     if reason:
-        print(f"[yellow][*] Starting daemon stack for {reason}...[/yellow]")
+        rprint(f"[yellow][*] Starting daemon stack for {reason}...[/yellow]")
     return start_worker(supervisor, sonic_worker)
 
 
@@ -143,7 +143,7 @@ def standby_until_leader_needed(command, *, process_type: str, data_dir: str | P
         if not announced:
             leader = newest_live_process(process_type=process_type, data_dir=data_dir, url=url)
             leader_pid = leader.pid if leader else "unknown"
-            print(f"[yellow][*] Standing by; newer ArchiveBox parent pid={leader_pid} is running the orchestrator and server.[/yellow]")
+            rprint(f"[yellow][*] Standing by; newer ArchiveBox parent pid={leader_pid} is running the orchestrator and server.[/yellow]")
             announced = True
         command.heartbeat()
         time.sleep(interval)
@@ -161,7 +161,7 @@ def standby_until_runtime_stack_needed(command, *, data_dir: str | Path, interva
             owner = runtime_stack_owner(data_dir=data_dir)
             owner_pid = owner.pid if owner else "unknown"
             owner_type = owner.process_type if owner else "unknown"
-            print(f"[yellow][*] Standing by; ArchiveBox {owner_type} pid={owner_pid} owns the runtime stack.[/yellow]")
+            rprint(f"[yellow][*] Standing by; ArchiveBox {owner_type} pid={owner_pid} owns the runtime stack.[/yellow]")
             announced = True
         command.heartbeat()
         time.sleep(interval)

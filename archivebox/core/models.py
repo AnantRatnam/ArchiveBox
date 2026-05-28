@@ -27,7 +27,7 @@ from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.utils.safestring import mark_safe
 
 from archivebox.config import CONSTANTS
-from archivebox.config.common import get_config
+from archivebox.config.common import get_config, rprint
 from archivebox.misc.system import atomic_write
 from archivebox.misc.util import (
     MAX_URL_LENGTH,
@@ -2207,7 +2207,7 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         deleted_count = empty_ars.count()
         if deleted_count > 0:
             empty_ars.delete()
-            print(f"[yellow]🗑️  Deleted {deleted_count} empty ArchiveResults for {self.url}[/yellow]")
+            rprint(f"[yellow]🗑️  Deleted {deleted_count} empty ArchiveResults for {self.url}[/yellow]")
 
     def to_json(self) -> dict:
         """
@@ -2315,7 +2315,7 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
 
         record_crawl_id = record.get("crawl_id")
         if record_crawl_id and crawl and str(crawl.id) != str(record_crawl_id):
-            print(
+            rprint(
                 f"[yellow]⚠️  Snapshot.from_json crawl mismatch: record has crawl_id={record_crawl_id}, overrides has crawl={crawl.id}[/yellow]",
                 file=sys.stderr,
             )
@@ -2341,7 +2341,7 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
                     label=f"auto-created for {url[:50]}",
                     created_by_id=created_by_id,
                 )
-                print(f"[red]⚠️  Snapshot.from_json auto-created new crawl {crawl.id} for url={url}[/red]", file=sys.stderr)
+                rprint(f"[red]⚠️  Snapshot.from_json auto-created new crawl {crawl.id} for url={url}[/red]", file=sys.stderr)
 
         # Parse tags (accept either a list ["tag1", "tag2"] or a comma-separated string "tag1,tag2")
         tags_raw = record.get("tags", "")
