@@ -905,6 +905,13 @@ def test_archiveresult_files_preserved_after_migration(tmp_path):
     cursor.execute("SELECT COUNT(*) FROM core_archiveresult")
     archiveresult_count = cursor.fetchone()[0]
 
+    original_plugins = sorted({row["extractor"] for row in original_data["archiveresults"]})
+    cursor.execute(
+        f"SELECT COUNT(*) FROM core_archiveresult WHERE plugin IN ({','.join('?' for _ in original_plugins)})",
+        original_plugins,
+    )
+    legacy_archiveresult_count = cursor.fetchone()[0]
+
     cursor.execute("SELECT COUNT(*) FROM machine_process")
     process_count = cursor.fetchone()[0]
 
@@ -914,6 +921,12 @@ def test_archiveresult_files_preserved_after_migration(tmp_path):
     cursor.execute("SELECT COUNT(*) FROM core_archiveresult WHERE process_id IS NOT NULL")
     linked_count = cursor.fetchone()[0]
 
+    cursor.execute(
+        f"SELECT COUNT(*) FROM core_archiveresult WHERE plugin IN ({','.join('?' for _ in original_plugins)}) AND process_id IS NOT NULL",
+        original_plugins,
+    )
+    legacy_linked_count = cursor.fetchone()[0]
+
     conn.close()
 
     print(f"[*] ArchiveResults: {archiveresult_count}")
@@ -921,19 +934,27 @@ def test_archiveresult_files_preserved_after_migration(tmp_path):
     print(f"[*] Binary records created: {binary_count}")
     print(f"[*] ArchiveResults linked to Process: {linked_count}")
 
-    # Verify data migration happened correctly
-    assert archiveresult_count == len(original_data["archiveresults"]), (
-        f"Expected {len(original_data['archiveresults'])} ArchiveResults after migration, got {archiveresult_count}"
+    # Verify data migration happened correctly. A full `archivebox update` may
+    # add new maintenance ArchiveResults (e.g. search index backfills), so keep
+    # the strict preservation assertion scoped to the legacy extractor plugins
+    # that came from the old DB rows.
+    assert archiveresult_count >= len(original_data["archiveresults"]), "Full update should not delete ArchiveResult rows"
+    assert legacy_archiveresult_count == len(original_data["archiveresults"]), (
+        f"Expected {len(original_data['archiveresults'])} migrated legacy ArchiveResults, got {legacy_archiveresult_count}"
     )
 
-    # Each ArchiveResult should create one Process record
-    assert process_count == len(original_data["archiveresults"]), (
-        f"Expected {len(original_data['archiveresults'])} Process records (1 per ArchiveResult), got {process_count}"
+    # Each legacy ArchiveResult should create one linked Process record. The
+    # command/worker rows created by `archivebox update` itself can increase the
+    # total process count, but they must not replace or orphan migrated process
+    # metadata.
+    assert process_count >= len(original_data["archiveresults"]), (
+        f"Expected at least {len(original_data['archiveresults'])} Process records, got {process_count}"
     )
 
     assert binary_count == 5, f"Expected 5 unique Binary records, got {binary_count}"
 
-    # ALL ArchiveResults should be linked to Process records
-    assert linked_count == len(original_data["archiveresults"]), (
-        f"Expected all {len(original_data['archiveresults'])} ArchiveResults linked to Process, got {linked_count}"
+    # ALL legacy ArchiveResults should be linked to Process records
+    assert linked_count >= len(original_data["archiveresults"]), "Full update should not unlink migrated ArchiveResult processes"
+    assert legacy_linked_count == len(original_data["archiveresults"]), (
+        f"Expected all {len(original_data['archiveresults'])} legacy ArchiveResults linked to Process, got {legacy_linked_count}"
     )
