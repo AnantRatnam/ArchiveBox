@@ -506,6 +506,54 @@ def stop_existing_supervisord_process():
             pass
 
 
+def stop_own_supervisord_process():
+    """Stop only the supervisord child started by this Python process."""
+
+    global _supervisord_proc
+    stop_grace_seconds = configured_stopwaitsecs(tuple(_desired_supervisord_workers.values()))
+
+    if not _supervisord_proc or _supervisord_proc.poll() is not None:
+        reap_foreground_supervisord_process()
+        return False
+
+    stopped_pid = _supervisord_proc.pid
+    try:
+        print(f"[🦸‍♂️] Stopping supervisord process (pid={stopped_pid})...")
+        try:
+            psutil_proc = psutil.Process(stopped_pid)
+            children = psutil_proc.children(recursive=True)
+        except psutil.NoSuchProcess:
+            children = []
+        _supervisord_proc.terminate()
+        wait_popen_and_kill_children(_supervisord_proc, children, timeout=stop_grace_seconds)
+        try:
+            from archivebox.machine.models import Machine, Process
+
+            for process in Process.objects.filter(
+                machine=Machine.current(),
+                process_type=Process.TypeChoices.SUPERVISORD,
+                status=Process.StatusChoices.RUNNING,
+                pwd=str(CONSTANTS.DATA_DIR),
+                pid=stopped_pid,
+            ).iterator(chunk_size=10):
+                process.mark_exited(exit_code=0)
+        except Exception:
+            pass
+    except (BrokenPipeError, OSError, psutil.TimeoutExpired):
+        pass
+    finally:
+        try:
+            SOCK_FILE = get_sock_file()
+            PID_FILE = SOCK_FILE.parent / PID_FILE_NAME
+            if PID_FILE.exists() and PID_FILE.read_text().strip() == str(stopped_pid):
+                PID_FILE.unlink(missing_ok=True)
+                SOCK_FILE.unlink(missing_ok=True)
+        except Exception:
+            pass
+        _supervisord_proc = None
+    return True
+
+
 def reap_foreground_supervisord_process() -> None:
     """Reap the supervisord child owned by this foreground parent if it exited."""
 

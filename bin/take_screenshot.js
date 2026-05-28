@@ -23,6 +23,8 @@ Environment:
   SCREENSHOT_FULL_PAGE       Set to 1 to capture the full page, defaults to viewport only
   SCREENSHOT_SCROLL_SELECTOR Scroll this selector into view before capture
   SCREENSHOT_WAIT_SELECTOR   Wait for this selector before capture
+  SCREENSHOT_CLICK_SELECTOR  Click this selector before capture
+  SCREENSHOT_AFTER_CLICK_WAIT_SELECTOR  Wait for this selector after clicking
   SCREENSHOT_HOST_RESOLVER_RULES  Chrome host resolver rules
   SCREENSHOT_SNAPSHOT_VIEW   Set to list or grid before loading the page
   SCREENSHOT_RESET_FILTERS   Set to 1 to clear the admin filter collapsed preference
@@ -101,6 +103,13 @@ async function main() {
     await page.waitForSelector('#progress-monitor, #add-form', { timeout: 5000 }).catch(() => {});
     if (process.env.SCREENSHOT_WAIT_SELECTOR) {
       await page.waitForSelector(process.env.SCREENSHOT_WAIT_SELECTOR, { timeout: 45000 });
+    }
+    if (process.env.SCREENSHOT_CLICK_SELECTOR) {
+      await page.waitForSelector(process.env.SCREENSHOT_CLICK_SELECTOR, { timeout: 45000 });
+      await page.click(process.env.SCREENSHOT_CLICK_SELECTOR);
+    }
+    if (process.env.SCREENSHOT_AFTER_CLICK_WAIT_SELECTOR) {
+      await page.waitForSelector(process.env.SCREENSHOT_AFTER_CLICK_WAIT_SELECTOR, { timeout: 45000 });
     }
     if (process.env.SCREENSHOT_SCROLL_SELECTOR) {
       await page.waitForSelector(process.env.SCREENSHOT_SCROLL_SELECTOR, { timeout: 45000 }).catch(() => {});

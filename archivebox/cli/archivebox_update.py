@@ -206,12 +206,11 @@ def update(
     from archivebox.machine.models import Process
     from archivebox.core.shutdown_util import foreground_parent_watchdog, foreground_shutdown_signals
     from archivebox.services.supervision_service import (
-        command_owns_runtime_stack,
         current_command,
         ensure_daemon_stack,
         standby_until_runtime_stack_needed,
     )
-    from archivebox.workers.supervisord_util import stop_existing_supervisord_process
+    from archivebox.workers.supervisord_util import stop_existing_supervisord_process, stop_own_supervisord_process
 
     command = current_command(Process.TypeChoices.UPDATE, data_dir=CONSTANTS.DATA_DIR)
 
@@ -414,8 +413,8 @@ def update(
         raise SystemExit(130)
     finally:
         command.mark_exited()
-        if stop_daemon_stack and command_owns_runtime_stack(command, data_dir=CONSTANTS.DATA_DIR):
-            stop_existing_supervisord_process()
+        if stop_daemon_stack:
+            stop_own_supervisord_process()
 
 
 def drain_old_archive_dirs(resume_from: str | None = None, batch_size: int = 100) -> dict[str, int]:
