@@ -1,10 +1,15 @@
 name: Parallel Tests
 
 on:
+  workflow_dispatch:
   pull_request:
     branches: [dev, main, master]
   push:
     branches: [dev]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   PYTHONIOENCODING: utf-8
@@ -15,7 +20,7 @@ env:
 jobs:
   discover-tests:
     name: Discover test files
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     outputs:
       test-files: ${{ steps.set-matrix.outputs.test-files }}
       plugin-tests: ${{ steps.set-plugin-matrix.outputs.plugin-tests }}
@@ -85,7 +90,7 @@ jobs:
 
   run-tests:
     name: ${{ matrix.test.name }}
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     needs: discover-tests
     env:
       PYTHONPATH: ${{ github.workspace }}/abxpkg:${{ github.workspace }}/abx-plugins:${{ github.workspace }}/abx-dl
@@ -116,13 +121,13 @@ jobs:
         run: git clone --depth=1 https://github.com/ArchiveBox/abx-dl.git abx-dl
 
       - name: Set up Python ${{ matrix.python }}
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
           architecture: x64
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v6
         with:
           version: "latest"
 
@@ -132,7 +137,7 @@ jobs:
           node-version: 22
 
       - name: Cache uv
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ~/.cache/uv
           key: ${{ runner.os }}-${{ matrix.python }}-uv-${{ hashFiles('pyproject.toml') }}
@@ -156,7 +161,7 @@ jobs:
 
   plugin-tests:
     name: ${{ matrix.plugin.name }}
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     needs: discover-tests
     env:
       PYTHONPATH: ${{ github.workspace }}/abxpkg:${{ github.workspace }}/abx-plugins:${{ github.workspace }}/abx-dl
@@ -186,13 +191,13 @@ jobs:
         run: git clone --depth=1 https://github.com/ArchiveBox/abx-dl.git abx-dl
 
       - name: Set up Python 3.13
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: "3.13"
           architecture: x64
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v6
         with:
           version: "latest"
 
@@ -202,7 +207,7 @@ jobs:
           node-version: 22
 
       - name: Cache uv
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ~/.cache/uv
           key: ${{ runner.os }}-3.13-uv-${{ hashFiles('pyproject.toml') }}
