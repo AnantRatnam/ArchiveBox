@@ -73,31 +73,15 @@ random_start_delay() {
     random_between 0 "$SLEEP_BETWEEN_JOBS_MAX"
 }
 
-tree_pids() {
+kill_tree() {
     local pid="$1"
     local child
     if command -v pgrep >/dev/null 2>&1; then
         for child in $(pgrep -P "$pid" 2>/dev/null || true); do
-            tree_pids "$child"
+            kill_tree "$child"
         done
     fi
-    echo "$pid"
-}
-
-kill_tree() {
-    local pid="$1"
-    local signal="${2:-TERM}"
-    local tree_file="${3:-}"
-    if [[ -n "$tree_file" ]]; then
-        tree_pids "$pid" >> "$tree_file"
-        sort -u "$tree_file" | while IFS= read -r tree_pid; do
-            kill "-$signal" "$tree_pid" >/dev/null 2>&1 || true
-        done
-    else
-        tree_pids "$pid" | while IFS= read -r tree_pid; do
-            kill "-$signal" "$tree_pid" >/dev/null 2>&1 || true
-        done
-    fi
+    kill "$pid" >/dev/null 2>&1 || true
 }
 
 cleanup() {
@@ -118,13 +102,11 @@ run_with_timeout() {
     local label="$1"
     shift 1
 
-    local slug token timeout timeout_marker tree_file
+    local slug token timeout
     timeout="$(random_kill_after)"
     slug="$(echo "$label" | tr ' /:' '____' | tr -cd '[:alnum:]_.-')"
     token="$(date +%s).$RANDOM.$RANDOM"
     local logfile="$LOG_DIR/${slug}.${token}.log"
-    timeout_marker="$LOG_DIR/.timeout.${token}"
-    tree_file="$LOG_DIR/.tree.${token}"
 
     {
         echo "[$(ts)] START label=$label shell=$$ data=$DATA_DIR"
@@ -141,11 +123,9 @@ run_with_timeout() {
         sleep "$timeout"
         if kill -0 "$child" >/dev/null 2>&1; then
             echo "[$(ts)] TIMEOUT label=$label pid=$child after=${timeout}s" >> "$logfile"
-            : > "$timeout_marker"
-            : > "$tree_file"
-            kill_tree "$child" TERM "$tree_file"
+            kill "$child" >/dev/null 2>&1 || true
             sleep 5
-            kill_tree "$child" KILL "$tree_file"
+            kill -9 "$child" >/dev/null 2>&1 || true
         fi
     ) &
     local watchdog=$!
@@ -154,14 +134,8 @@ run_with_timeout() {
 
     wait "$child"
     local code=$?
-    if [[ -e "$timeout_marker" ]]; then
-        wait "$watchdog" >/dev/null 2>&1 || true
-    else
-        kill "$watchdog" >/dev/null 2>&1 || true
-    fi
+    kill "$watchdog" >/dev/null 2>&1 || true
     wait "$watchdog" >/dev/null 2>&1 || true
-    kill_tree "$child"
-    rm -f "$timeout_marker" "$tree_file"
     trap - INT TERM
 
     echo "[$(ts)] END label=$label pid=$child exit=$code log=$logfile" | tee -a "$logfile"
@@ -196,7 +170,7 @@ run_server_for_a_bit() {
     echo "[$(ts)] STOP label=$label pid=$child after=${hold}s" | tee -a "$logfile"
     kill_tree "$child"
     sleep 5
-    kill_tree "$child" KILL
+    kill -9 "$child" >/dev/null 2>&1 || true
     wait "$child" >/dev/null 2>&1
     local code=$?
     trap - INT TERM
