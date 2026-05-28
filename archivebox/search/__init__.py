@@ -226,7 +226,13 @@ def get_backend(config: dict[str, Any] | None = None, **config_kwargs: Any) -> A
 
 
 @enforce_types
-def query_search_index(query: str, search_mode: str | None = None, config: dict[str, Any] | None = None, **config_kwargs: Any) -> QuerySet:
+def query_search_index(
+    query: str,
+    search_mode: str | None = None,
+    config: dict[str, Any] | None = None,
+    max_results: int | None = None,
+    **config_kwargs: Any,
+) -> QuerySet:
     """
     Search for snapshots matching the query.
 
@@ -242,14 +248,18 @@ def query_search_index(query: str, search_mode: str | None = None, config: dict[
     search_mode_base = get_search_mode_base(search_mode, config=config)
     if search_mode_base == "meta":
         return Snapshot.objects.none()
-    from archivebox.services.supervision_service import ensure_daemon_stack
 
-    ensure_daemon_stack(reason="search query")
-    snapshot_pks = list(iter_query_search_ids(query, search_mode=search_mode, config=config))
+    snapshot_pks = list(iter_query_search_ids(query, search_mode=search_mode, config=config, max_results=max_results))
     return Snapshot.objects.filter(pk__in=list(dict.fromkeys(snapshot_pks)))
 
 
-def iter_query_search_ids(query: str, search_mode: str | None = None, config: dict[str, Any] | None = None, **config_kwargs: Any):
+def iter_query_search_ids(
+    query: str,
+    search_mode: str | None = None,
+    config: dict[str, Any] | None = None,
+    max_results: int | None = None,
+    **config_kwargs: Any,
+):
     """Yield snapshot IDs from configured search backends as soon as each backend produces them."""
     config = config or get_config(**config_kwargs)
     if not config.USE_SEARCHING_BACKEND:
@@ -283,19 +293,32 @@ def iter_query_search_ids(query: str, search_mode: str | None = None, config: di
         get_backend()
         return
 
+    if "sonic" in backend_names:
+        from archivebox.services.supervision_service import ensure_daemon_stack
+
+        ensure_daemon_stack(reason="search query")
+
     errors: list[Exception] = []
     successful_backends = 0
+    seen: set[str] = set()
     try:
         for backend_name in backend_names:
             backend = backends[backend_name]
             try:
                 with search_backend_env(config=config):
                     if hasattr(backend, "iter_search"):
-                        yield from backend.iter_search(query, search_mode=search_mode_base)
+                        ids = backend.iter_search(query, search_mode=search_mode_base)
                     elif backend_name == "ripgrep":
-                        yield from backend.search(query, search_mode=search_mode_base)
+                        ids = backend.search(query, search_mode=search_mode_base)
                     else:
-                        yield from backend.search(query)
+                        ids = backend.search(query)
+                    for snapshot_id in ids:
+                        if snapshot_id in seen:
+                            continue
+                        seen.add(snapshot_id)
+                        yield snapshot_id
+                        if max_results and len(seen) >= max_results:
+                            return
                 successful_backends += 1
             except Exception as err:
                 errors.append(err)

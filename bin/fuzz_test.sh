@@ -235,7 +235,7 @@ job_version() {
 }
 
 job_list() {
-    run_with_timeout "list-search" "${ABX[@]}" list --search content example
+    run_with_timeout "list-search" "${ABX[@]}" list --search content --limit 25 example
 }
 
 # Used through pick JOBS.

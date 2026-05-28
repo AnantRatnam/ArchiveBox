@@ -188,6 +188,7 @@ def build_snapshot_queryset(
     sort: str | None = None,
     search: str | None = None,
     query: str | None = None,
+    limit: int | None = None,
 ) -> QuerySet:
     from archivebox.core.models import Snapshot
     from archivebox.search import (
@@ -223,14 +224,16 @@ def build_snapshot_queryset(
 
         if search_mode == "meta":
             queryset = metadata_qs
+        elif limit and len(list(metadata_qs.values_list("pk", flat=True).distinct()[:limit])) >= limit:
+            queryset = metadata_qs
         else:
             try:
                 deep_qsearch = None
                 if search_mode == "deep":
-                    qsearch = query_search_index(query, search_mode="contents")
-                    deep_qsearch = query_search_index(query, search_mode="deep")
+                    qsearch = query_search_index(query, search_mode="contents", max_results=limit)
+                    deep_qsearch = query_search_index(query, search_mode="deep", max_results=limit)
                 else:
-                    qsearch = query_search_index(query, search_mode=search_mode)
+                    qsearch = query_search_index(query, search_mode=search_mode, max_results=limit)
                 queryset = prioritize_metadata_matches(
                     queryset,
                     metadata_qs,
@@ -288,6 +291,7 @@ def list_snapshots(
         sort=sort,
         search=search,
         query=query,
+        limit=limit,
     )
 
     if not is_tty:

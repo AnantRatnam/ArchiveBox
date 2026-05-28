@@ -889,8 +889,11 @@ def print_index_stats(stats: dict[str, Any]) -> None:
 def main(**kwargs):
     from archivebox.core.shutdown_util import foreground_parent_watchdog, foreground_shutdown_signals
 
-    with foreground_shutdown_signals(), foreground_parent_watchdog():
-        update(**kwargs)
+    try:
+        with foreground_shutdown_signals(), foreground_parent_watchdog():
+            update(**kwargs)
+    except KeyboardInterrupt:
+        raise SystemExit(130) from None
 
 
 if __name__ == "__main__":
