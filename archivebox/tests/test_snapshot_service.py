@@ -10,7 +10,7 @@ from archivebox.core.models import ArchiveResult, Snapshot
 from archivebox.tests.conftest import parse_jsonl_output, run_archivebox_cmd_cwd
 from archivebox.tests.test_orm_helpers import use_archivebox_db
 from archivebox.workers.models import RETRY_AT_MAX
-from .test_server_helpers import (
+from .conftest import (
     build_test_env,
     create_admin_and_token,
     get_free_port,

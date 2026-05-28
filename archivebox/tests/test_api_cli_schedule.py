@@ -8,7 +8,7 @@ from django.test import RequestFactory, TestCase
 
 from archivebox.api.v1_cli import ScheduleCommandSchema, cli_schedule
 from archivebox.crawls.models import CrawlSchedule
-from .test_server_helpers import (
+from .conftest import (
     build_test_env,
     create_admin_and_token,
     get_free_port,

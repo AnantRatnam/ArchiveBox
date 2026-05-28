@@ -7,7 +7,7 @@ from archivebox.core.models import ArchiveResult, Snapshot
 from archivebox.crawls.models import Crawl
 from archivebox.tests.conftest import run_archivebox_cmd_cwd
 from archivebox.tests.test_orm_helpers import use_archivebox_db
-from .test_server_helpers import build_test_env, get_free_port, init_archive
+from .conftest import build_test_env, get_free_port, init_archive
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
