@@ -6,6 +6,9 @@ from uuid import UUID
 from archivebox.uuid_compat import uuid7
 
 
+PROGRESS_EVERY = 10000
+
+
 def migrate_archiveresult_id_to_uuid(apps, schema_editor):
     """
     Migrate ArchiveResult from integer PK to UUID PK (clean one-step migration).
@@ -28,7 +31,7 @@ def migrate_archiveresult_id_to_uuid(apps, schema_editor):
     # Check if table exists and has data
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='core_archiveresult'")
     if not cursor.fetchone():
-        print("ArchiveResult table does not exist, skipping migration")
+        print("    ✓ ArchiveResult table does not exist, skipping UUID PK migration")
         return
 
     cursor.execute("SELECT COUNT(*) FROM core_archiveresult")
@@ -38,16 +41,16 @@ def migrate_archiveresult_id_to_uuid(apps, schema_editor):
     # (fresh installs create table with uuid from 0025, but model expects no uuid after 0029)
 
     if row_count == 0:
-        print("[0029] Recreating ArchiveResult table schema (integer→UUID PK, removing uuid column)...")
+        print("    - Rebuilding empty ArchiveResult table with UUID primary keys...")
     else:
-        print(f"[0029] Migrating {row_count} ArchiveResult records from integer PK to UUID PK...")
+        print(f"    - Migrating {row_count} ArchiveResults from integer IDs to UUID primary keys...")
 
     # Step 0: Check if machine_process table exists, if not NULL out process_id values
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='machine_process'")
     machine_process_exists = cursor.fetchone() is not None
 
     if not machine_process_exists:
-        print("machine_process table does not exist yet, setting process_id to NULL")
+        print("      machine_process is unavailable; clearing process_id references...")
         cursor.execute("UPDATE core_archiveresult SET process_id = NULL WHERE process_id IS NOT NULL")
 
     # Step 1: Create new table with UUID as primary key (clean - no old_id or uuid columns)
@@ -149,10 +152,6 @@ def migrate_archiveresult_id_to_uuid(apps, schema_editor):
         # Build INSERT statement (only copy fields that exist in source)
         existing_fields = [f for f in fields_to_copy if f in values]
 
-        if i == 0:
-            print(f"[0029] Source columns: {col_names}")
-            print(f"[0029] Copying fields: {existing_fields}")
-
         placeholders = ", ".join(["?"] * (len(existing_fields) + 1))  # +1 for id
         field_list = "id, " + ", ".join(existing_fields)
 
@@ -164,13 +163,16 @@ def migrate_archiveresult_id_to_uuid(apps, schema_editor):
                 insert_values,
             )
             inserted_count += 1
+            if inserted_count % PROGRESS_EVERY == 0:
+                print(f"      copied {inserted_count}/{len(old_records)} ArchiveResults...")
         except Exception as e:
             print(f"[0029] ERROR inserting record {old_id}: {e}")
             if i == 0:
                 print(f"[0029] First record values: {insert_values[:5]}...")
                 raise
 
-    print(f"[0029] Inserted {inserted_count}/{len(old_records)} records")
+    if old_records:
+        print(f"      copied {inserted_count}/{len(old_records)} ArchiveResults")
 
     # Step 4: Replace old table with new table
     cursor.execute("DROP TABLE core_archiveresult")
@@ -185,7 +187,7 @@ def migrate_archiveresult_id_to_uuid(apps, schema_editor):
     cursor.execute("CREATE INDEX core_archiveresult_hook_name_idx ON core_archiveresult(hook_name)")
     cursor.execute("CREATE INDEX core_archiveresult_process_id_idx ON core_archiveresult(process_id)")
 
-    print(f"✓ Migrated {row_count} ArchiveResult records to UUID primary key")
+    print(f"    ✓ ArchiveResult UUID primary key migration complete ({row_count} records)")
 
 
 class Migration(migrations.Migration):

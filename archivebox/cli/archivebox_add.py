@@ -218,18 +218,30 @@ def add(
         # Foreground mode: run full crawl runner until all work is done
         print("[green]\\[*] Starting crawl runner to process crawl...[/green]")
         from archivebox.machine.models import Process
-        from archivebox.services.supervision_service import current_command, standby_until_runtime_stack_needed
+        from archivebox.services.supervision_service import command_owns_runtime_stack, current_command, standby_until_runtime_stack_needed
         from archivebox.workers.supervisord_util import run_runner_worker, stop_own_supervisord_process
 
         command = current_command(Process.TypeChoices.ADD, data_dir=CONSTANTS.DATA_DIR, url=first_url)
+        exit_code = 0
         try:
-            standby_until_runtime_stack_needed(command, data_dir=CONSTANTS.DATA_DIR)
-            with foreground_shutdown_signals(), foreground_parent_watchdog():
-                exit_code = run_runner_worker(["--crawl-id", str(crawl.id)], name=f"worker_runner_add_{os.getpid()}")
-                if exit_code != 0:
-                    raise SystemExit(exit_code)
+            try:
+                with foreground_shutdown_signals(), foreground_parent_watchdog():
+                    while True:
+                        standby_until_runtime_stack_needed(command, data_dir=CONSTANTS.DATA_DIR)
+                        exit_code = run_runner_worker(["--crawl-id", str(crawl.id)], name=f"worker_runner_add_{os.getpid()}")
+                        if exit_code == 0:
+                            break
+                        if not command_owns_runtime_stack(command, data_dir=CONSTANTS.DATA_DIR):
+                            continue
+                        raise SystemExit(exit_code)
+            except KeyboardInterrupt:
+                exit_code = 130
+                print("\n[red][X] archivebox add interrupted.[/red]")
+                print("[yellow]Hint: resume this crawl with:[/yellow]")
+                print(f"    [green]archivebox run --crawl-id={crawl.id}[/green]")
+                raise SystemExit(exit_code)
         finally:
-            command.mark_exited()
+            command.mark_exited(exit_code=exit_code)
             stop_own_supervisord_process()
 
         # Print summary for foreground runs

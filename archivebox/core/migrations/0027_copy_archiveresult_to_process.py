@@ -7,6 +7,9 @@ from pathlib import Path
 from archivebox.uuid_compat import uuid7
 
 
+PROGRESS_EVERY = 10000
+
+
 def parse_cmd_field(cmd_raw):
     """
     Parse cmd field which could be:
@@ -278,13 +281,8 @@ def copy_archiveresult_data_to_process(apps, schema_editor):
     cursor.execute("PRAGMA table_info(core_archiveresult)")
     cols = {row[1] for row in cursor.fetchall()}
 
-    print(f"DEBUG 0027: Columns found: {sorted(cols)}")
-    print(
-        f"DEBUG 0027: Has cmd={('cmd' in cols)}, pwd={('pwd' in cols)}, cmd_version={('cmd_version' in cols)}, process_id={('process_id' in cols)}",
-    )
-
     if "cmd" not in cols or "pwd" not in cols or "cmd_version" not in cols:
-        print("✓ Fresh install or fields already removed - skipping data copy")
+        print("    ✓ ArchiveResult process metadata already migrated")
         return
 
     # Check if process_id field exists (should exist from 0026)
@@ -308,10 +306,10 @@ def copy_archiveresult_data_to_process(apps, schema_editor):
     results = cursor.fetchall()
 
     if not results:
-        print("✓ No ArchiveResults need Process migration")
+        print("    ✓ No ArchiveResults need Process migration")
         return
 
-    print(f"Migrating {len(results)} ArchiveResults to Process records...")
+    print(f"    - Migrating {len(results)} ArchiveResults to Process rows...")
 
     migrated_count = 0
     skipped_count = 0
@@ -320,15 +318,9 @@ def copy_archiveresult_data_to_process(apps, schema_editor):
     for i, row in enumerate(results):
         ar_id, snapshot_id, plugin, cmd_raw, pwd, cmd_version, status, start_ts, end_ts, created_at = row
 
-        if i == 0:
-            print(f"DEBUG 0027: First row: ar_id={ar_id}, plugin={plugin}, cmd={cmd_raw[:50] if cmd_raw else None}, status={status}")
-
         try:
             # Parse cmd field
             cmd_array = parse_cmd_field(cmd_raw)
-
-            if i == 0:
-                print(f"DEBUG 0027: Parsed cmd: {cmd_array}")
 
             # Extract binary info from cmd[0] if available
             binary_id = None
@@ -345,9 +337,6 @@ def copy_archiveresult_data_to_process(apps, schema_editor):
                     binary_abspath,
                     binary_version,
                 )
-
-                if i == 0:
-                    print(f"DEBUG 0027: Created Binary: id={binary_id}, name={binary_name}")
 
             # Map status
             process_status, exit_code = map_status(status)
@@ -369,9 +358,6 @@ def copy_archiveresult_data_to_process(apps, schema_editor):
                 binary_id=binary_id,
             )
 
-            if i == 0:
-                print(f"DEBUG 0027: Created Process: id={process_id}")
-
             # Link ArchiveResult to Process
             cursor.execute(
                 "UPDATE core_archiveresult SET process_id = ? WHERE id = ?",
@@ -379,9 +365,8 @@ def copy_archiveresult_data_to_process(apps, schema_editor):
             )
 
             migrated_count += 1
-
-            if i == 0:
-                print("DEBUG 0027: Linked ArchiveResult to Process")
+            if migrated_count % PROGRESS_EVERY == 0:
+                print(f"      migrated {migrated_count}/{len(results)} ArchiveResults...")
 
         except Exception as e:
             print(f"✗ Error migrating ArchiveResult {ar_id}: {e}")
@@ -391,7 +376,7 @@ def copy_archiveresult_data_to_process(apps, schema_editor):
             error_count += 1
             continue
 
-    print(f"✓ Migration complete: {migrated_count} migrated, {skipped_count} skipped, {error_count} errors")
+    print(f"    ✓ Process migration complete: {migrated_count} migrated, {skipped_count} skipped, {error_count} errors")
 
 
 class Migration(migrations.Migration):

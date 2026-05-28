@@ -16,17 +16,15 @@ def converge_binary_table(apps, schema_editor):
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('machine_installedbinary', 'machine_binary')")
     existing_tables = {row[0] for row in cursor.fetchall()}
 
-    print(f"DEBUG 0005: Existing tables: {existing_tables}")
-
     # Drop old Binary table if it exists (0.8.6rc0 path)
     if "machine_installedbinary" in existing_tables:
-        print("✓ Dropping machine_installedbinary table (0.8.6rc0 divergence)")
+        print("    - Removing old machine_installedbinary table...")
         cursor.execute("DROP TABLE IF EXISTS machine_installedbinary")
 
     # Create Binary table if it doesn't exist.
     # This handles the case where 0.8.6rc0's 0001_initial didn't create it.
     if "machine_binary" not in existing_tables:
-        print("✓ Creating machine_binary table with correct schema")
+        print("    - Creating machine_binary table...")
         cursor.execute("""
             CREATE TABLE machine_binary (
                 id TEXT PRIMARY KEY NOT NULL,
@@ -53,9 +51,9 @@ def converge_binary_table(apps, schema_editor):
         cursor.execute("CREATE INDEX machine_binary_name_idx ON machine_binary(name)")
         cursor.execute("CREATE INDEX machine_binary_abspath_idx ON machine_binary(abspath)")
 
-        print("✓ machine_binary table created")
+        print("    ✓ machine_binary table ready")
     else:
-        print("✓ machine_binary table already exists")
+        print("    - Converging existing machine_binary table...")
         cursor.execute("PRAGMA table_info(machine_binary)")
         binary_cols = {row[1] for row in cursor.fetchall()}
 
@@ -78,6 +76,7 @@ def converge_binary_table(apps, schema_editor):
         )
         cursor.execute("UPDATE machine_binary SET overrides = COALESCE(NULLIF(overrides, ''), '{}')")
         cursor.execute("UPDATE machine_binary SET status = COALESCE(NULLIF(status, ''), 'installed')")
+        print("    ✓ machine_binary table ready")
 
 
 class Migration(migrations.Migration):

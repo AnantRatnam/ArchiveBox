@@ -217,6 +217,7 @@ def update(
     from archivebox.machine.models import Process
     from archivebox.core.shutdown_util import foreground_parent_watchdog, foreground_shutdown_signals
     from archivebox.services.supervision_service import (
+        command_owns_runtime_stack,
         current_command,
         ensure_daemon_stack,
         standby_until_runtime_stack_needed,
@@ -229,9 +230,13 @@ def update(
         standby_until_runtime_stack_needed(command, data_dir=CONSTANTS.DATA_DIR)
 
     def run_scoped_runner(*args: str) -> None:
-        wait_for_turn()
-        exit_code = run_runner_worker(list(args), name=f"worker_runner_update_{os.getpid()}")
-        if exit_code != 0:
+        while True:
+            wait_for_turn()
+            exit_code = run_runner_worker(list(args), name=f"worker_runner_update_{os.getpid()}")
+            if exit_code == 0:
+                return
+            if not command_owns_runtime_stack(command, data_dir=CONSTANTS.DATA_DIR):
+                continue
             raise SystemExit(exit_code)
 
     is_filtered_update = any(
