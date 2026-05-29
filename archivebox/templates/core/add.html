@@ -247,11 +247,11 @@
 
                     <div class="plugin-presets">
                         <span class="preset-label">Quick Select:</span>
-                        <a href="/admin/personas/persona/add/" class="preset-btn persona-create-btn" target="_blank" rel="noopener" title="Create new profile / import from Chrome">+ 👤</a>
+                        <a href="/admin/personas/persona/add/" class="preset-btn persona-create-btn" target="_blank" rel="noopener" title="Create new profile / import from Chrome" aria-label="Create new profile / import from Chrome">➕</a>
                         {% for persona in recent_personas %}
                         <span class="persona-preset-wrap">
                             <button type="button" class="preset-btn persona-preset-btn" data-persona="{{ persona.name }}" title="Use {{ persona.name }} persona">👤 {{ persona.name }}</button>
-                            <a href="/admin/personas/persona/{{ persona.pk }}/change/" class="preset-btn persona-edit-btn" target="_blank" rel="noopener" title="Edit {{ persona.name }} persona">✎</a>
+                            <a href="/admin/personas/persona/{{ persona.pk }}/change/#plugin-config" class="preset-btn persona-edit-btn" target="_blank" rel="noopener" title="Edit {{ persona.name }} persona plugin config">✎</a>
                         </span>
                         {% endfor %}
                         <button type="button" class="preset-btn" data-preset="text-only">📄 Text Only</button>

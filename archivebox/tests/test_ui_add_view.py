@@ -70,6 +70,10 @@ def test_add_view_admin_renders_plugin_config_grid(client, admin_user, monkeypat
     assert any(card["config_fields"] for group in form.plugin_groups for card in group["plugins"])
     assert b"Index only dry run" not in response.content
     assert b"Start paused" in response.content
+    assert b">Source</a>" in response.content
+    assert b">Docs</a>" in response.content
+    assert b"https://github.com/ArchiveBox/abx-plugins/tree/main/abx_plugins/plugins/" in response.content
+    assert b"https://archivebox.github.io/abx-plugins/#" in response.content
 
 
 def test_add_view_embeds_selected_persona_config_for_ui_hydration(client, admin_user, monkeypatch):

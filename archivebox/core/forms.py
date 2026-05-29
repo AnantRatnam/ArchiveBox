@@ -338,6 +338,8 @@ class PluginConfigFormMixin:
                     "checkbox_id": f"id_{field_name}_{index}",
                     "enabled_config_key": enabled_config_key,
                     "description": str(schema.get("description") or "").strip(),
+                    "source_url": f"https://github.com/ArchiveBox/abx-plugins/tree/main/abx_plugins/plugins/{plugin_name}",
+                    "docs_url": f"https://archivebox.github.io/abx-plugins/#{plugin_name}",
                     "required_plugins": [str(item) for item in schema.get("required_plugins") or []],
                     "required_binaries_count": len(schema.get("required_binaries") or []),
                     "config_fields": config_fields,

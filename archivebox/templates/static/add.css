@@ -761,8 +761,26 @@ select {
 .preset-btn:hover {
   background-color: #e9ecef;
   border-color: #adb5bd;
+  text-decoration: none;
   transform: translateY(-1px);
   box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+a.preset-btn,
+a.preset-btn:visited,
+a.preset-btn:hover,
+a.preset-btn:focus,
+a.preset-btn:active {
+  text-decoration: none !important;
+}
+
+#add-form .plugin-presets a.preset-btn,
+#add-form .plugin-presets a.preset-btn:link,
+#add-form .plugin-presets a.preset-btn:visited,
+#add-form .plugin-presets a.preset-btn:hover,
+#add-form .plugin-presets a.preset-btn:focus,
+#add-form .plugin-presets a.preset-btn:active {
+  text-decoration: none !important;
 }
 
 .preset-btn:active {
@@ -798,6 +816,9 @@ select {
 }
 
 .persona-create-btn {
+  justify-content: center;
+  min-width: 28px;
+  padding: 6px 8px;
   color: #116329;
   border-color: #b6e3c6;
   background-color: #f0fff4;

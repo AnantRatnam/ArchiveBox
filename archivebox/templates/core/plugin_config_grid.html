@@ -82,7 +82,7 @@
 
 .plugin-card-main {
     display: grid;
-    grid-template-columns: 18px minmax(0, 1fr) auto;
+    grid-template-columns: 18px minmax(0, 1fr) auto auto auto;
     gap: 8px;
     align-items: start;
     min-width: 0;
@@ -90,7 +90,7 @@
 }
 
 .plugin-card-main--static {
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
 }
 
 .plugin-card-main > input[type="checkbox"] {
@@ -175,15 +175,16 @@
 }
 
 .plugin-config-details {
-    grid-column: 3;
+    grid-column: 5;
     grid-row: 1;
     min-width: 0;
 }
 
 .plugin-card-main--static .plugin-config-details {
-    grid-column: 2;
+    grid-column: 4;
 }
 
+.plugin-card-badge,
 .plugin-config-details summary {
     display: inline-flex;
     align-items: center;
@@ -200,6 +201,40 @@
     list-style: none;
     user-select: none;
     white-space: nowrap;
+}
+
+.plugin-card-badge {
+    text-decoration: none !important;
+}
+
+.plugin-card-badge:link,
+.plugin-card-badge:visited,
+.plugin-card-badge:active {
+    color: #475569;
+}
+
+.plugin-card-badge:hover,
+.plugin-card-badge:focus {
+    background: #eef4fa;
+    color: #1f2937;
+}
+
+.plugin-source-badge {
+    grid-column: 3;
+    grid-row: 1;
+}
+
+.plugin-docs-badge {
+    grid-column: 4;
+    grid-row: 1;
+}
+
+.plugin-card-main--static .plugin-source-badge {
+    grid-column: 2;
+}
+
+.plugin-card-main--static .plugin-docs-badge {
+    grid-column: 3;
 }
 
 .plugin-config-details summary::-webkit-details-marker {
@@ -362,11 +397,11 @@
     }
 
     .plugin-card-main {
-        grid-template-columns: 18px minmax(0, 1fr);
+        grid-template-columns: 18px minmax(0, 1fr) auto auto auto;
     }
 
     .plugin-card-main--static {
-        grid-template-columns: minmax(0, 1fr);
+        grid-template-columns: minmax(0, 1fr) auto auto auto;
     }
 
     .plugin-config-details,
@@ -411,12 +446,14 @@
                                         <label for="{{ plugin.checkbox_id }}" class="plugin-card-label">
                                             {{ plugin.label }}
                                         </label>
-                                    {% else %}
-                                        <div class="plugin-card-label plugin-card-label-static">
-                                            {{ plugin.label }}
-                                        </div>
-                                    {% endif %}
-                                    <details class="plugin-config-details">
+	                                    {% else %}
+	                                        <div class="plugin-card-label plugin-card-label-static">
+	                                            {{ plugin.label }}
+	                                        </div>
+	                                    {% endif %}
+	                                    <a class="plugin-card-badge plugin-source-badge" href="{{ plugin.source_url }}" target="_blank" rel="noopener noreferrer">Source</a>
+	                                    <a class="plugin-card-badge plugin-docs-badge" href="{{ plugin.docs_url }}" target="_blank" rel="noopener noreferrer">Docs</a>
+	                                    <details class="plugin-config-details">
                                         <summary>
                                             <span>Config</span>
                                             <span class="plugin-config-count">{{ plugin.config_count }}</span>
