@@ -661,7 +661,7 @@ class TestRecoverOrchestratorState:
         assert recovered["archiveresults_backoff"] == 1
         assert result.status == ArchiveResult.StatusChoices.QUEUED
         assert snapshot.status == Snapshot.StatusChoices.SEALED
-        assert snapshot.retry_at is None
+        assert snapshot.retry_at is not None
         assert crawl.status == Crawl.StatusChoices.SEALED
 
     def test_recover_orchestrator_state_leaves_due_queued_snapshot_for_runner_even_with_final_results(self):

@@ -1248,9 +1248,19 @@ def run_due_crawl(crawl, *, lock_seconds: int, interactive_interrupts: bool = Fa
         ).exists()
         if snapshot_count and due_active_snapshots:
             # Child Snapshot rows own active work. Do not rewrite the parent
-            # row here: a user cancellation may have sealed it after the runner
-            # selected this stale object, and recursive discovery is driven by
-            # queued Snapshot rows, not parent crawl requeue churn.
+            # row unless it is still the same STARTED row we selected; this
+            # avoids hot-looping on the parent while child work is ready without
+            # resurrecting a user cancellation that sealed the crawl after
+            # selection.
+            crawl.safe_update(
+                {
+                    "status": crawl.StatusChoices.STARTED,
+                    "retry_at": now + timedelta(seconds=ACTIVE_STATE_LEASE_SECONDS),
+                    "modified_at": now,
+                },
+                refresh=False,
+                extra_filter={"status": crawl.StatusChoices.STARTED},
+            )
             return True
         if snapshot_count and not due_active_snapshots:
             if crawl.is_finished():
@@ -1405,6 +1415,12 @@ def run_due_snapshot(snapshot, *, lock_seconds: int, interactive_interrupts: boo
         return False
     snapshot.refresh_from_db()
     if snapshot.status == Snapshot.StatusChoices.QUEUED:
+        if snapshot.archiveresult_set.exists() and snapshot.is_finished_processing():
+            snapshot.sm.tick()
+            snapshot.refresh_from_db()
+            if snapshot.status == Snapshot.StatusChoices.SEALED:
+                _runner_console_line(crawl_id=snapshot.crawl_id, snapshot=snapshot, status="SEALED")
+                return True
         # The runner owns queued Snapshot setup. Create missing enabled hook
         # rows before ticking so maintenance-only final rows, e.g. search
         # backfill on a paused snapshot, cannot make queued -> sealed skip the

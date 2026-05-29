@@ -310,6 +310,13 @@ def main(daemon: bool, crawl_id: str, snapshot_id: str, binary_id: str, maintena
     """
     from archivebox.core.shutdown_util import foreground_parent_watchdog, foreground_shutdown_signals
 
+    if daemon and not snapshot_id and not binary_id and not crawl_id:
+        try:
+            with foreground_shutdown_signals(), foreground_parent_watchdog(enabled=False):
+                sys.exit(run_runner(daemon=True, maintenance_only=maintenance_only))
+        except KeyboardInterrupt:
+            sys.exit(0)
+
     with foreground_shutdown_signals(), foreground_parent_watchdog(enabled=not daemon):
         if snapshot_id:
             sys.exit(run_snapshot_worker(snapshot_id))
@@ -334,9 +341,6 @@ def main(daemon: bool, crawl_id: str, snapshot_id: str, binary_id: str, maintena
 
         if maintenance_only:
             sys.exit(run_runner(daemon=daemon, maintenance_only=True))
-
-        if daemon:
-            sys.exit(run_runner(daemon=True, maintenance_only=maintenance_only))
 
         if not sys.stdin.isatty():
             sys.exit(process_stdin_records())

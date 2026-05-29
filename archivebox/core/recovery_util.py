@@ -54,18 +54,32 @@ def recover_orchestrator_state(*, include_chrome: bool = False) -> dict[str, int
         retry_at__isnull=True,
         crawl__status__in=[Crawl.StatusChoices.QUEUED, Crawl.StatusChoices.STARTED],
     ).update(retry_at=now, modified_at=now)
-    # ArchiveResult has no retry_at scheduler; BACKOFF is a legacy/impossible
-    # persisted state here, so move it back to QUEUED for the snapshot runner.
-    cleaned["archiveresults_backoff"] = ArchiveResult.objects.filter(
-        status=ArchiveResult.StatusChoices.BACKOFF,
-    ).update(status=ArchiveResult.StatusChoices.QUEUED, modified_at=now)
+    backoff_results = ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.BACKOFF)
+    orphaned_results = ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.STARTED).exclude(
+        process__status=Process.StatusChoices.RUNNING,
+    )
+    # ArchiveResult has no retry_at scheduler. Wake only the parent Snapshots
+    # for result rows we are about to repair, then requeue those exact rows.
+    # Using subqueries keeps million-row recovery in SQLite instead of building
+    # Python ID lists or scanning all sealed snapshots.
+    Snapshot.objects.filter(
+        id__in=backoff_results.values("snapshot_id"),
+        status__in=[Snapshot.StatusChoices.SEALED, Snapshot.StatusChoices.PAUSED],
+        retry_at__isnull=True,
+    ).update(retry_at=now, modified_at=now)
+    Snapshot.objects.filter(
+        id__in=orphaned_results.values("snapshot_id"),
+        status__in=[Snapshot.StatusChoices.SEALED, Snapshot.StatusChoices.PAUSED],
+        retry_at__isnull=True,
+    ).update(retry_at=now, modified_at=now)
+    cleaned["archiveresults_backoff"] = backoff_results.update(status=ArchiveResult.StatusChoices.QUEUED, modified_at=now)
     # Impossible state repair: STARTED ArchiveResults without a live Process
     # have no owner left to emit completion. Requeue only the result row; the
     # snapshot/crawl schedulers will pick up normal retry processing.
-    cleaned["archiveresults_started_without_running_process"] = (
-        ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.STARTED)
-        .exclude(process__status=Process.StatusChoices.RUNNING)
-        .update(status=ArchiveResult.StatusChoices.QUEUED, process=None, modified_at=now)
+    cleaned["archiveresults_started_without_running_process"] = orphaned_results.update(
+        status=ArchiveResult.StatusChoices.QUEUED,
+        process=None,
+        modified_at=now,
     )
     started_snapshots = Snapshot.objects.filter(status=Snapshot.StatusChoices.STARTED).filter(
         Q(retry_at__isnull=True) | Q(retry_at__gt=now),
