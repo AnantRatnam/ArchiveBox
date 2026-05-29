@@ -267,6 +267,31 @@ def test_create_snapshots_from_urls_respects_url_allowlist_and_denylist(admin_us
     assert [snapshot.url for snapshot in created] == ["https://example.com/root"]
 
 
+def test_create_snapshots_from_urls_skips_invalid_and_archivebox_internal_urls(admin_user):
+    crawl = Crawl.objects.create(
+        urls="\n".join(
+            [
+                "https://example.com/root",
+                "http://127.0.0.1:8765/page-001.html",
+                "not-a-url",
+                "http://admin.archivebox.localhost:8000/admin/",
+            ],
+        ),
+        created_by=admin_user,
+    )
+
+    created = crawl.create_snapshots_from_urls()
+
+    assert [snapshot.url for snapshot in created] == [
+        "https://example.com/root",
+        "http://127.0.0.1:8765/page-001.html",
+    ]
+    assert list(crawl.snapshot_set.order_by("created_at").values_list("url", flat=True)) == [
+        "https://example.com/root",
+        "http://127.0.0.1:8765/page-001.html",
+    ]
+
+
 def test_create_snapshots_from_urls_respects_max_urls(admin_user):
     crawl = Crawl.objects.create(
         urls="\n".join(

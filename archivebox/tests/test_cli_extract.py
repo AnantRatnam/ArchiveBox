@@ -10,6 +10,7 @@ import subprocess
 import pytest
 
 from archivebox.core.models import Snapshot
+from archivebox.tests.conftest import run_queued_crawls
 from archivebox.tests.test_orm_helpers import use_archivebox_db
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -25,6 +26,7 @@ def test_extract_runs_on_existing_snapshots(tmp_path, process, disable_extractor
         capture_output=True,
         env=disable_extractors_dict,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     # Run extract
     result = subprocess.run(
@@ -48,6 +50,7 @@ def test_extract_preserves_snapshot_count(tmp_path, process, disable_extractors_
         capture_output=True,
         env=disable_extractors_dict,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     with use_archivebox_db(tmp_path):
         count_before = Snapshot.objects.count()

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from django.db import transaction
 from django.utils import timezone
 
 from archivebox.machine.models import (
@@ -415,6 +416,30 @@ class TestBinaryModel:
                 "install_args": ["readability-extractor"],
             },
         }
+
+    @pytest.mark.django_db(transaction=True)
+    def test_binary_lib_bin_symlink_waits_for_outer_transaction_commit(self, tmp_path):
+        """Binary DB projection writes can be direct, but LIB_BIN_DIR writes must run after commit."""
+        source = tmp_path / "provider" / "bin" / "abx-test-binary"
+        source.parent.mkdir(parents=True)
+        source.write_text("#!/bin/sh\nexit 0\n")
+        source.chmod(0o755)
+        lib_bin_dir = tmp_path / "lib" / "bin"
+        symlink = lib_bin_dir / "abx-test-binary"
+
+        with transaction.atomic():
+            binary = Binary.objects.create(
+                machine=self.machine,
+                name="abx-test-binary",
+                abspath=str(source),
+                version="1.0.0",
+                status=Binary.StatusChoices.INSTALLED,
+            )
+            binary.symlink_to_lib_bin_after_commit(lib_bin_dir)
+            assert not symlink.exists()
+
+        assert symlink.is_symlink()
+        assert symlink.resolve() == source
 
 
 class TestBinaryStateMachine:

@@ -46,6 +46,7 @@ def process_archiveresult_by_id(archiveresult_id: str) -> int:
     through the shared crawl runner with the corresponding plugin selected.
     """
     from rich import print as rprint
+    from django.utils import timezone
     from archivebox.core.models import ArchiveResult
     from archivebox.services.runner import run_crawl
 
@@ -67,7 +68,7 @@ def process_archiveresult_by_id(archiveresult_id: str) -> int:
             # A paused snapshot may still accept explicit maintenance for one
             # ArchiveResult, but this path must not transition it back to
             # queued/startable work.
-            snapshot.save(update_fields=["retry_at", "modified_at"])
+            snapshot.safe_update({"retry_at": timezone.now()}, refresh=False)
         crawl = snapshot.crawl
         if not crawl.claim_processing_lock(lock_seconds=10):
             rprint(
@@ -264,30 +265,31 @@ def run_plugins(
             # also keep status=paused here: `retry_at` only asks the orchestrator
             # to process the queued plugin rows, and run_due_snapshot restores
             # retry_at=MAX afterward instead of resuming the snapshot lifecycle.
-            Snapshot.objects.filter(id__in=existing_snapshot_ids).update(
-                retry_at=queue_at,
-                modified_at=queue_at,
-            )
+            for snapshot in Snapshot.objects.filter(id__in=existing_snapshot_ids).only("id", "modified_at"):
+                snapshot.safe_update({"retry_at": queue_at, "modified_at": queue_at}, refresh=False)
         else:
             # No plugin rows were requested, so this is a full snapshot retry.
-            Snapshot.objects.filter(id__in=existing_snapshot_ids).update(
-                status=Snapshot.StatusChoices.QUEUED,
-                retry_at=queue_at,
-                current_step=0,
-                modified_at=queue_at,
-            )
+            for snapshot in Snapshot.objects.filter(id__in=existing_snapshot_ids).only("id", "status", "retry_at", "modified_at"):
+                snapshot.safe_update(
+                    {
+                        "status": Snapshot.StatusChoices.QUEUED,
+                        "retry_at": queue_at,
+                        "current_step": 0,
+                        "modified_at": queue_at,
+                    },
+                    refresh=False,
+                )
     if existing_crawl_ids and not requested_rows:
         from archivebox.crawls.models import Crawl
 
-        Crawl.objects.filter(id__in=existing_crawl_ids).exclude(status=Crawl.StatusChoices.STARTED).update(
-            status=Crawl.StatusChoices.QUEUED,
-            retry_at=queue_at,
-            modified_at=queue_at,
-        )
-        Crawl.objects.filter(id__in=existing_crawl_ids, status=Crawl.StatusChoices.STARTED).update(
-            retry_at=queue_at,
-            modified_at=queue_at,
-        )
+        for crawl in Crawl.objects.filter(id__in=existing_crawl_ids).only("id", "status", "retry_at", "modified_at"):
+            update_fields = {
+                "retry_at": queue_at,
+                "modified_at": queue_at,
+            }
+            if crawl.status != Crawl.StatusChoices.STARTED:
+                update_fields["status"] = Crawl.StatusChoices.QUEUED
+            crawl.safe_update(update_fields, refresh=False)
 
     if processed_count == 0:
         rprint("[red]No snapshots to process[/red]", file=sys.stderr)

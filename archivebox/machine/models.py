@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from statemachine import State, registry
 
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from django.db import models
 from django.db.models import Q, QuerySet
 from django.utils import timezone
@@ -334,6 +334,12 @@ class NetworkInterface(ModelWithHealthStats):
     class Meta(ModelWithHealthStats.Meta):
         app_label = "machine"
         unique_together = (("machine", "ip_public", "ip_local", "mac_address", "dns_server"),)
+        constraints = [
+            models.UniqueConstraint(
+                fields=["machine", "ip_public", "ip_local", "mac_address", "dns_server"],
+                name="unique_network_interface_identity",
+            ),
+        ]
 
     @classmethod
     def current(cls, refresh: bool = False) -> NetworkInterface:
@@ -355,13 +361,14 @@ class NetworkInterface(ModelWithHealthStats):
             mac_address=net_info.pop("mac_address"),
             dns_server=net_info.pop("dns_server"),
         )
-        try:
-            _CURRENT_INTERFACE = cls.objects.get(**lookup)
-        except cls.DoesNotExist:
+        _CURRENT_INTERFACE = cls.objects.filter(**lookup).order_by("-modified_at", "-created_at").first()
+        if _CURRENT_INTERFACE is None:
             try:
                 _CURRENT_INTERFACE = cls.objects.create(**lookup, **net_info)
             except IntegrityError:
-                _CURRENT_INTERFACE = cls.objects.get(**lookup)
+                _CURRENT_INTERFACE = cls.objects.filter(**lookup).order_by("-modified_at", "-created_at").first()
+                if _CURRENT_INTERFACE is None:
+                    raise
         else:
             # Avoid update_or_create() here: command startup calls this before
             # leadership handoff, and SQLite should not take a write lock unless
@@ -600,7 +607,7 @@ class Binary(ModelWithHealthStats, ModelWithStateMachine):
             )
             from archivebox.config.common import get_config
 
-            binary.symlink_to_lib_bin(get_config().LIB_BIN_DIR)
+            binary.symlink_to_lib_bin_after_commit(get_config().LIB_BIN_DIR)
             return binary
 
         # Case 2: From binaries.json - create queued binary (needs installation)
@@ -633,23 +640,10 @@ class Binary(ModelWithHealthStats, ModelWithStateMachine):
             )
             from archivebox.config.common import get_config
 
-            binary.symlink_to_lib_bin(get_config().LIB_BIN_DIR)
+            binary.symlink_to_lib_bin_after_commit(get_config().LIB_BIN_DIR)
             return binary
 
         return None
-
-    def update_and_requeue(self, **kwargs) -> bool:
-        """
-        Update binary fields and requeue for worker state machine.
-
-        Sets modified_at to ensure workers pick up changes.
-        Always saves the model after updating.
-        """
-        for key, value in kwargs.items():
-            setattr(self, key, value)
-        self.modified_at = timezone.now()
-        self.save()
-        return True
 
     def _allowed_binproviders(self) -> set[str] | None:
         """Return the allowed binproviders for this binary, or None for wildcard."""
@@ -749,7 +743,7 @@ class Binary(ModelWithHealthStats, ModelWithStateMachine):
 
                 lib_bin_dir = get_config().LIB_BIN_DIR
                 if lib_bin_dir:
-                    self.symlink_to_lib_bin(lib_bin_dir)
+                    self.symlink_to_lib_bin_after_commit(lib_bin_dir)
 
                 return
 
@@ -848,6 +842,25 @@ class Binary(ModelWithHealthStats, ModelWithStateMachine):
         except (OSError, PermissionError) as e:
             print(f"Failed to create symlink {symlink_path} -> {binary_abspath}: {e}", file=sys.stderr)
             return None
+
+    def symlink_to_lib_bin_after_commit(self, lib_bin_dir: str | Path) -> None:
+        """
+        Symlink after the current DB transaction commits.
+
+        Binary rows are projections of provider/hook state and are allowed to be
+        updated directly, but filesystem writes must not run while an outer
+        transaction is still open. Refetch after commit so the symlink points at
+        the committed row, not a possibly-rolled-back in-memory value.
+        """
+        binary_id = self.id
+        lib_bin_path = Path(lib_bin_dir)
+
+        def create_symlink() -> None:
+            binary = type(self).objects.filter(id=binary_id).first()
+            if binary is not None:
+                binary.symlink_to_lib_bin(lib_bin_path)
+
+        transaction.on_commit(create_symlink)
 
 
 # =============================================================================
@@ -1005,7 +1018,7 @@ class Process(ModelWithDeleteAfter, models.Model):
         null=False,
         blank=True,
         db_index=True,
-        help_text="Worker type name for WORKER processes (crawl, snapshot, archiveresult)",
+        help_text="Worker role name for worker/orchestrator subprocesses",
     )
 
     # Execution metadata
@@ -1141,6 +1154,13 @@ class Process(ModelWithDeleteAfter, models.Model):
             models.Index(fields=["process_type", "worker_type", "pwd", "started_at"]),
             models.Index(fields=["machine", "process_type", "-modified_at"], name="mach_proc_recent_idx"),
             models.Index(fields=["machine", "status", "process_type"], name="mach_proc_running_idx"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["machine", "pwd"],
+                condition=Q(status="running", process_type="orchestrator", worker_type="worker_runner"),
+                name="single_active_runner_per_data_dir",
+            ),
         ]
 
     def __str__(self) -> str:
@@ -1280,16 +1300,33 @@ class Process(ModelWithDeleteAfter, models.Model):
                 pass
         return None
 
+    def safe_update(self, update_fields: dict[str, Any], *, refresh: bool = True, extra_filter: dict[str, Any] | None = None) -> bool:
+        """
+        Compare-and-swap update for short Process scheduler writes.
+
+        Process is not a ModelWithStateMachine subclass yet, but its
+        state-machine methods still need the same modified_at CAS behavior as
+        Crawl/Snapshot/Binary without falling back to save().
+        """
+        values = dict(update_fields)
+        values.setdefault("modified_at", timezone.now())
+        queryset = type(self).objects.filter(pk=self.pk, modified_at=self.modified_at)
+        if extra_filter:
+            queryset = queryset.filter(**extra_filter)
+        updated = queryset.update(**values)
+        if refresh:
+            try:
+                self.refresh_from_db()
+            except type(self).DoesNotExist:
+                pass
+        return updated == 1
+
     def update_and_requeue(self, **kwargs) -> bool:
-        """
-        Update process fields and requeue for worker state machine.
-        Sets modified_at to ensure workers pick up changes.
-        """
-        for key, value in kwargs.items():
-            setattr(self, key, value)
-        self.modified_at = timezone.now()
-        self.save()
-        return True
+        """Scheduler-facing wrapper around safe_update()."""
+        return self.safe_update(
+            dict(kwargs),
+            extra_filter={"retry_at": self.retry_at},
+        )
 
     def mark_running(
         self,
@@ -1355,6 +1392,23 @@ class Process(ModelWithDeleteAfter, models.Model):
         global _CURRENT_PROCESS
 
         current_pid = os.getpid()
+
+        # Fast path used by model save diagnostics and hot runner loops. A
+        # cached Process object is valid when the immutable identity we wrote
+        # at creation time still describes this Python process. PID reuse cannot
+        # happen while this process is alive, so pid + present started_at/cmd is
+        # enough here; the slower psutil validation below remains the fallback
+        # for missing/stale cache.
+        if (
+            _CURRENT_PROCESS
+            and _CURRENT_PROCESS.pid == current_pid
+            and _CURRENT_PROCESS.status == cls.StatusChoices.RUNNING
+            and timezone.now() < _CURRENT_PROCESS.modified_at + timedelta(seconds=PROCESS_RECHECK_INTERVAL)
+            and _CURRENT_PROCESS.started_at is not None
+            and bool(_CURRENT_PROCESS.cmd)
+        ):
+            return _CURRENT_PROCESS
+
         machine = Machine.current()
         iface = NetworkInterface.current()
 
@@ -1566,10 +1620,7 @@ class Process(ModelWithDeleteAfter, models.Model):
                     is_stale = True  # Process no longer exists
 
             if is_stale:
-                proc.status = cls.StatusChoices.EXITED
-                proc.ended_at = proc.ended_at or timezone.now()
-                proc.exit_code = proc.exit_code if proc.exit_code is not None else 0
-                proc.save(update_fields=["status", "ended_at", "exit_code", "modified_at"])
+                proc.mark_exited(exit_code=proc.exit_code if proc.exit_code is not None else 0)
                 cleaned += 1
 
         return cleaned
@@ -2466,10 +2517,7 @@ class Process(ModelWithDeleteAfter, models.Model):
         # orphaned Process backlog cannot be materialized in memory at once.
         for proc in running_children.iterator(chunk_size=100):
             if not proc.is_running:
-                proc.status = cls.StatusChoices.EXITED
-                proc.ended_at = proc.ended_at or timezone.now()
-                proc.exit_code = proc.exit_code if proc.exit_code is not None else 0
-                proc.save(update_fields=["status", "ended_at", "exit_code", "modified_at"])
+                proc.mark_exited(exit_code=proc.exit_code if proc.exit_code is not None else 0)
                 cleaned += 1
                 continue
 
@@ -2493,10 +2541,7 @@ class Process(ModelWithDeleteAfter, models.Model):
             ):
                 continue
 
-            proc.status = cls.StatusChoices.EXITED
-            proc.ended_at = proc.ended_at or timezone.now()
-            proc.exit_code = proc.exit_code if proc.exit_code is not None else 0
-            proc.save(update_fields=["status", "ended_at", "exit_code", "modified_at"])
+            proc.mark_exited(exit_code=proc.exit_code if proc.exit_code is not None else 0)
             cleaned += 1
 
         if cleaned:

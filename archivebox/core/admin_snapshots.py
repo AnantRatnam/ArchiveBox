@@ -33,7 +33,6 @@ from archivebox.core.tag_utils import get_or_create_tag
 from archivebox.hooks import discover_hooks, get_plugin_icon, get_plugin_name, get_plugins
 
 from archivebox.base_models.admin import BaseModelAdmin, ConfigEditorMixin
-from archivebox.workers.tasks import bg_archive_snapshots, bg_add
 
 from archivebox.core.models import Tag, Snapshot, ArchiveResult
 from archivebox.core.admin_archiveresults import render_archiveresults_list
@@ -816,8 +815,10 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
             config["PERMISSIONS"] = permissions
 
         # Keep the quick-edit write to one targeted UPDATE so SQLite only holds
-        # the write lock for the permission/config change itself.
-        Snapshot.objects.filter(pk=snapshot.pk).update(config=config, modified_at=timezone.now())
+        # the write lock for the permission/config change itself. safe_update()
+        # keeps this from overwriting a concurrent admin/runner edit to the
+        # same Snapshot after the row was loaded above.
+        snapshot.safe_update({"config": config, "modified_at": timezone.now()}, refresh=False)
         icon, label, fg, bg = SNAPSHOT_PERMISSION_META[permissions]
         return JsonResponse({"permissions": permissions, "icon": icon, "label": label, "fg": fg, "bg": bg})
 
@@ -1645,18 +1646,20 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
             messages.info(request, "No valid snapshot URLs were found to archive.")
             return
 
-        bg_add({"urls": urls})
+        from archivebox.cli.archivebox_add import add
+
+        add(urls=urls, bg=True)
 
         messages.success(
             request,
-            f"Creating 1 new crawl with {len(snapshots)} fresh snapshots. The background runner will process them.",
+            f"Created 1 queued crawl with {len(snapshots)} URL(s). The background runner will create snapshots and process them.",
         )
 
     @admin.action(
         description="🔄 Redo",
     )
     def overwrite_snapshots(self, request, queryset):
-        queued = bg_archive_snapshots(queryset, kwargs={"overwrite": True})
+        queued = sum(snapshot.archive(overwrite=True) for snapshot in queryset)
 
         messages.success(
             request,

@@ -27,8 +27,16 @@ class CrawlService(BaseService):
         crawl = await Crawl.objects.aget(id=self.crawl_id)
         if crawl.is_paused:
             return
-        if crawl.status != Crawl.StatusChoices.SEALED:
-            crawl.status = Crawl.StatusChoices.STARTED
+        if crawl.status == Crawl.StatusChoices.SEALED:
+            if crawl.retry_at is not None:
+                # Setup/start events can be emitted during targeted maintenance
+                # on sealed snapshots. The snapshot retry_at owns that work; the
+                # sealed parent crawl must stay invisible to crawl selection
+                # unless an explicit resume/requeue path changes its status first.
+                crawl.retry_at = None
+                await crawl.asave(update_fields=["retry_at", "modified_at"])
+            return
+        crawl.status = Crawl.StatusChoices.STARTED
         crawl.retry_at = timezone.now() + timedelta(seconds=ACTIVE_STATE_LEASE_SECONDS)
         await crawl.asave(update_fields=["status", "retry_at", "modified_at"])
 
@@ -38,8 +46,15 @@ class CrawlService(BaseService):
         crawl = await Crawl.objects.aget(id=self.crawl_id)
         if crawl.is_paused:
             return
-        if crawl.status != Crawl.StatusChoices.SEALED:
-            crawl.status = Crawl.StatusChoices.STARTED
+        if crawl.status == Crawl.StatusChoices.SEALED:
+            if crawl.retry_at is not None:
+                # CrawlStart is also emitted by sealed-snapshot maintenance
+                # runs. Do not turn a sealed crawl back into schedulable work
+                # unless an explicit resume/requeue path changes its status first.
+                crawl.retry_at = None
+                await crawl.asave(update_fields=["retry_at", "modified_at"])
+            return
+        crawl.status = Crawl.StatusChoices.STARTED
         crawl.retry_at = timezone.now() + timedelta(seconds=ACTIVE_STATE_LEASE_SECONDS)
         await crawl.asave(update_fields=["status", "retry_at", "modified_at"])
 

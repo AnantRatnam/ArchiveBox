@@ -296,7 +296,7 @@ def test_add_view_public_submission_ignores_plugin_and_custom_config(client, adm
     assert crawl.schedule is None
 
 
-def test_add_view_queues_crawl_and_snapshots_for_background_runner(client, admin_user, monkeypatch):
+def test_add_view_queues_crawl_for_background_runner(client, admin_user, monkeypatch):
     monkeypatch.setenv("PUBLIC_ADD_VIEW", "true")
     client.force_login(admin_user)
 
@@ -326,12 +326,7 @@ def test_add_view_queues_crawl_and_snapshots_for_background_runner(client, admin
     assert crawl is not None
     assert crawl.status == Crawl.StatusChoices.QUEUED
     assert crawl.retry_at is not None
-
-    snapshots = list(crawl.snapshot_set.order_by("url"))
-    assert len(snapshots) == 1
-    assert snapshots[0].url == "https://example.com"
-    assert snapshots[0].status == Snapshot.StatusChoices.QUEUED
-    assert snapshots[0].retry_at is not None
+    assert crawl.snapshot_set.count() == 0
 
 
 def test_add_view_extracts_urls_from_mixed_text_input(client, admin_user, monkeypatch):

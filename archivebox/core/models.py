@@ -55,7 +55,6 @@ from archivebox.base_models.models import (
     get_or_create_system_user_pk,
 )
 from archivebox.workers.models import ACTIVE_STATE_LEASE_SECONDS, RETRY_AT_MAX, ModelWithStateMachine, BaseStateMachine
-from archivebox.workers.tasks import bg_archive_snapshot
 from archivebox.crawls.models import Crawl
 from archivebox.machine.models import Binary
 
@@ -551,15 +550,17 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         rows. After that maintenance pass, the lifecycle must remain PAUSED and
         retry_at must go back to MAX until a real resume transition happens.
         """
-        type(self).objects.filter(pk=self.pk, status=self.StatusChoices.PAUSED).update(
-            retry_at=RETRY_AT_MAX,
-            modified_at=timezone.now(),
+        self.safe_update(
+            {
+                "retry_at": RETRY_AT_MAX,
+                "modified_at": timezone.now(),
+            },
+            extra_filter={"status": self.StatusChoices.PAUSED},
         )
 
     def cancel(self) -> None:
-        self.status = self.StatusChoices.SEALED
-        self.retry_at = None
-        self.save(update_fields=["status", "retry_at", "modified_at"])
+        if self.status != self.StatusChoices.SEALED:
+            self.sm.seal()
 
     def get_delete_after_config_value(self):
         return get_config(snapshot=self).DELETE_AFTER
@@ -583,9 +584,10 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
 
         config = get_config()
         host = parsed.hostname.lower().strip(".")
+        port = str(parsed.port) if parsed.port else None
         protected_subdomains = {"admin", "web", "api", "public"}
-        protected_hosts = set()
-        protected_roots = set()
+        protected_hosts: set[tuple[str, str | None]] = set()
+        protected_roots: set[tuple[str, str | None]] = set()
         for host_value in (
             get_listen_host(config=config),
             get_admin_host(config=config),
@@ -595,20 +597,28 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         ):
             if not host_value:
                 continue
-            protected_host = split_host_port(host_value)[0].strip(".")
+            protected_host, protected_port = split_host_port(host_value)
+            protected_host = protected_host.strip(".")
             if not protected_host:
                 continue
-            protected_hosts.add(protected_host)
+            protected_hosts.add((protected_host, protected_port))
+            if protected_host in {"", "0.0.0.0", "::", "127.0.0.1", "::1", "localhost"}:
+                for local_alias in ("127.0.0.1", "localhost"):
+                    protected_hosts.add((local_alias, protected_port))
             parts = protected_host.split(".", 1)
             if len(parts) == 2 and (parts[0] in protected_subdomains or parts[0].startswith("snap-")):
-                protected_roots.add(parts[1])
+                protected_roots.add((parts[1], protected_port))
             else:
-                protected_roots.add(protected_host)
-        if host in protected_hosts:
-            return True
+                protected_roots.add((protected_host, protected_port))
+
+        for protected_host, protected_port in protected_hosts:
+            if host == protected_host and (protected_port is None or port == protected_port):
+                return True
 
         if config.USES_SUBDOMAIN_ROUTING:
-            for protected_root in protected_roots:
+            for protected_root, protected_port in protected_roots:
+                if protected_port is not None and port != protected_port:
+                    continue
                 if not protected_root or not host.endswith(f".{protected_root}"):
                     continue
                 subdomain = host[: -(len(protected_root) + 1)]
@@ -637,13 +647,16 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         return Binary.objects.filter(process_set__archiveresult__snapshot_id=self.id).distinct()
 
     def save(self, *args, **kwargs):
-        try:
-            validate_url_length(self.url or "")
-        except ValueError as err:
-            raise ValidationError({"url": str(err)}) from err
+        update_fields = kwargs.get("update_fields")
+        validate_url_field = self._state.adding or update_fields is None or "url" in update_fields
+        if validate_url_field:
+            try:
+                validate_url_length(self.url or "")
+            except ValueError as err:
+                raise ValidationError({"url": str(err)}) from err
 
-        if self.is_archivebox_internal_url(self.url):
-            raise ValidationError({"url": "ArchiveBox cannot archive its own admin, web, api, or snapshot URLs."})
+            if self.is_archivebox_internal_url(self.url):
+                raise ValidationError({"url": "ArchiveBox cannot archive its own admin, web, api, or snapshot URLs."})
 
         if not self.bookmarked_at:
             self.bookmarked_at = self.created_at or timezone.now()
@@ -1788,7 +1801,10 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
                 keeper.tags.add(tag)
 
             # Move ArchiveResults
-            ArchiveResult.objects.filter(snapshot=dup).update(snapshot=keeper)
+            ArchiveResult.objects.filter(snapshot=dup).update(
+                snapshot=keeper,
+                modified_at=timezone.now(),
+            )
 
             # Delete
             dup.delete()
@@ -1806,7 +1822,13 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         return str(self.timestamp)
 
     def archive(self, overwrite=False, methods=None):
-        return bg_archive_snapshot(self, overwrite=overwrite, methods=methods)
+        updates = {
+            "status": self.StatusChoices.QUEUED,
+            "retry_at": timezone.now(),
+        }
+        if overwrite:
+            updates["downloaded_at"] = None
+        return int(self.update_and_requeue(**updates))
 
     @admin.display(description="Tags")
     def tags_str(self, nocache=True) -> str | None:
@@ -2191,15 +2213,20 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         Called by the state machine when entering the 'sealed' state.
         Deletes empty ArchiveResults after the abx-dl cleanup phase has finished.
         """
-        # Clean up .pid files from output directory
-        if Path(self.output_dir).exists():
-            for pid_file in Path(self.output_dir).glob("**/*.pid"):
+        # Clean up .pid files from output directory.
+        output_dir = Path(self.output_dir)
+        output_dir_exists = output_dir.exists()
+        if output_dir_exists:
+            for pid_file in output_dir.glob("**/*.pid"):
                 pid_file.unlink(missing_ok=True)
 
-        # Update all background ArchiveResults from filesystem (in case output arrived late)
-        results = self.archiveresult_set.filter(hook_name__contains=".bg.")
-        for ar in results:
-            ar.update_from_output()
+            # Update all background ArchiveResults from filesystem in case
+            # output arrived late. If there is no snapshot directory, there is
+            # no filesystem output to reconcile and no reason to hit this query.
+            for ar in self.archiveresult_set.filter(hook_name__contains=".bg."):
+                ar.update_from_output()
+        else:
+            return
 
         # Delete ArchiveResults that produced no output files
         empty_ars = self.archiveresult_set.filter(
@@ -2208,9 +2235,8 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
             status__in=ArchiveResult.FINAL_STATES,  # Only delete finished ones
         )
 
-        deleted_count = empty_ars.count()
-        if deleted_count > 0:
-            empty_ars.delete()
+        if empty_ars.exists():
+            deleted_count, _ = empty_ars.delete()
             rprint(f"[yellow]🗑️  Deleted {deleted_count} empty ArchiveResults for {self.url}[/yellow]")
 
     def to_json(self) -> dict:
@@ -3120,14 +3146,15 @@ class SnapshotMachine(BaseStateMachine):
 
     # Tick Event (polled by workers)
     tick = (
-        queued.to.itself(unless="can_start")
+        queued.to(sealed, cond="has_finished_archive_results")
+        | queued.to.itself(unless="can_start")
         | queued.to(started, cond="can_start")
         | started.to(sealed, cond="is_finished")
         | paused.to.itself()
     )
 
     # Manual event (can also be triggered by last ArchiveResult finishing)
-    seal = started.to(sealed)
+    seal = queued.to(sealed) | started.to(sealed) | paused.to(sealed)
     pause_requested = queued.to(paused) | started.to(paused)
     resume_requested = paused.to(queued)
 
@@ -3140,6 +3167,11 @@ class SnapshotMachine(BaseStateMachine):
     def is_finished(self) -> bool:
         """Check if all ArchiveResults for this snapshot are finished."""
         return self.snapshot.is_finished_processing()
+
+    def has_finished_archive_results(self) -> bool:
+        """A queued snapshot with only final projected rows was interrupted after hook completion."""
+        results = self.snapshot.archiveresult_set.all()
+        return results.exists() and not results.exclude(status__in=ArchiveResult.FINAL_STATES).exists()
 
     @queued.enter
     def enter_queued(self):
@@ -3170,6 +3202,7 @@ class SnapshotMachine(BaseStateMachine):
         self.snapshot.update_and_requeue(
             retry_at=None,
             status=Snapshot.StatusChoices.SEALED,
+            refresh=False,
         )
 
         # Crawl finalization is handled by the runner/CrawlService cleanup
@@ -3457,7 +3490,10 @@ class ArchiveResult(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, M
     def refresh_snapshot_output_sizes(snapshot_ids):
         for snapshot_id in snapshot_ids:
             total_size = ArchiveResult.objects.filter(snapshot_id=snapshot_id).aggregate(total_size=Sum("output_size"))["total_size"] or 0
-            Snapshot.objects.filter(pk=snapshot_id).update(output_size=total_size)
+            Snapshot.objects.filter(pk=snapshot_id).update(
+                output_size=total_size,
+                modified_at=timezone.now(),
+            )
 
     @cached_property
     def snapshot_dir(self):

@@ -1,9 +1,12 @@
 import os
+from datetime import timedelta
 
 import pytest
 import requests
+from django.contrib.auth import get_user_model
+from django.utils import timezone
 
-from archivebox.core.models import Snapshot, Tag
+from archivebox.core.models import ArchiveResult, Snapshot, Tag
 from archivebox.crawls.models import Crawl
 from archivebox.tests.test_orm_helpers import use_archivebox_db
 from .conftest import (
@@ -17,6 +20,74 @@ from .conftest import (
 )
 
 pytestmark = pytest.mark.django_db(transaction=True)
+
+
+def test_archiveresult_upload_api_queues_snapshot_maintenance_without_finalizing(client):
+    from archivebox.api.auth import get_or_create_api_token
+
+    user = get_user_model().objects.create_superuser(
+        username="uploadapiadmin",
+        email="uploadapiadmin@example.com",
+        password="testpass123",
+    )
+    api_token = get_or_create_api_token(user)
+    assert api_token is not None
+
+    crawl = Crawl.objects.create(
+        urls="https://example.com",
+        created_by=user,
+        status=Crawl.StatusChoices.STARTED,
+        retry_at=timezone.now(),
+    )
+    active_retry_at = timezone.now() + timedelta(minutes=5)
+    active_snapshot = Snapshot.objects.create(
+        url="https://example.com/active",
+        crawl=crawl,
+        status=Snapshot.StatusChoices.STARTED,
+        retry_at=active_retry_at,
+    )
+    sealed_snapshot = Snapshot.objects.create(
+        url="https://example.com/sealed",
+        crawl=crawl,
+        status=Snapshot.StatusChoices.SEALED,
+        retry_at=None,
+    )
+
+    active_response = client.post(
+        "/api/v1/core/archiveresults",
+        {
+            "snapshot_id": str(active_snapshot.id),
+            "plugin": "chrome_extension_dom",
+            "hook_name": "on_Snapshot__archivebox_browser_extension_upload",
+            "status": ArchiveResult.StatusChoices.SUCCEEDED,
+            "output_str": "uploaded active snapshot output",
+        },
+        HTTP_HOST="api.archivebox.localhost:8000",
+        HTTP_X_ARCHIVEBOX_API_KEY=api_token.token,
+    )
+    assert active_response.status_code == 200, active_response.content
+    active_snapshot.refresh_from_db()
+    assert active_snapshot.status == Snapshot.StatusChoices.STARTED
+    assert active_snapshot.retry_at == active_retry_at
+    assert active_snapshot.downloaded_at is not None
+
+    sealed_response = client.post(
+        "/api/v1/core/archiveresults",
+        {
+            "snapshot_id": str(sealed_snapshot.id),
+            "plugin": "chrome_extension_mhtml",
+            "hook_name": "on_Snapshot__archivebox_browser_extension_upload",
+            "status": ArchiveResult.StatusChoices.SUCCEEDED,
+            "output_str": "uploaded sealed snapshot output",
+        },
+        HTTP_HOST="api.archivebox.localhost:8000",
+        HTTP_X_ARCHIVEBOX_API_KEY=api_token.token,
+    )
+    assert sealed_response.status_code == 200, sealed_response.content
+    sealed_snapshot.refresh_from_db()
+    assert sealed_snapshot.status == Snapshot.StatusChoices.SEALED
+    assert sealed_snapshot.retry_at is not None
+    assert sealed_snapshot.downloaded_at is not None
 
 
 @pytest.mark.timeout(180)

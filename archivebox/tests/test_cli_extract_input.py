@@ -7,6 +7,7 @@ import json
 import pytest
 
 from archivebox.core.models import ArchiveResult, Snapshot
+from archivebox.tests.conftest import run_queued_crawls
 from archivebox.tests.test_orm_helpers import use_archivebox_db
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -27,6 +28,7 @@ def test_extract_runs_on_snapshot_id(tmp_path, process, disable_extractors_dict)
         capture_output=True,
         env=disable_extractors_dict,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     snapshot_id = _snapshot_id(tmp_path)
 
@@ -52,6 +54,7 @@ def test_extract_with_enabled_extractor_creates_archiveresult(tmp_path, process,
         capture_output=True,
         env=disable_extractors_dict,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     snapshot_id = _snapshot_id(tmp_path)
 
@@ -83,6 +86,7 @@ def test_extract_plugin_option_accepted(tmp_path, process, disable_extractors_di
         capture_output=True,
         env=disable_extractors_dict,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     snapshot_id = _snapshot_id(tmp_path)
 
@@ -106,6 +110,7 @@ def test_extract_stdin_snapshot_id(tmp_path, process, disable_extractors_dict):
         capture_output=True,
         env=disable_extractors_dict,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     snapshot_id = _snapshot_id(tmp_path)
 
@@ -131,6 +136,7 @@ def test_extract_stdin_jsonl_input(tmp_path, process, disable_extractors_dict):
         capture_output=True,
         env=disable_extractors_dict,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     snapshot_id = _snapshot_id(tmp_path)
 
@@ -191,6 +197,7 @@ def test_extract_multiple_snapshots(tmp_path, process, disable_extractors_dict):
         capture_output=True,
         env=disable_extractors_dict,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     with use_archivebox_db(tmp_path):
         snapshot_ids = list(Snapshot.objects.values_list("id", flat=True))

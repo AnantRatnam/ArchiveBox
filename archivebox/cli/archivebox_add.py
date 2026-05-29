@@ -194,17 +194,8 @@ def add(
     #    Discovered URLs become child Snapshots (depth+1)
 
     if index_only:
-        # Just create the crawl but don't start processing
-        print("[yellow]\\[*] Index-only mode - crawl created but not started[/yellow]")
-        crawl.create_snapshots_from_urls()
-        if not crawl.snapshot_set.exists():
-            crawl.sm.seal()
+        print("[yellow]\\[*] Index-only mode - crawl queued, runner not started[/yellow]")
         return crawl, crawl.snapshot_set.all()
-
-    if bg:
-        crawl.create_snapshots_from_urls()
-        if not crawl.snapshot_set.exists():
-            crawl.sm.seal()
 
     # 5. Start the crawl runner to process the queue
     #    The runner will:

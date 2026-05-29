@@ -254,6 +254,69 @@ def test_crawl_start_event_keeps_retry_at_lease():
 
 
 @pytest.mark.django_db(transaction=True)
+def test_crawl_start_event_does_not_reschedule_sealed_parent_until_explicit_requeue():
+    from abx_dl.events import CrawlStartEvent
+    from abx_dl.orchestrator import create_bus
+    from archivebox.base_models.models import get_or_create_system_user_pk
+    from archivebox.crawls.models import Crawl
+    from archivebox.core.models import Snapshot
+    from archivebox.services.crawl_service import CrawlService
+    from django.utils import timezone
+
+    before = timezone.now()
+    crawl = Crawl.objects.create(
+        urls="https://example.com",
+        created_by_id=get_or_create_system_user_pk(),
+        status=Crawl.StatusChoices.SEALED,
+        retry_at=before,
+    )
+    snapshot = Snapshot.objects.create(
+        url="https://example.com",
+        crawl=crawl,
+        status=Snapshot.StatusChoices.SEALED,
+        retry_at=before,
+    )
+    crawl_output_dir = str(crawl.output_dir)
+
+    async def emit_start(name: str) -> None:
+        bus = create_bus(name=name)
+        try:
+            CrawlService(bus, crawl_id=str(crawl.id))
+            emitted = bus.emit(
+                CrawlStartEvent(
+                    url=snapshot.url,
+                    snapshot_id=str(snapshot.id),
+                    output_dir=crawl_output_dir,
+                ),
+            )
+            await emitted.now()
+            await emitted.event_results_list()
+            await bus.wait_until_idle()
+        finally:
+            await bus.destroy(clear=False)
+
+    asyncio.run(emit_start("test_crawl_start_event_sealed_parent_noop"))
+
+    crawl.refresh_from_db()
+    snapshot.refresh_from_db()
+    assert crawl.status == Crawl.StatusChoices.SEALED
+    assert crawl.retry_at is None
+    assert snapshot.status == Snapshot.StatusChoices.SEALED
+    assert snapshot.retry_at == before
+
+    crawl.update_and_requeue(status=Crawl.StatusChoices.QUEUED, retry_at=timezone.now())
+    crawl.refresh_from_db()
+    assert crawl.status == Crawl.StatusChoices.QUEUED
+
+    asyncio.run(emit_start("test_crawl_start_event_after_explicit_requeue"))
+
+    crawl.refresh_from_db()
+    assert crawl.status == Crawl.StatusChoices.STARTED
+    assert crawl.retry_at is not None
+    assert crawl.retry_at > before
+
+
+@pytest.mark.django_db(transaction=True)
 def test_snapshot_queue_selection_is_retry_at_only_for_sealed_maintenance():
     from archivebox.base_models.models import get_or_create_system_user_pk
     from archivebox.crawls.models import Crawl
@@ -781,7 +844,7 @@ def test_create_crawl_api_queues_crawl_without_spawning_runner():
     assert str(crawl.id)
     assert crawl.status == "queued"
     assert crawl.retry_at is not None
-    assert crawl.snapshot_set.filter(url="https://example.com").count() == 1
+    assert crawl.snapshot_set.count() == 0
 
 
 def test_wait_for_snapshot_tasks_surfaces_already_failed_task():

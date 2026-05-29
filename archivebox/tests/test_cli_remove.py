@@ -9,6 +9,8 @@ import json
 import subprocess
 from pathlib import Path
 
+from archivebox.tests.conftest import run_queued_crawls
+
 
 def _find_snapshot_dir(data_dir: Path, snapshot_id: str) -> Path | None:
     candidates = {snapshot_id}
@@ -54,6 +56,7 @@ def test_remove_deletes_snapshot_from_db(tmp_path, process, disable_extractors_d
         capture_output=True,
         env=disable_extractors_dict,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     rows = _snapshot_rows(tmp_path, disable_extractors_dict)
     assert len(rows) == 1
@@ -82,6 +85,7 @@ def test_remove_deletes_archive_directory(tmp_path, process, disable_extractors_
         capture_output=True,
         env=disable_extractors_dict,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     rows = _snapshot_rows(tmp_path, disable_extractors_dict)
     assert len(rows) == 1
@@ -108,6 +112,7 @@ def test_remove_yes_flag_skips_confirmation(tmp_path, process, disable_extractor
         capture_output=True,
         env=disable_extractors_dict,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     # Remove with --yes should complete without interaction
     result = subprocess.run(
@@ -132,6 +137,7 @@ def test_remove_without_yes_prompts_and_keeps_snapshot(tmp_path, process, disabl
         env=disable_extractors_dict,
         check=True,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     rows = _snapshot_rows(tmp_path, disable_extractors_dict)
     assert len(rows) == 1
@@ -164,6 +170,7 @@ def test_remove_multiple_snapshots(tmp_path, process, disable_extractors_dict):
             capture_output=True,
             env=disable_extractors_dict,
         )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     assert len(_snapshot_rows(tmp_path, disable_extractors_dict)) == 2
 
@@ -187,6 +194,7 @@ def test_remove_with_filter(tmp_path, process, disable_extractors_dict):
         capture_output=True,
         env=disable_extractors_dict,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     # Remove using filter
     result = subprocess.run(
@@ -211,6 +219,7 @@ def test_remove_with_regex_filter_deletes_all_matches(tmp_path, process, disable
             env=disable_extractors_dict,
             check=True,
         )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     result = subprocess.run(
         ["archivebox", "remove", "--filter-type=regex", ".*", "--yes"],
@@ -250,6 +259,7 @@ def test_remove_reports_remaining_link_count_correctly(tmp_path, process, disabl
             env=disable_extractors_dict,
             check=True,
         )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     result = subprocess.run(
         ["archivebox", "remove", "https://example.org", "--yes"],
@@ -272,6 +282,7 @@ def test_remove_after_flag(tmp_path, process, disable_extractors_dict):
         capture_output=True,
         env=disable_extractors_dict,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     # Try remove with --after flag (should work or show usage)
     result = subprocess.run(

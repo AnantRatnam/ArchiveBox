@@ -247,17 +247,30 @@ def update_crawls(
         try:
             crawl = Crawl.objects.get(id=crawl_id)
 
-            # Apply updates from CLI flags
             if status:
-                crawl.status = status
-                crawl.retry_at = timezone.now()
+                if status not in Crawl.StatusChoices.values:
+                    rprint(f"[red]Invalid crawl status: {status}[/red]", file=sys.stderr)
+                    continue
+                if status == Crawl.StatusChoices.SEALED:
+                    crawl.cancel()
+                elif status == Crawl.StatusChoices.PAUSED:
+                    crawl.pause()
+                elif status == Crawl.StatusChoices.QUEUED:
+                    if crawl.status == Crawl.StatusChoices.PAUSED:
+                        crawl.resume()
+                    else:
+                        crawl.update_and_requeue(status=Crawl.StatusChoices.QUEUED, retry_at=timezone.now())
+                elif status == Crawl.StatusChoices.STARTED:
+                    crawl.update_and_requeue(status=Crawl.StatusChoices.STARTED, retry_at=timezone.now())
             if max_depth is not None:
                 crawl.max_depth = max_depth
-
-            crawl.save()
+                crawl.save(update_fields=["max_depth", "modified_at"])
+            elif not status:
+                crawl.save(update_fields=["modified_at"])
             updated_count += 1
 
             if not is_tty:
+                crawl.refresh_from_db()
                 write_record(crawl.to_json())
 
         except Crawl.DoesNotExist:

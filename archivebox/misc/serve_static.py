@@ -253,6 +253,18 @@ def _build_directory_zip_response(
     )
 
 
+async def _stream_ranged_file_async(ranged_file: "RangedFileReader"):
+    iterator = iter(ranged_file)
+    try:
+        while True:
+            chunk = await asyncio.to_thread(next, iterator, None)
+            if chunk is None:
+                break
+            yield chunk
+    finally:
+        ranged_file.close()
+
+
 def _render_directory_index(request, path: str, fullpath: Path) -> HttpResponse:
     try:
         template = loader.select_template(
@@ -935,7 +947,10 @@ def serve_static_with_byterange_support(request, path, document_root=None, show_
 
     # setup response object
     ranged_file = RangedFileReader(open(fullpath, "rb"))
-    response = StreamingHttpResponse(ranged_file, content_type=content_type)
+    response = StreamingHttpResponse(
+        _stream_ranged_file_async(ranged_file) if hasattr(request, "scope") else ranged_file,
+        content_type=content_type,
+    )
     response.headers["Last-Modified"] = http_date(statobj.st_mtime)
     if etag:
         response.headers["ETag"] = etag

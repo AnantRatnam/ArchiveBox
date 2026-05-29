@@ -19,7 +19,7 @@ from archivebox.cli.archivebox_add import add
 def main(depth: int, tag: str, status: str, wait: bool, urls: tuple[str, ...]):
     """Backwards-compatible `archivebox crawl URL...` entrypoint."""
     del status, wait
-    add(list(urls), depth=depth, tag=tag, index_only=True, bg=True)
+    add(list(urls), depth=depth, tag=tag, bg=True)
     sys.exit(0)
 
 

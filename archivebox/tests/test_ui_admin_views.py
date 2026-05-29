@@ -1013,14 +1013,8 @@ class TestAdminSnapshotListView:
         assert response["Location"].endswith(f"/admin/core/snapshot/{snapshot.pk}/change/")
         assert snapshot.archiveresult_set.get(plugin="title").status == ArchiveResult.StatusChoices.QUEUED
 
-    def test_list_redo_failed_action_requeues_failed_archiveresults_only(self, client, admin_user, snapshot, monkeypatch):
-        import archivebox.core.admin_snapshots as admin_snapshots
+    def test_list_redo_failed_action_requeues_failed_archiveresults_only(self, client, admin_user, snapshot):
         from archivebox.core.models import ArchiveResult
-
-        def bg_archive_snapshots_should_not_run(*args, **kwargs):
-            raise AssertionError("Redo Failed should reset failed ArchiveResults directly")
-
-        monkeypatch.setattr(admin_snapshots, "bg_archive_snapshots", bg_archive_snapshots_should_not_run)
 
         failed = ArchiveResult.objects.create(
             snapshot=snapshot,
@@ -1066,7 +1060,6 @@ class TestAdminSnapshotListView:
 
     def test_archive_now_action_uses_original_snapshot_url_without_timestamp_suffix(self, client, admin_user, snapshot):
         from archivebox.crawls.models import Crawl
-        from archivebox.core.models import Snapshot
 
         existing_crawl_ids = set(Crawl.objects.values_list("id", flat=True))
         snapshot.url = "https://example.com/path#section-1"
@@ -1089,10 +1082,6 @@ class TestAdminSnapshotListView:
         assert new_crawl.status == Crawl.StatusChoices.QUEUED
         assert new_crawl.retry_at is not None
         assert new_crawl.urls.strip() == "https://example.com/path#section-1"
-        new_snapshot = new_crawl.snapshot_set.get()
-        assert new_snapshot.url == "https://example.com/path#section-1"
-        assert new_snapshot.status == Snapshot.StatusChoices.QUEUED
-        assert new_snapshot.retry_at is not None
 
     def test_archive_now_action_groups_multiple_snapshots_into_one_crawl(self, client, admin_user, snapshot):
         from archivebox.crawls.models import Crawl
@@ -1121,8 +1110,6 @@ class TestAdminSnapshotListView:
         new_crawl = Crawl.objects.exclude(id__in=existing_crawl_ids).get()
         assert new_crawl.status == Crawl.StatusChoices.QUEUED
         assert set(new_crawl.urls.splitlines()) == {"https://example.com", "https://example.com/other#frag"}
-        assert set(new_crawl.snapshot_set.values_list("url", flat=True)) == {"https://example.com", "https://example.com/other#frag"}
-        assert set(new_crawl.snapshot_set.values_list("status", flat=True)) == {Snapshot.StatusChoices.QUEUED}
 
     def test_change_view_archiveresults_inline_shows_process_and_machine_links(self, client, admin_user, snapshot, db):
         import archivebox.machine.models as machine_models

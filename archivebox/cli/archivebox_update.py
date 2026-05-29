@@ -118,11 +118,13 @@ def reindex_snapshots(
         if wait_for_turn:
             wait_for_turn()
         batch_records = list(records)
-        # Index-only backfill intentionally queues only search ArchiveResult
-        # rows. The extract runner bumps Snapshot.retry_at so the orchestrator
-        # sees the maintenance work, but it does not change status away from
-        # PAUSED; run_due_snapshot restores retry_at=MAX after the targeted
-        # plugin rows finish.
+        # `archivebox update --index-only` intentionally breaks the usual
+        # "runner discovers work" rule by inserting synthetic queued
+        # ArchiveResult rows for search backends. run_plugins() keeps this as
+        # statement-sized UPDATE/bulk_create work, then bumps Snapshot.retry_at
+        # so the orchestrator owns actual hook execution. Paused snapshots stay
+        # PAUSED; run_due_snapshot restores retry_at=MAX after targeted rows
+        # finish.
         exit_code = run_plugins(
             args=(),
             records=batch_records,
@@ -564,24 +566,25 @@ def drain_old_archive_dirs(resume_from: str | None = None, batch_size: int = 500
         if not has_valid_crawl:
             # Create a new crawl (created_by will default to system user)
             crawl = Crawl.objects.create(urls=snapshot.url)
-            # Use queryset update to avoid save() hooks and keep the SQLite
+            # Use safe_update() to avoid save() hooks and keep the SQLite
             # write to one statement while the migration loop does filesystem
-            # work outside any transaction.
-            from archivebox.core.models import Snapshot as SnapshotModel
-
-            SnapshotModel.objects.filter(pk=snapshot.pk).update(crawl=crawl)
-            # Refresh the instance
+            # work outside any transaction. The modified_at CAS prevents this
+            # repair scan from overwriting a newer Snapshot edit.
+            if not snapshot.safe_update({"crawl": crawl}, refresh=False):
+                stats["skipped"] += 1
+                print(f"    [{stats['processed']}] Skipped stale snapshot repair: {entry_path.name}")
+                continue
             snapshot.crawl = crawl
 
         # Check if needs migration (0.8.x → 0.9.x)
         try:
             if snapshot.fs_migration_needed:
-                Snapshot.objects.filter(pk=snapshot.pk).update(
-                    retry_at=timezone.now(),
-                    modified_at=timezone.now(),
-                )
-                stats["queued"] += 1
-                print(f"    [{stats['processed']}] Queued filesystem migration: {entry_path.name}")
+                if snapshot.safe_update({"retry_at": timezone.now(), "modified_at": timezone.now()}, refresh=False):
+                    stats["queued"] += 1
+                    print(f"    [{stats['processed']}] Queued filesystem migration: {entry_path.name}")
+                else:
+                    stats["skipped"] += 1
+                    print(f"    [{stats['processed']}] Skipped stale filesystem migration row: {entry_path.name}")
             else:
                 stats["skipped"] += 1
         except Exception as e:
@@ -616,7 +619,6 @@ def process_all_db_snapshots(batch_size: int = 500, resume: str | None = None, w
     No orphan detection needed - we trust 1:1 mapping between DB and filesystem
     after Phase 1 has drained all old archive/ directories.
     """
-    import uuid
     from archivebox.core.models import Snapshot
     from archivebox.crawls.models import Crawl
     from django.utils import timezone
@@ -644,17 +646,20 @@ def process_all_db_snapshots(batch_size: int = 500, resume: str | None = None, w
         while True:
             if wait_for_turn:
                 wait_for_turn()
-            ids = list(rows.order_by("-timestamp").values_list("id", flat=True)[:batch_size])
-            if not ids:
+            batch = list(rows.only("id", "modified_at").order_by("-timestamp")[:batch_size])
+            if not batch:
                 if updated:
                     print(f"    [{label}] complete: {updated} rows updated")
                 return updated
-            checked += len(ids)
-            print(f"    [{label}] updating next {len(ids)} rows (seen {checked})...")
-            # Each batch is one short UPDATE and is intentionally idempotent.
-            # If the command is interrupted, these rows no longer match on the
-            # next run and remaining rows continue from DB state.
-            updated += Snapshot.objects.filter(id__in=ids).update(**updates)
+            checked += len(batch)
+            print(f"    [{label}] updating next {len(batch)} rows (seen {checked})...")
+            for snapshot in batch:
+                # This maintenance scan intentionally bypasses save(); it is
+                # only normalizing scheduler fields, and Snapshot.save() may
+                # do filesystem migration work that belongs in the runner.
+                # Guard each single-row UPDATE with modified_at so stale scan
+                # pages cannot overwrite newer runner/admin writes.
+                updated += int(snapshot.safe_update(updates, refresh=False))
             print(f"    [{label}] updated {updated} rows so far")
 
     now = timezone.now()
@@ -676,7 +681,7 @@ def process_all_db_snapshots(batch_size: int = 500, resume: str | None = None, w
     stats["updated_db"] += updated_rows
 
     fs_version_rows = queryset.exclude(fs_version=current_fs_version)
-    stale_batch: list[tuple[uuid.UUID, uuid.UUID | None, str]] = []
+    stale_batch = []
 
     def queue_stale_fs_batch() -> None:
         if not stale_batch:
@@ -684,23 +689,39 @@ def process_all_db_snapshots(batch_size: int = 500, resume: str | None = None, w
         if wait_for_turn:
             wait_for_turn()
         now = timezone.now()
-        snapshot_ids = [snapshot_id for snapshot_id, _crawl_id, _timestamp in stale_batch]
         # Do not bump fs_version here. The orchestrator calls Snapshot.save(),
         # which performs the idempotent filesystem migration and commits the new
         # fs_version in the same serialized worker path as normal crawls.
-        updated = Snapshot.objects.filter(id__in=snapshot_ids).update(
-            retry_at=now,
-            modified_at=now,
-        )
+        updated = 0
+        for snapshot in stale_batch:
+            # Each row gets its own short autocommit UPDATE because this scan
+            # can touch millions of snapshots while a server is also alive.
+            # The modified_at predicate is the CAS guard: if the runner or
+            # admin changed the snapshot after paged_iterator read it, skip it
+            # and let the newer state decide whether migration is still due.
+            updated += int(
+                snapshot.safe_update(
+                    {
+                        "retry_at": now,
+                        "modified_at": now,
+                    },
+                    refresh=False,
+                    extra_filter={"fs_version": snapshot.fs_version},
+                ),
+            )
         stats["processed"] += len(stale_batch)
         stats["updated_db"] += updated
         stats["queued"] += updated
         print(f"    [{stats['processed']}/{total}] Queued {updated} filesystem migrations for orchestrator...")
         stale_batch.clear()
 
-    for snapshot in fs_version_rows.only("id", "crawl_id", "timestamp").order_by("-timestamp").paged_iterator(chunk_size=batch_size):
+    for snapshot in (
+        fs_version_rows.only("id", "crawl_id", "timestamp", "fs_version", "modified_at")
+        .order_by("-timestamp")
+        .paged_iterator(chunk_size=batch_size)
+    ):
         try:
-            stale_batch.append((snapshot.id, snapshot.crawl_id, snapshot.timestamp))
+            stale_batch.append(snapshot)
             if len(stale_batch) >= batch_size:
                 queue_stale_fs_batch()
         except KeyboardInterrupt as err:
@@ -784,6 +805,7 @@ def process_filtered_snapshots(
         try:
             stats["snapshot_ids"].append(str(snapshot.id))
             update_values = {}
+            updated = 0
             if not isinstance(snapshot.current_step, int):
                 update_values["current_step"] = 0
             if queue_for_archiving:
@@ -800,11 +822,14 @@ def process_filtered_snapshots(
                 # is holding the write lock for this state change. Index-only
                 # maintenance goes through reindex_snapshots/run_plugins instead
                 # so paused snapshots keep status=paused while only their
-                # targeted search ArchiveResult rows run.
-                Snapshot.objects.filter(pk=snapshot.pk).update(**update_values)
-                stats["updated_db"] += 1
+                # targeted search ArchiveResult rows run. Since this loop reads
+                # with paged_iterator() and writes later, modified_at is the CAS
+                # guard that prevents stale CLI scans from overwriting a newer
+                # runner/admin update to the same snapshot.
+                updated = int(snapshot.safe_update(update_values, refresh=False))
+                stats["updated_db"] += updated
 
-            stats["queued"] += 1 if queue_for_archiving else 0
+            stats["queued"] += updated if queue_for_archiving else 0
         except KeyboardInterrupt as err:
             err.archivebox_resume = snapshot.timestamp
             raise

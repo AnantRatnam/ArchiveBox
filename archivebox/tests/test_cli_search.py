@@ -8,6 +8,12 @@ import json
 import os
 import subprocess
 
+import pytest
+
+from archivebox.tests.conftest import run_queued_crawls
+
+pytestmark = pytest.mark.django_db(transaction=True)
+
 
 def test_search_finds_snapshots(tmp_path, process, disable_extractors_dict):
     """Test that search command finds matching snapshots."""
@@ -19,6 +25,7 @@ def test_search_finds_snapshots(tmp_path, process, disable_extractors_dict):
         capture_output=True,
         env=disable_extractors_dict,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     # Search for it
     result = subprocess.run(
@@ -41,6 +48,7 @@ def test_search_returns_no_results_for_missing_term(tmp_path, process, disable_e
         capture_output=True,
         env=disable_extractors_dict,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     result = subprocess.run(
         ["archivebox", "search", "nonexistentterm12345"],
@@ -77,6 +85,7 @@ def test_search_json_outputs_matching_snapshots(tmp_path, process, disable_extra
         env=disable_extractors_dict,
         check=True,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     result = subprocess.run(
         ["archivebox", "search", "--json"],
@@ -99,6 +108,7 @@ def test_search_json_with_headers_wraps_links_payload(tmp_path, process, disable
         env=disable_extractors_dict,
         check=True,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     result = subprocess.run(
         ["archivebox", "search", "--json", "--with-headers"],
@@ -122,6 +132,7 @@ def test_search_html_outputs_markup(tmp_path, process, disable_extractors_dict):
         env=disable_extractors_dict,
         check=True,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     result = subprocess.run(
         ["archivebox", "search", "--html"],
@@ -143,6 +154,7 @@ def test_search_csv_outputs_requested_column(tmp_path, process, disable_extracto
         env=disable_extractors_dict,
         check=True,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     result = subprocess.run(
         ["archivebox", "search", "--csv", "url", "--with-headers"],
@@ -181,6 +193,7 @@ def test_search_sort_option_runs_successfully(tmp_path, process, disable_extract
             env=disable_extractors_dict,
             check=True,
         )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     result = subprocess.run(
         ["archivebox", "search", "--csv", "url", "--sort=url"],

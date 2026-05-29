@@ -27,6 +27,7 @@ from archivebox.core.permissions import PERMISSIONS_PRIVATE, PERMISSIONS_PUBLIC,
 from archivebox.core.widgets import TagEditorWidget, URLFiltersWidget
 from archivebox.crawls.models import Crawl, CrawlSchedule
 from archivebox.personas.models import Persona
+from archivebox.workers.models import RETRY_AT_MAX
 
 
 class MaxDepthListFilter(admin.SimpleListFilter):
@@ -669,8 +670,21 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
         resumed = 0
         for crawl in queryset.iterator(chunk_size=100):
             if crawl.status == Crawl.StatusChoices.SEALED:
-                crawl.status = Crawl.StatusChoices.PAUSED
-                crawl.save(update_fields=["status", "modified_at"])
+                paused_at = timezone.now()
+                # Resume-from-sealed is an admin scheduler edit, not a full
+                # Crawl.save() operation. Guard the iterator-read row with
+                # modified_at so a stale changelist page cannot reopen a crawl
+                # that the runner/admin changed after this action started.
+                updated = crawl.safe_update(
+                    {
+                        "status": Crawl.StatusChoices.PAUSED,
+                        "retry_at": RETRY_AT_MAX,
+                        "modified_at": paused_at,
+                    },
+                    extra_filter={"status": Crawl.StatusChoices.SEALED},
+                )
+                if not updated:
+                    continue
             resumed += int(crawl.resume())
         if resumed:
             messages.success(request, f"Resumed {resumed} crawl(s). The runner will pick them up on the next sweep.")

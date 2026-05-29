@@ -1,6 +1,8 @@
 __package__ = "archivebox.workers"
 
-from typing import ClassVar
+import logging
+
+from typing import Any, ClassVar
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from statemachine.mixins import MachineMixin
@@ -32,6 +34,7 @@ default_status_field: models.CharField = models.CharField(
 default_retry_at_field: models.DateTimeField = models.DateTimeField(default=timezone.now, null=True, blank=True, db_index=True)
 RETRY_AT_MAX = datetime.max.replace(tzinfo=UTC)
 ACTIVE_STATE_LEASE_SECONDS = 60
+logger = logging.getLogger(__name__)
 
 ObjectState = State | str
 ObjectStateList = Iterable[ObjectState]
@@ -201,6 +204,65 @@ class BaseModelWithStateMachine(models.Model, MachineMixin):
         paused_state = getattr(self.StatusChoices, "PAUSED", None)
         return paused_state is not None and self.STATE == paused_state
 
+    def safe_update(self, update_fields: dict[str, Any], *, refresh: bool = True, extra_filter: dict[str, Any] | None = None) -> bool:
+        """
+        Compare-and-swap update for short scheduler writes that must bypass save().
+
+        Use this only where save() side effects are intentionally deferred to
+        the runner/state machine. The modified_at predicate is the stale-write
+        guard for objects read from iterator scans; if another process touched
+        the row after this instance was loaded, the UPDATE affects zero rows.
+        """
+        values = dict(update_fields)
+        values.setdefault("modified_at", timezone.now())
+        queryset = type(self).objects.filter(pk=self.pk, modified_at=self.modified_at)
+        if extra_filter:
+            queryset = queryset.filter(**extra_filter)
+        updated = queryset.update(**values)
+        if updated != 1:
+            current = type(self).objects.filter(pk=self.pk).values("modified_at", self.state_field_name).first()
+            current_modified_at = current.get("modified_at") if current else "<deleted>"
+            current_status = current.get(self.state_field_name) if current else "<deleted>"
+            logger.error(
+                "\nSafeUpdateCASMiss: %s row %s was modified by another process while writing; "
+                "loaded modified_at=%s loaded %s=%s current modified_at=%s current %s=%s update_fields=%s extra_filter=%s\n",
+                type(self).__name__,
+                self.pk,
+                self.modified_at,
+                self.state_field_name,
+                self.STATE,
+                current_modified_at,
+                self.state_field_name,
+                current_status,
+                sorted(values),
+                extra_filter or {},
+            )
+        if refresh:
+            try:
+                self.refresh_from_db()
+            except type(self).DoesNotExist:
+                pass
+        return updated == 1
+
+    def save(self, *args, **kwargs):
+        from archivebox.machine.models import Process
+
+        process = Process.current()
+        if process.process_type != Process.TypeChoices.ORCHESTRATOR:
+            root_type = getattr(process.root, "process_type", None)
+            if root_type != Process.TypeChoices.ORCHESTRATOR:
+                logger.warning(
+                    "%s.save() outside runner process: id=%s status=%s retry_at=%s process=%s root=%s; "
+                    "queue/status writes outside the runner should usually use safe_update()",
+                    type(self).__name__,
+                    self.pk,
+                    self.STATE,
+                    self.RETRY_AT,
+                    process.process_type,
+                    root_type,
+                )
+        super().save(*args, **kwargs)
+
     def pause(self, *, save: bool = True) -> bool:
         paused_state = getattr(self.StatusChoices, "PAUSED", None)
         if paused_state is None:
@@ -213,24 +275,17 @@ class BaseModelWithStateMachine(models.Model, MachineMixin):
                 transition()
                 self.refresh_from_db()
                 return self.is_paused
+            previous_state = self.STATE
             self.STATE = paused_state
             self.RETRY_AT = RETRY_AT_MAX
-            updated = (
-                type(self)
-                .objects.filter(pk=self.pk)
-                .exclude(
-                    **{self.state_field_name + "__in": [*self.FINAL_STATES, paused_state]},
-                )
-                .update(
-                    **{
-                        self.state_field_name: paused_state,
-                        self.retry_at_field_name: RETRY_AT_MAX,
-                        "modified_at": timezone.now(),
-                    },
-                )
+            updated = self.safe_update(
+                {
+                    self.state_field_name: paused_state,
+                    self.retry_at_field_name: RETRY_AT_MAX,
+                },
+                extra_filter={self.state_field_name: previous_state},
             )
-            self.refresh_from_db()
-            return updated == 1
+            return updated
         self.STATE = paused_state
         self.RETRY_AT = RETRY_AT_MAX
         return True
@@ -249,52 +304,37 @@ class BaseModelWithStateMachine(models.Model, MachineMixin):
                 return self.STATE == self.StatusChoices.QUEUED
             self.STATE = self.StatusChoices.QUEUED
             self.RETRY_AT = when or timezone.now()
-            updated = (
-                type(self)
-                .objects.filter(
-                    pk=self.pk,
-                    **{self.state_field_name: paused_state},
-                )
-                .update(
-                    **{
-                        self.state_field_name: self.StatusChoices.QUEUED,
-                        self.retry_at_field_name: self.RETRY_AT,
-                        "modified_at": timezone.now(),
-                    },
-                )
+            updated = self.safe_update(
+                {
+                    self.state_field_name: self.StatusChoices.QUEUED,
+                    self.retry_at_field_name: self.RETRY_AT,
+                },
+                extra_filter={self.state_field_name: paused_state},
             )
-            self.refresh_from_db()
-            return updated == 1
+            return updated
         self.STATE = self.StatusChoices.QUEUED
         self.RETRY_AT = when or timezone.now()
         return True
 
-    def update_and_requeue(self, **kwargs) -> bool:
+    def update_and_requeue(self, *, refresh: bool = True, **kwargs) -> bool:
         """
-        Atomically update fields and schedule retry_at for next worker tick.
-        Returns True if the update was successful, False if the object was modified by another worker.
+        Scheduler-facing wrapper around safe_update().
+
+        Call this when a state-machine row should become visible to the
+        runner. It preserves the current retry_at lease as an additional guard
+        while safe_update() owns the modified_at CAS write and refresh.
         """
-        # Get the current retry_at to use as optimistic lock
+        # retry_at is the scheduler lease, but it is not enough by itself:
+        # sealed maintenance rows can legitimately keep the same retry_at while
+        # other fields change. Include modified_at as a cheap compare-and-swap
+        # guard so iterator/recovery scans never overwrite a row that the
+        # runner touched after the object was read.
         current_retry_at = self.RETRY_AT
-
-        # Apply the updates
-        for key, value in kwargs.items():
-            setattr(self, key, value)
-
-        # Try to save with optimistic locking
-        updated = (
-            type(self)
-            .objects.filter(
-                pk=self.pk,
-                retry_at=current_retry_at,
-            )
-            .update(**{k: getattr(self, k) for k in kwargs})
+        return self.safe_update(
+            dict(kwargs),
+            refresh=refresh,
+            extra_filter={self.retry_at_field_name: current_retry_at},
         )
-
-        if updated == 1:
-            self.refresh_from_db()
-            return True
-        return False
 
     @classmethod
     def get_queue(cls):
@@ -326,13 +366,19 @@ class BaseModelWithStateMachine(models.Model, MachineMixin):
         Returns True if successfully claimed, False if another worker got it
         first or the object is not currently due.
         """
+        now = timezone.now()
+        lock_until = now + timedelta(seconds=lock_seconds)
         updated = cls.objects.filter(
             pk=obj.pk,
             retry_at=obj.RETRY_AT,
-            retry_at__lte=timezone.now(),
+            retry_at__lte=now,
         ).update(
-            retry_at=timezone.now() + timedelta(seconds=lock_seconds),
+            retry_at=lock_until,
+            modified_at=now,
         )
+        if updated == 1:
+            obj.RETRY_AT = lock_until
+            obj.modified_at = now
         return updated == 1
 
     def claim_processing_lock(self, lock_seconds: int = 60) -> bool:
@@ -354,8 +400,6 @@ class BaseModelWithStateMachine(models.Model, MachineMixin):
             return False
 
         claimed = type(self).claim_for_worker(self, lock_seconds=lock_seconds)
-        if claimed:
-            self.refresh_from_db()
         return claimed
 
     def tick_claimed(self, lock_seconds: int = 60) -> bool:

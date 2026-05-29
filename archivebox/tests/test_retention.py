@@ -6,10 +6,10 @@ import pytest
 from django.contrib.auth import get_user_model
 from django.urls import reverse
 
-from archivebox.tests.conftest import run_archivebox_cmd_cwd
+from archivebox.tests.conftest import run_archivebox_cmd_cwd, run_queued_crawls
 
 
-pytestmark = pytest.mark.django_db
+pytestmark = pytest.mark.django_db(transaction=True)
 
 ADMIN_HOST = "admin.archivebox.localhost:8000"
 API_HOST = "api.archivebox.localhost:8000"
@@ -34,6 +34,7 @@ def test_delete_after_real_cli_and_orchestrator_paths_cover_all_retained_models(
         env=cli_env,
     )
     assert returncode == 0, f"archivebox add failed:\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
+    run_queued_crawls(tmp_path, cli_env)
 
     lookup_script = f"""
 import json
@@ -201,6 +202,7 @@ def test_delete_after_real_add_page_and_rest_create_paths(client):
             "depth": "0",
             "max_urls": "1",
             "crawl_max_size": "0",
+            "crawl_timeout": "0",
             "snapshot_max_size": "0",
             "delete_after": "2h",
             "crawl_max_concurrent_snapshots": "1",
@@ -209,18 +211,22 @@ def test_delete_after_real_add_page_and_rest_create_paths(client):
             "notes": "delete-after ui test",
             "schedule": "",
             "persona": "Default",
+            "permissions": "public",
             "index_only": "on",
             "config": "{}",
         },
         HTTP_HOST=ADMIN_HOST,
     )
-    assert response.status_code in (200, 302)
+    assert response.status_code == 302, response.context["form"].errors if response.context else response.content.decode()
 
     from archivebox.crawls.models import Crawl
 
     ui_crawl = Crawl.objects.get(urls__contains="https://example.com/delete-after-ui")
     assert ui_crawl.config["DELETE_AFTER"] == "2h"
     assert ui_crawl.delete_at is not None
+    from archivebox.services.runner import run_due_crawl
+
+    assert run_due_crawl(ui_crawl, lock_seconds=10)
     ui_snapshot = ui_crawl.snapshot_set.get(url="https://example.com/delete-after-ui")
     assert ui_snapshot.delete_at is not None
 
@@ -246,5 +252,6 @@ def test_delete_after_real_add_page_and_rest_create_paths(client):
     rest_crawl = Crawl.objects.get(urls__contains="https://example.com/delete-after-rest")
     assert rest_crawl.config["DELETE_AFTER"] == "3h"
     assert rest_crawl.delete_at is not None
+    assert run_due_crawl(rest_crawl, lock_seconds=10)
     rest_snapshot = rest_crawl.snapshot_set.get(url="https://example.com/delete-after-rest")
     assert rest_snapshot.delete_at is not None

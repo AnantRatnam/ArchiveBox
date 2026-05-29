@@ -14,7 +14,9 @@ from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from collections.abc import Callable
 
+import psutil
 import pytest
 import requests
 from django.utils import timezone
@@ -266,6 +268,24 @@ def archivebox_daemon_server(tmp_path, process, unused_tcp_port_factory):
             _stop_archivebox_supervisord(cwd, env)
 
 
+def wait_for_process(predicate: Callable[[psutil.Process, str], bool], *, timeout: float = 20.0) -> psutil.Process:
+    deadline = time.time() + timeout
+    last_seen: list[str] = []
+    while time.time() < deadline:
+        last_seen = []
+        for proc in psutil.process_iter(["pid", "ppid", "cmdline"]):
+            try:
+                cmdline = proc.info.get("cmdline") or []
+                command = " ".join(cmdline)
+                last_seen.append(f"{proc.info.get('pid')} {proc.info.get('ppid')} {command}")
+                if predicate(proc, command):
+                    return proc
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+        time.sleep(0.2)
+    raise AssertionError("No matching live process found. Last seen:\n" + "\n".join(last_seen[-50:]))
+
+
 # =============================================================================
 # CWD-based CLI Helpers (no DATA_DIR env)
 # =============================================================================
@@ -309,6 +329,20 @@ def run_archivebox_cmd_cwd(
     )
 
     return result.stdout, result.stderr, result.returncode
+
+
+def run_queued_crawls(cwd: Path, env: dict[str, str] | None = None, timeout: int = 180) -> None:
+    script = """
+import json
+from archivebox.crawls.models import Crawl
+print(json.dumps([str(crawl_id) for crawl_id in Crawl.objects.order_by("created_at").values_list("id", flat=True)]))
+"""
+    stdout, stderr, returncode = run_archivebox_cmd_cwd(["manage", "shell", "-c", script], cwd=cwd, timeout=60, env=env)
+    assert returncode == 0, stderr or stdout
+    crawl_ids = json.loads(stdout.strip().splitlines()[-1])
+    for crawl_id in crawl_ids:
+        stdout, stderr, returncode = run_archivebox_cmd_cwd(["run", f"--crawl-id={crawl_id}"], cwd=cwd, timeout=timeout, env=env)
+        assert returncode == 0, f"archivebox run --crawl-id={crawl_id} failed:\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
 
 
 def _run_archivebox_manage_shell(cwd: Path, env: dict[str, str], script: str, timeout: int = 60) -> str:

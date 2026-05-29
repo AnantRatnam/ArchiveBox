@@ -410,22 +410,34 @@ def update_snapshots(
         try:
             snapshot = Snapshot.objects.get(id=snapshot_id)
 
-            # Apply updates from CLI flags (override stdin values)
             if status:
-                snapshot.status = status
-                snapshot.retry_at = timezone.now()
+                if status not in Snapshot.StatusChoices.values:
+                    rprint(f"[red]Invalid snapshot status: {status}[/red]", file=sys.stderr)
+                    continue
+                if status == Snapshot.StatusChoices.SEALED:
+                    snapshot.cancel()
+                elif status == Snapshot.StatusChoices.PAUSED:
+                    snapshot.pause()
+                elif status == Snapshot.StatusChoices.QUEUED:
+                    if snapshot.status == Snapshot.StatusChoices.PAUSED:
+                        snapshot.resume()
+                    else:
+                        snapshot.update_and_requeue(status=Snapshot.StatusChoices.QUEUED, retry_at=timezone.now())
+                elif status == Snapshot.StatusChoices.STARTED:
+                    snapshot.update_and_requeue(status=Snapshot.StatusChoices.STARTED, retry_at=timezone.now())
             if tag:
-                # Add tag to existing tags
-                snapshot.save()  # Ensure saved before M2M
                 from archivebox.core.models import Tag
 
                 tag_obj, _ = Tag.objects.get_or_create(name=tag)
                 snapshot.tags.add(tag_obj)
+                snapshot.save(update_fields=["modified_at"])
 
-            snapshot.save()
+            if not status and not tag:
+                snapshot.save(update_fields=["modified_at"])
             updated_count += 1
 
             if not is_tty:
+                snapshot.refresh_from_db()
                 write_record(snapshot.to_json())
 
         except Snapshot.DoesNotExist:

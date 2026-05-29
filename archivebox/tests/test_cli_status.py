@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from archivebox.core.models import Snapshot
+from archivebox.tests.conftest import run_queued_crawls
 from archivebox.tests.test_orm_helpers import use_archivebox_db
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -60,6 +61,7 @@ def test_status_shows_correct_snapshot_count(tmp_path, process, disable_extracto
             capture_output=True,
             env=disable_extractors_dict,
         )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     result = subprocess.run(["archivebox", "status"], capture_output=True, text=True)
 
@@ -81,6 +83,7 @@ def test_status_shows_archived_count(tmp_path, process, disable_extractors_dict)
         capture_output=True,
         env=disable_extractors_dict,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     result = subprocess.run(["archivebox", "status"], capture_output=True, text=True)
 
@@ -107,6 +110,7 @@ def test_status_counts_archive_directories(tmp_path, process, disable_extractors
         capture_output=True,
         env=disable_extractors_dict,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     result = subprocess.run(["archivebox", "status"], capture_output=True, text=True)
 
@@ -124,6 +128,7 @@ def test_status_detects_orphaned_directories(tmp_path, process, disable_extracto
         capture_output=True,
         env=disable_extractors_dict,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     # Create an orphaned directory
     (tmp_path / "archive" / "fake_orphaned_dir").mkdir(parents=True, exist_ok=True)
@@ -146,6 +151,7 @@ def test_status_counts_new_snapshot_output_dirs_as_archived(tmp_path, process, d
         env=env,
         check=True,
     )
+    run_queued_crawls(tmp_path, env)
 
     with use_archivebox_db(tmp_path):
         snapshot_id = Snapshot.objects.values_list("id", flat=True).get(url="https://example.com")
@@ -183,6 +189,7 @@ def test_status_reads_from_db_not_filesystem(tmp_path, process, disable_extracto
         capture_output=True,
         env=disable_extractors_dict,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     # Verify DB has snapshot
     with use_archivebox_db(tmp_path):

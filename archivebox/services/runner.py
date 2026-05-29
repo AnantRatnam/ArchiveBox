@@ -59,6 +59,7 @@ from abxbus.event_handler import EventHandlerAbortedError, EventHandlerCancelled
 
 from archivebox.config.configset import BaseConfigSet
 from archivebox.core.recovery_util import recover_orchestrator_state
+from archivebox.core.shutdown_util import foreground_shutdown_signals
 from archivebox.search.sonic_daemon import register_sonic_daemon_event_handler
 from archivebox.workers.models import ACTIVE_STATE_LEASE_SECONDS
 
@@ -175,12 +176,6 @@ async def _run_event_now(event, timeout: float | None = None):
     return event
 
 
-async def _emit_event_now(bus, event, timeout: float | None = None, parent_event=None):
-    if parent_event is not None:
-        event.event_parent_id = parent_event.event_id
-    return await _run_event_now(bus.emit(event), timeout)
-
-
 def ensure_background_runner(*, allow_under_pytest: bool = False) -> bool:
     if os.environ.get("PYTEST_CURRENT_TEST") and not allow_under_pytest:
         return False
@@ -270,45 +265,21 @@ class CrawlRunner:
         self.root_crawl_start_event_id: str | None = None
         self._run_task: asyncio.Task[None] | None = None
         self._skip_wait_until_idle = False
+        # This is intentionally a synchronous OS-signal side channel, not bus
+        # state. During SIGINT/SIGTERM/SIGHUP, asyncio.run() may already be
+        # cancelling tasks and closing the loop, so abxbus cannot be relied on
+        # for timely delivery of a final "stop now" event.
         self._signal_abort_requested = False
         self._last_lease_heartbeat_at = 0.0
-
-    def _install_signal_handlers(self) -> list[tuple[signal.Signals, Any, bool]]:
-        if threading.current_thread() is not threading.main_thread():
-            return []
-
-        installed: list[tuple[signal.Signals, Any, bool]] = []
-        for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
-            previous = signal.getsignal(sig)
-
-            def request_abort(_signum, _frame, sig=sig) -> None:
-                already_requested = self._signal_abort_requested
-                if not already_requested:
-                    message = (
-                        f"\n[🛑] Got {sig.name}, aborting the active hook...\n"
-                        if self.interactive_interrupts
-                        else f"\n[🛑] Got {sig.name}, stopping gracefully...\n"
-                    )
-                    os.write(sys.stdout.fileno(), message.encode())
-                self._request_abort_from_signal(sig)
-                if not already_requested:
-                    return
-                raise KeyboardInterrupt
-
-            signal.signal(sig, request_abort)
-            installed.append((sig, previous, False))
-        return installed
-
-    def _restore_signal_handlers(self, installed: list[tuple[signal.Signals, Any, bool]]) -> None:
-        for sig, previous, installed_on_loop in reversed(installed):
-            if installed_on_loop:
-                asyncio.get_running_loop().remove_signal_handler(sig)
-            signal.signal(sig, previous)
 
     def _request_abort_from_signal(self, _sig: signal.Signals) -> None:
         already_requested = self._signal_abort_requested
         self._signal_abort_requested = True
         self._skip_wait_until_idle = True
+        # The foreground signal handler runs while the event loop may be in the
+        # middle of shutdown. Flip cheap in-memory flags here and let normal
+        # finally blocks do cleanup; only cancel the runner task immediately for
+        # non-interactive commands or for a second interrupt escalation.
         if (not self.interactive_interrupts or already_requested) and self._run_task is not None and not self._run_task.done():
             self._run_task.cancel()
 
@@ -347,45 +318,56 @@ class CrawlRunner:
             runtime="archivebox",
             crawl_id=str(self.crawl.id),
         )
-        installed_signal_handlers = self._install_signal_handlers()
         root_snapshot_id: str | None = None
         bus_destroyed = False
         try:
-            self._run_task = asyncio.current_task()
-            snapshot_ids = await sync_to_async(self.load_run_state, thread_sensitive=True)()
-            max_concurrent_snapshots = max(1, int(self.base_config.get("CRAWL_MAX_CONCURRENT_SNAPSHOTS", 1)))
-            self.max_concurrent_snapshots = max_concurrent_snapshots
-            self.snapshot_semaphore = asyncio.Semaphore(max_concurrent_snapshots)
-            live_ui = self._create_live_ui()
-            with live_ui if live_ui is not None else nullcontext():
-                try:
-                    await heartbeat.start()
-                    await _emit_machine_config(
-                        self.bus,
-                        config={
-                            **self.base_config,
-                            "ABX_RUNTIME": "archivebox",
-                        },
-                        derived_config=self.derived_config,
-                    )
-                    if snapshot_ids:
-                        root_snapshot_id = snapshot_ids[0]
-                        await self.run_crawl(root_snapshot_id, snapshot_ids)
-                finally:
-                    self._run_task = None
-                    self._restore_signal_handlers(installed_signal_handlers)
-                    await heartbeat.stop()
-                    await self.stop_snapshot_tasks()
+            first_signal_message = (
+                "\n[🛑] Got {signal_name}, aborting the active hook...\n"
+                if self.interactive_interrupts
+                else "\n[🛑] Got {signal_name}, stopping gracefully...\n"
+            )
+            # interactive_interrupts is only enabled when this runner belongs
+            # to a foreground `archivebox add`. Runners owned by server/update/
+            # run should use immediate graceful shutdown instead of the
+            # add-specific "abort current hook or continue" flow.
+            with foreground_shutdown_signals(
+                first_signal_message=first_signal_message,
+                on_signal=self._request_abort_from_signal,
+                raise_on_first_signal=not self.interactive_interrupts,
+            ):
+                self._run_task = asyncio.current_task()
+                snapshot_ids = await sync_to_async(self.load_run_state, thread_sensitive=True)()
+                max_concurrent_snapshots = max(1, int(self.base_config.get("CRAWL_MAX_CONCURRENT_SNAPSHOTS", 1)))
+                self.max_concurrent_snapshots = max_concurrent_snapshots
+                self.snapshot_semaphore = asyncio.Semaphore(max_concurrent_snapshots)
+                live_ui = self._create_live_ui()
+                with live_ui if live_ui is not None else nullcontext():
                     try:
-                        if not self._skip_wait_until_idle:
-                            await self.bus.wait_until_idle(timeout=30.0)
+                        await heartbeat.start()
+                        await _emit_machine_config(
+                            self.bus,
+                            config={
+                                **self.base_config,
+                                "ABX_RUNTIME": "archivebox",
+                            },
+                            derived_config=self.derived_config,
+                        )
+                        if snapshot_ids:
+                            root_snapshot_id = snapshot_ids[0]
+                            await self.run_crawl(root_snapshot_id, snapshot_ids)
                     finally:
-                        await self.bus.destroy(clear=False)
-                        bus_destroyed = True
+                        self._run_task = None
+                        await heartbeat.stop()
+                        await self.stop_snapshot_tasks()
+                        try:
+                            if not self._skip_wait_until_idle:
+                                await self.bus.wait_until_idle(timeout=30.0)
+                        finally:
+                            await self.bus.destroy(clear=False)
+                            bus_destroyed = True
         finally:
             if not bus_destroyed:
                 self._run_task = None
-                self._restore_signal_handlers(installed_signal_handlers)
                 await heartbeat.stop()
                 await self.stop_snapshot_tasks()
                 await self.bus.destroy(clear=False)
@@ -623,6 +605,8 @@ class CrawlRunner:
         if self.persona:
             self.persona.cleanup_runtime_for_crawl(self.crawl)
         crawl = Crawl.objects.get(id=self.crawl.id)
+        if crawl.status == Crawl.StatusChoices.SEALED:
+            return
         if crawl.is_paused:
             return
         if crawl.is_finished():
@@ -643,13 +627,7 @@ class CrawlRunner:
             ],
         )
         next_snapshot_retry = active_snapshots.order_by("retry_at", "created_at").values_list("retry_at", flat=True).first()
-        if crawl.status == Crawl.StatusChoices.SEALED:
-            crawl.update_and_requeue(
-                status=Crawl.StatusChoices.QUEUED,
-                retry_at=next_snapshot_retry or timezone.now(),
-            )
-            return
-        elif crawl.status != Crawl.StatusChoices.STARTED:
+        if crawl.status != Crawl.StatusChoices.STARTED:
             crawl.update_and_requeue(
                 status=Crawl.StatusChoices.STARTED,
                 retry_at=crawl.retry_at or next_snapshot_retry or timezone.now(),
@@ -902,41 +880,40 @@ class CrawlRunner:
                 finally:
                     if self.snapshot_tasks:
                         await self.drain_snapshot_tasks()
-                    await asyncio.shield(
-                        asyncio.create_task(
-                            _emit_event_now(
-                                self.bus,
-                                CrawlCleanupEvent(
-                                    url=snapshot["url"],
-                                    snapshot_id=snapshot["id"],
-                                    output_dir=str(output_dir),
-                                    event_timeout=crawl_setup_phase_timeout,
-                                    event_handler_slow_timeout=slow_warning_timeout(crawl_setup_phase_timeout),
-                                ),
-                                crawl_setup_phase_timeout,
-                                parent_event=event,
-                            ),
-                            context=contextvars.Context(),
-                        ),
-                    )
-            finally:
-                cancel_watcher.cancel()
-                await asyncio.gather(cancel_watcher, return_exceptions=True)
-            await asyncio.shield(
-                asyncio.create_task(
-                    _emit_event_now(
-                        self.bus,
-                        CrawlCompletedEvent(
+                    cleanup_event = event.emit(
+                        CrawlCleanupEvent(
                             url=snapshot["url"],
                             snapshot_id=snapshot["id"],
                             output_dir=str(output_dir),
+                            event_timeout=crawl_setup_phase_timeout,
+                            event_handler_slow_timeout=slow_warning_timeout(crawl_setup_phase_timeout),
                         ),
-                        CrawlCompletedEvent.model_fields["event_timeout"].default,
-                        parent_event=event,
-                    ),
-                    context=contextvars.Context(),
+                    )
+                    # Normal crawl shutdown drives cleanup synchronously so
+                    # ProcessKillEvent handlers get their grace period. During
+                    # OS-signal shutdown, asyncio is already cancelling tasks;
+                    # keep the child event attached for any remaining bus tick,
+                    # but do not call now()/wait() because the bus context may
+                    # disappear before delivery and produce noisy shutdown
+                    # exceptions instead of useful cleanup.
+                    if not self._signal_abort_requested:
+                        await _run_event_now(cleanup_event, crawl_setup_phase_timeout)
+            finally:
+                cancel_watcher.cancel()
+                await asyncio.gather(cancel_watcher, return_exceptions=True)
+            completed_event = event.emit(
+                CrawlCompletedEvent(
+                    url=snapshot["url"],
+                    snapshot_id=snapshot["id"],
+                    output_dir=str(output_dir),
                 ),
             )
+            # Same signal lifecycle as CrawlCleanupEvent above: completion is a
+            # normal bus event unless the interpreter is already unwinding from
+            # SIGINT/SIGTERM/SIGHUP, where synchronous bus delivery is no
+            # longer a dependable shutdown primitive.
+            if not self._signal_abort_requested:
+                await _run_event_now(completed_event, CrawlCompletedEvent.model_fields["event_timeout"].default)
 
         on_archivebox_CrawlStartEvent.__name__ = "on_archivebox_CrawlStartEvent__run_snapshots"
         on_archivebox_CrawlEvent.__name__ = "on_archivebox_CrawlEvent__run_recursive_crawl"
@@ -1278,15 +1255,18 @@ def run_due_crawl(crawl, *, lock_seconds: int, interactive_interrupts: bool = Fa
             status__in=[Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED],
             retry_at__lte=now,
         ).exists()
+        if snapshot_count and due_active_snapshots:
+            # Child Snapshot rows own the active work. Keep the parent visible
+            # for a near-future finalization tick, but yield this scheduler
+            # pass so run_pending_crawls() can process the due child row next.
+            crawl.update_and_requeue(status=crawl.StatusChoices.STARTED, retry_at=now + timedelta(seconds=2))
+            return True
         if snapshot_count and not due_active_snapshots:
             if crawl.is_finished():
-                if crawl.status == crawl.StatusChoices.STARTED:
-                    crawl.sm.seal()
-                else:
-                    crawl.update_and_requeue(
-                        status=crawl.StatusChoices.SEALED,
-                        retry_at=None,
-                    )
+                if not crawl.claim_processing_lock(lock_seconds=lock_seconds):
+                    return False
+                crawl.refresh_from_db()
+                crawl.sm.tick()
                 return True
 
             # retry_at is the only queue/ownership signal the runner sees.
@@ -1323,6 +1303,10 @@ def run_due_crawl(crawl, *, lock_seconds: int, interactive_interrupts: bool = Fa
             return True
         if not crawl.claim_processing_lock(lock_seconds=lock_seconds):
             return False
+        crawl.refresh_from_db()
+        if crawl.status == crawl.StatusChoices.STARTED and crawl.is_finished():
+            crawl.sm.tick()
+            return True
         _runner_console_line(crawl=crawl)
         run_crawl(str(crawl.id), process_discovered_snapshots_inline=True, interactive_interrupts=interactive_interrupts)
         return True
@@ -1338,8 +1322,16 @@ def run_due_crawl(crawl, *, lock_seconds: int, interactive_interrupts: bool = Fa
     return True
 
 
-def run_due_snapshot(snapshot, *, lock_seconds: int, interactive_interrupts: bool = False) -> bool:
+def run_due_snapshot(snapshot, *, lock_seconds: int, interactive_interrupts: bool = False, runtime_config=None) -> bool:
     from archivebox.core.models import Snapshot
+
+    if runtime_config is not None:
+        snapshot._runtime_config = runtime_config
+    if snapshot.crawl.status == snapshot.crawl.StatusChoices.SEALED and snapshot.status != Snapshot.StatusChoices.SEALED:
+        if not snapshot.claim_processing_lock(lock_seconds=lock_seconds):
+            return False
+        snapshot.sm.seal()
+        return True
 
     if snapshot.is_paused:
         selected_plugins = queued_plugins_for_snapshot(str(snapshot.id))
@@ -1416,6 +1408,19 @@ def run_due_snapshot(snapshot, *, lock_seconds: int, interactive_interrupts: boo
 
     if not snapshot.claim_processing_lock(lock_seconds=lock_seconds):
         return False
+    snapshot.refresh_from_db()
+    if snapshot.status == Snapshot.StatusChoices.QUEUED:
+        snapshot.sm.tick()
+        snapshot.refresh_from_db()
+        if snapshot.status == Snapshot.StatusChoices.SEALED:
+            _runner_console_line(crawl=snapshot.crawl, snapshot=snapshot, status="SEALED")
+            return True
+    if snapshot.status == Snapshot.StatusChoices.STARTED and snapshot.archiveresult_set.exists() and snapshot.is_finished_processing():
+        snapshot.sm.tick()
+        snapshot.refresh_from_db()
+        if snapshot.status == Snapshot.StatusChoices.SEALED:
+            _runner_console_line(crawl=snapshot.crawl, snapshot=snapshot, status="SEALED")
+            return True
     _runner_console_line(crawl=snapshot.crawl, snapshot=snapshot)
     run_crawl(
         str(snapshot.crawl_id),
@@ -1555,18 +1560,25 @@ def run_pending_crawls(
     maintenance_only: bool = False,
     interactive_interrupts: bool = False,
 ) -> int:
+    from archivebox.config.common import get_config
     from archivebox.crawls.models import Crawl, CrawlSchedule
     from archivebox.core.models import ArchiveResult, Snapshot
     from archivebox.machine.models import Binary, Process
+    from django.db.models import Q
 
     crawl_claim_lock_seconds = 10
+    runtime_config = get_config()
     last_recovery_at = 0.0
     last_retention_at = 0.0
     while True:
         now_monotonic = time.monotonic()
         if now_monotonic - last_retention_at >= (60.0 if daemon else 1.0):
             for model in (ArchiveResult, Snapshot, Crawl, Process):
-                model.delete_expired(batch_size=100)
+                # The runner hot path must only touch indexed scheduler/retention
+                # columns before claiming work. delete_at is hydrated when rows
+                # are saved, while missing_delete_at_candidates() may inspect JSON
+                # config across large tables and can stall worker startup.
+                model.delete_expired(batch_size=100, backfill_missing=False)
             last_retention_at = now_monotonic
 
         if daemon and crawl_id is None:
@@ -1576,7 +1588,7 @@ def run_pending_crawls(
                     schedule.enqueue(queued_at=now)
 
         if not maintenance_only:
-            due_crawls = Crawl.objects.filter(retry_at__lte=timezone.now())
+            due_crawls = Crawl.objects.filter(retry_at__lte=timezone.now()).exclude(status=Crawl.StatusChoices.STARTED)
             if crawl_id:
                 due_crawls = due_crawls.filter(id=crawl_id)
             due_crawl = due_crawls.order_by("retry_at", "created_at").first()
@@ -1589,16 +1601,40 @@ def run_pending_crawls(
                     continue
                 continue
 
-        due_snapshots = Snapshot.objects.filter(retry_at__lte=timezone.now()).select_related("crawl")
+        due_snapshots = Snapshot.objects.filter(retry_at__lte=timezone.now()).select_related("crawl__created_by")
+        if not maintenance_only:
+            due_snapshots = due_snapshots.filter(Q(crawl__status=Crawl.StatusChoices.SEALED) | ~Q(status=Snapshot.StatusChoices.PAUSED))
         if maintenance_only:
             due_snapshots = due_snapshots.filter(status__in=[Snapshot.StatusChoices.PAUSED, Snapshot.StatusChoices.SEALED])
         if crawl_id:
             due_snapshots = due_snapshots.filter(crawl_id=crawl_id)
         due_snapshot = due_snapshots.order_by("retry_at", "created_at").first()
         if due_snapshot is not None:
-            if not run_due_snapshot(due_snapshot, lock_seconds=60, interactive_interrupts=interactive_interrupts):
+            if not run_due_snapshot(
+                due_snapshot,
+                lock_seconds=60,
+                interactive_interrupts=interactive_interrupts,
+                runtime_config=runtime_config,
+            ):
                 continue
             continue
+
+        if not maintenance_only:
+            due_started_crawl = Crawl.objects.filter(
+                retry_at__lte=timezone.now(),
+                status=Crawl.StatusChoices.STARTED,
+            )
+            if crawl_id:
+                due_started_crawl = due_started_crawl.filter(id=crawl_id)
+            due_crawl = due_started_crawl.order_by("retry_at", "created_at").first()
+            if due_crawl is not None:
+                if not run_due_crawl(
+                    due_crawl,
+                    lock_seconds=crawl_claim_lock_seconds,
+                    interactive_interrupts=interactive_interrupts,
+                ):
+                    continue
+                continue
 
         if crawl_id is None and not maintenance_only:
             due_binary = (

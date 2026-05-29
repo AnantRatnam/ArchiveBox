@@ -40,7 +40,6 @@ Examples:
 __package__ = "archivebox.cli"
 __command__ = "archivebox run"
 
-import os
 import sys
 import asyncio
 from collections import defaultdict
@@ -251,18 +250,26 @@ def run_runner(daemon: bool = False, crawl_id: str | None = None, maintenance_on
     from archivebox.config import CONSTANTS
     from archivebox.core.shutdown_util import foreground_parent_watchdog, foreground_shutdown_signals
     from archivebox.machine.models import Machine, Process
-    from archivebox.services.supervision_service import healthy_orchestrator
+    from archivebox.services.supervision_service import enter_single_runner_gate
     from archivebox.services.runner import recover_orchestrator_state, run_pending_crawls
 
-    recover_orchestrator_state(include_chrome=True)
     Machine.current()
-    existing = healthy_orchestrator(data_dir=CONSTANTS.DATA_DIR)
     current = Process.current()
-    existing_pid = existing.get("pid") if isinstance(existing, dict) else getattr(existing, "pid", None)
-    if existing_pid and existing_pid != os.getpid():
-        rprint(f"[green][*] Existing ArchiveBox orchestrator pid={existing_pid} is already running.[/green]", file=sys.stderr)
+    if not enter_single_runner_gate(current, data_dir=CONSTANTS.DATA_DIR):
+        current.mark_exited()
         return 0
-    current.mark_running(process_type=Process.TypeChoices.ORCHESTRATOR, pwd=str(CONSTANTS.DATA_DIR), timeout=0)
+
+    recover_orchestrator_state(include_chrome=True)
+    if crawl_id:
+        from django.utils import timezone
+        from archivebox.crawls.models import Crawl
+
+        crawl = Crawl.objects.filter(id=crawl_id, status__in=[Crawl.StatusChoices.QUEUED, Crawl.StatusChoices.STARTED]).first()
+        if crawl is not None and crawl.retry_at is None:
+            crawl.safe_update({"retry_at": timezone.now()}, refresh=False)
+    # Only a foreground `archivebox add` gets the interactive "abort current
+    # hook, continue/retry, second Ctrl+C exits" flow. Server/update/run owned
+    # orchestrators should shut down immediately and cleanly on the first signal.
     interactive_interrupts = current.root.process_type == Process.TypeChoices.ADD
     try:
         with foreground_shutdown_signals(), foreground_parent_watchdog(enabled=not daemon):
@@ -348,8 +355,7 @@ def run_snapshot_worker(snapshot_id: str) -> int:
         with foreground_shutdown_signals(), foreground_parent_watchdog():
             snapshot = Snapshot.objects.select_related("crawl").get(id=snapshot_id)
             if snapshot.retry_at is None:
-                Snapshot.objects.filter(pk=snapshot.pk).update(retry_at=timezone.now(), modified_at=timezone.now())
-                snapshot.refresh_from_db()
+                snapshot.update_and_requeue(retry_at=timezone.now())
             run_due_snapshot(snapshot, lock_seconds=60)
         return 0
     except KeyboardInterrupt:

@@ -215,7 +215,6 @@ SERVER_WORKER = lambda host, port: {
             "daphne",
             f"--bind={host}",
             f"--port={port}",
-            "--application-close-timeout=0",
             "archivebox.core.asgi:application",
         ],
     ),
@@ -268,6 +267,28 @@ def is_port_in_use(host: str, port: int) -> bool:
             return False
     except OSError:
         return True
+
+
+def _sonic_worker_bind_target(worker: dict[str, str]) -> tuple[str, int] | None:
+    """Read the plugin-owned Sonic config before starting its supervisord worker."""
+    command = shlex.split(worker.get("command") or "")
+    if not command or Path(command[0]).name != "sonic" or "-c" not in command:
+        return None
+    config_index = command.index("-c") + 1
+    if config_index >= len(command):
+        return None
+    try:
+        for line in Path(command[config_index]).read_text(encoding="utf-8", errors="replace").splitlines():
+            key, _separator, value = line.partition("=")
+            if key.strip() != "inet":
+                continue
+            host_port = value.strip().strip('"')
+            host, port = host_port.rsplit(":", 1)
+            host = "127.0.0.1" if host.strip().lower() == "localhost" else host.strip()
+            return host, int(port)
+    except (OSError, ValueError):
+        return None
+    return None
 
 
 @cache
@@ -429,6 +450,17 @@ def sync_supervisord_workers(supervisor, workers: list[tuple[dict[str, str], boo
                 procs_by_name[worker_name] = proc
                 break
             if not lazy:
+                sonic_target = _sonic_worker_bind_target(_worker)
+                if sonic_target is not None:
+                    sonic_host, sonic_port = sonic_target
+                    stop_stale_sonic_processes(_worker, supervisor_pid=supervisor.getPID(), host=sonic_host, port=sonic_port)
+                    if is_port_in_use(sonic_host, sonic_port):
+                        print(
+                            f"[yellow][*] Sonic is already listening on {sonic_host}:{sonic_port}; "
+                            f"not starting duplicate {worker_name}.[/yellow]",
+                        )
+                        procs_by_name[worker_name] = proc
+                        break
                 supervisor.startProcessGroup(worker_name, True)
                 proc = supervisor.getProcessInfo(worker_name)
                 print(f"     - Worker {worker_name}: started {proc['statename']} ({proc['description']})")
@@ -514,6 +546,8 @@ def stop_existing_supervisord_process():
         owner_proc = owner.proc
         if owner_proc is None:
             owner.mark_exited(exit_code=0)
+            continue
+        if owner_proc.ppid() > 1:
             continue
         try:
             print(f"[🦸‍♂️] Stopping older ArchiveBox runtime owner (pid={owner_proc.pid})...")

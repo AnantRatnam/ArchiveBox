@@ -34,7 +34,7 @@ from archivebox.base_models.models import (
 )
 from archivebox.workers.models import RETRY_AT_MAX, ModelWithStateMachine, BaseStateMachine
 from archivebox.crawls.schedule_utils import next_run_for_schedule, validate_schedule
-from archivebox.misc.util import validate_url_length
+from archivebox.misc.util import validate_url, validate_url_length
 
 if TYPE_CHECKING:
     from archivebox.core.models import Snapshot
@@ -220,23 +220,31 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
         return resumed
 
     def cancel(self) -> None:
+        if self.status != self.StatusChoices.SEALED:
+            self.sm.seal()
+        else:
+            scheduled_children = self.schedule_child_snapshots_for_sealing()
+            if scheduled_children or self.retry_at is not None:
+                self.update_and_requeue(retry_at=None)
+
+    def schedule_child_snapshots_for_sealing(self) -> int:
         from archivebox.core.models import Snapshot
 
-        cancelled_at = timezone.now()
-        self.status = self.StatusChoices.SEALED
-        self.retry_at = None
-        self.save(update_fields=["status", "retry_at", "modified_at"])
-        Snapshot.objects.filter(
-            crawl=self,
-            status__in=[
-                Snapshot.StatusChoices.QUEUED,
-                Snapshot.StatusChoices.STARTED,
-                Snapshot.StatusChoices.PAUSED,
-            ],
-        ).update(
-            status=Snapshot.StatusChoices.SEALED,
-            retry_at=None,
-            modified_at=cancelled_at,
+        now = timezone.now()
+        # Cancellation seals the Crawl first, then lets the runner seal each
+        # child Snapshot through its own state machine. We only write retry_at
+        # here so Snapshot cleanup/save side effects still happen per row, and
+        # so SEALED+retry_at maintenance work remains a separate code path.
+        return (
+            self.snapshot_set.filter(
+                status__in=[
+                    Snapshot.StatusChoices.QUEUED,
+                    Snapshot.StatusChoices.STARTED,
+                    Snapshot.StatusChoices.PAUSED,
+                ],
+            )
+            .filter(Q(retry_at__isnull=True) | Q(retry_at__gt=now))
+            .update(retry_at=now, modified_at=now)
         )
 
     @classmethod
@@ -435,7 +443,6 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
         Domain is extracted from the first URL in the crawl.
         """
         from archivebox.config import CONSTANTS
-        from archivebox.config.common import get_config
         from archivebox.core.models import Snapshot
 
         date_str = self.created_at.strftime("%Y%m%d")
@@ -447,7 +454,12 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
                 break
         domain = Snapshot.extract_domain_from_url(first_url) if first_url else "unknown"
 
-        return get_config().USERS_DIR / self.created_by.username / CONSTANTS.CRAWLS_DIR_NAME / date_str / domain / str(self.id)
+        runtime_config = getattr(self, "_runtime_config", None)
+        if runtime_config is None:
+            from archivebox.config.common import get_config
+
+            runtime_config = get_config(resolve_plugins=False)
+        return runtime_config.USERS_DIR / self.created_by.username / CONSTANTS.CRAWLS_DIR_NAME / date_str / domain / str(self.id)
 
     def get_urls_list(self) -> list[str]:
         """Get list of URLs from urls field, filtering out comments and empty lines."""
@@ -845,9 +857,12 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
             if not url:
                 continue
             try:
-                validate_url_length(url)
+                validate_url(url)
             except ValueError as err:
-                print(f"[yellow][!] Skipping over-long snapshot URL: {url[:120]}... ({err})[/yellow]")
+                print(f"[yellow][!] Skipping invalid snapshot URL: {url[:120]}... ({err})[/yellow]")
+                continue
+            if Snapshot.is_archivebox_internal_url(url):
+                print(f"[yellow][!] Skipping internal ArchiveBox snapshot URL: {url}[/yellow]")
                 continue
             if not self.url_passes_filters(url):
                 continue
@@ -957,7 +972,6 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
         from archivebox.core.models import Snapshot, SnapshotTag, Tag
         from archivebox.config.common import get_config
         from archivebox.misc.util import fix_url_from_markdown, sanitize_extracted_url
-        from archivebox.core.host_utils import get_admin_host, get_api_host, get_listen_host, get_public_host, get_web_host, split_host_port
 
         if self.status == self.StatusChoices.SEALED:
             return []
@@ -965,32 +979,10 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
         if depth > self.max_depth:
             return []
 
-        config = get_config(crawl=self, snapshot=parent_snapshot)
         crawl_tag_names = self.current_tag_names()
+        config = get_config(crawl=self, snapshot=parent_snapshot)
         allowlist = self.split_filter_patterns(config.get("URL_ALLOWLIST", ""))
         denylist = self.split_filter_patterns(config.get("URL_DENYLIST", ""))
-        protected_subdomains = {"admin", "web", "api", "public"}
-        protected_hosts = set()
-        protected_roots = set()
-        for host_value in (
-            get_listen_host(config=config),
-            get_admin_host(config=config),
-            get_web_host(config=config),
-            get_api_host(config=config),
-            get_public_host(config=config),
-        ):
-            if not host_value:
-                continue
-            protected_host = split_host_port(host_value)[0].strip(".")
-            if not protected_host:
-                continue
-            protected_hosts.add(protected_host)
-            host_parts = protected_host.split(".", 1)
-            if len(host_parts) == 2 and (host_parts[0] in protected_subdomains or host_parts[0].startswith("snap-")):
-                protected_roots.add(host_parts[1])
-            else:
-                protected_roots.add(protected_host)
-        uses_subdomain_routing = bool(config.get("USES_SUBDOMAIN_ROUTING", False))
 
         deduped_records: dict[str, Mapping[str, Any]] = {}
         for record in records:
@@ -998,25 +990,11 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
             if not url or url in deduped_records:
                 continue
             try:
-                validate_url_length(url)
+                validate_url(url)
             except ValueError as err:
-                print(f"[yellow][!] Skipping over-long discovered snapshot URL: {url[:120]}... ({err})[/yellow]")
+                print(f"[yellow][!] Skipping invalid discovered snapshot URL: {url[:120]}... ({err})[/yellow]")
                 continue
-            parsed = urlparse(url)
-            host = (parsed.hostname or "").lower().strip(".")
-            is_internal_url = False
-            if parsed.scheme in ("http", "https") and host:
-                if host in protected_hosts:
-                    is_internal_url = True
-                elif uses_subdomain_routing:
-                    for protected_root in protected_roots:
-                        if not protected_root or not host.endswith(f".{protected_root}"):
-                            continue
-                        subdomain = host[: -(len(protected_root) + 1)]
-                        if subdomain in protected_subdomains or subdomain.startswith("snap-"):
-                            is_internal_url = True
-                            break
-            if is_internal_url:
+            if Snapshot.is_archivebox_internal_url(url):
                 print(f"[yellow][!] Skipping internal ArchiveBox discovered snapshot URL: {url}[/yellow]")
                 continue
             if self.url_passes_compiled_filters(url, allowlist=allowlist, denylist=denylist):
@@ -1473,7 +1451,8 @@ class CrawlMachine(BaseStateMachine):
 
     # Tick Event (polled by workers)
     tick = (
-        queued.to.itself(unless="can_start")
+        queued.to(sealed, cond="has_finished_snapshots")
+        | queued.to.itself(unless="can_start")
         | queued.to(started, cond="can_start")
         | started.to(sealed, cond="is_finished")
         | paused.to.itself()
@@ -1482,7 +1461,7 @@ class CrawlMachine(BaseStateMachine):
     # Manual event (triggered by last Snapshot sealing, or by direct
     # index-only/bg creation when every requested URL is rejected before any
     # Snapshot rows exist).
-    seal = queued.to(sealed) | started.to(sealed)
+    seal = queued.to(sealed) | started.to(sealed) | paused.to(sealed)
     pause_requested = queued.to(paused) | started.to(paused)
     resume_requested = paused.to(queued)
 
@@ -1499,6 +1478,13 @@ class CrawlMachine(BaseStateMachine):
     def is_finished(self) -> bool:
         """Check if all Snapshots for this crawl are finished."""
         return self.crawl.is_finished()
+
+    def has_finished_snapshots(self) -> bool:
+        """A queued crawl with only final Snapshot rows was interrupted before sealing."""
+        from archivebox.core.models import Snapshot
+
+        snapshots = self.crawl.snapshot_set.all()
+        return snapshots.exists() and not snapshots.exclude(status=Snapshot.StatusChoices.SEALED).exists()
 
     @queued.enter
     def enter_queued(self):
@@ -1550,6 +1536,7 @@ class CrawlMachine(BaseStateMachine):
 
     @sealed.enter
     def enter_sealed(self):
+        self.crawl.schedule_child_snapshots_for_sealing()
         # Clean up background hooks and run on_CrawlEnd hooks
         self.crawl.cleanup()
 

@@ -359,23 +359,26 @@ def _get_snapshot_by_ref(snapshot_id: str):
         return queryset.get(_uuid_ref_query("id", snapshot_id))
 
 
-def _touch_archiveresult_snapshot(snapshot: Snapshot) -> None:
-    now = timezone.now()
-    snapshot_updates = ["modified_at"]
-    if snapshot.downloaded_at is None:
-        snapshot.downloaded_at = now
-        snapshot_updates.append("downloaded_at")
-    if snapshot.status != Snapshot.StatusChoices.SEALED:
-        snapshot.status = Snapshot.StatusChoices.SEALED
-        snapshot.retry_at = None
-        snapshot_updates.extend(["status", "retry_at"])
-    snapshot.save(update_fields=snapshot_updates)
+def _queue_archiveresult_snapshot_maintenance(snapshot: Snapshot) -> None:
+    """
+    Mark an uploaded ArchiveResult's Snapshot as dirty without finalizing it.
 
-    try:
-        snapshot.ensure_crawl_symlink(snapshot_dir=snapshot.output_dir)
-        snapshot.write_index_jsonl(output_dir=snapshot.output_dir)
-    except Exception:
-        pass
+    Upload API handlers are allowed to persist files and ArchiveResult rows, but
+    Snapshot save() side effects, sealing, symlink creation, and index/details
+    rewrites belong to the runner. retry_at is the scheduler signal the runner
+    already watches, so only bump rows that are final or otherwise invisible.
+    """
+    # ArchiveResult.save() updates parent snapshot health/mtime before this
+    # helper runs. Re-read the scheduler columns so the short CAS update below
+    # does not lose to our own earlier ArchiveResult write.
+    snapshot = Snapshot.objects.only("id", "status", "retry_at", "downloaded_at", "modified_at").get(id=snapshot.id)
+    now = timezone.now()
+    updates = {"modified_at": now}
+    if snapshot.downloaded_at is None:
+        updates["downloaded_at"] = now
+    if snapshot.status == Snapshot.StatusChoices.SEALED or snapshot.retry_at is None:
+        updates["retry_at"] = now
+    snapshot.safe_update(updates, refresh=False)
 
 
 def _merge_archiveresult_output_file_maps(results: list[ArchiveResult]) -> dict[str, dict[str, Any]]:
@@ -530,13 +533,11 @@ def create_archiveresult(
     parsed_output_json = _parse_archiveresult_output_json(output_json)
     hook = hook_name or ARCHIVERESULT_UPLOAD_HOOK_NAME
     matching_results = list(
-        ArchiveResult.objects.select_for_update()
-        .filter(
+        ArchiveResult.objects.filter(
             snapshot=snapshot,
             plugin=plugin_name,
             hook_name=hook,
-        )
-        .order_by("created_at", "id"),
+        ).order_by("created_at", "id"),
     )
     existing_result = matching_results[0] if matching_results else None
     existing_output_files = _merge_archiveresult_output_file_maps(matching_results)
@@ -547,29 +548,42 @@ def create_archiveresult(
         existing_output_files=existing_output_files,
         allow_empty=True,
     )
-    output_size, output_mimetypes = _summarize_archiveresult_output_files(output_files)
-    output_file_paths = list(output_files.keys())
     now = timezone.now()
-    if (
-        existing_result
-        and normalized_status == ArchiveResult.StatusChoices.STARTED
-        and existing_result.status != ArchiveResult.StatusChoices.STARTED
-    ):
-        normalized_status = existing_result.status
 
     with transaction.atomic():
-        if existing_result:
+        matching_results = list(
+            ArchiveResult.objects.filter(
+                snapshot=snapshot,
+                plugin=plugin_name,
+                hook_name=hook,
+            ).order_by("created_at", "id"),
+        )
+        if matching_results:
+            existing_result = matching_results[0]
+            output_files = {
+                **_merge_archiveresult_output_file_maps(matching_results),
+                **output_files,
+            }
             duplicate_ids = [result.id for result in matching_results[1:]]
             if duplicate_ids:
                 ArchiveResult.objects.filter(id__in=duplicate_ids).delete()
             result = existing_result
         else:
+            existing_result = None
             result = ArchiveResult(
                 snapshot=snapshot,
                 plugin=plugin_name,
                 hook_name=hook,
             )
 
+        if (
+            existing_result
+            and normalized_status == ArchiveResult.StatusChoices.STARTED
+            and existing_result.status != ArchiveResult.StatusChoices.STARTED
+        ):
+            normalized_status = existing_result.status
+        output_size, output_mimetypes = _summarize_archiveresult_output_files(output_files)
+        output_file_paths = list(output_files.keys())
         result.status = normalized_status
         result.output_str = output_str or (output_file_paths[0] if output_file_paths else "")
         result.output_json = parsed_output_json
@@ -581,7 +595,7 @@ def create_archiveresult(
         result.save()
 
     if result.status != ArchiveResult.StatusChoices.STARTED:
-        _touch_archiveresult_snapshot(snapshot)
+        _queue_archiveresult_snapshot_maintenance(snapshot)
     return result
 
 
@@ -628,7 +642,7 @@ def patch_archiveresult(
 
     result.save(update_fields=update_fields)
     if result.status != ArchiveResult.StatusChoices.STARTED:
-        _touch_archiveresult_snapshot(result.snapshot)
+        _queue_archiveresult_snapshot_maintenance(result.snapshot)
 
     return result
 

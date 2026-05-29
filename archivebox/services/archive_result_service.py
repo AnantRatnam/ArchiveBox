@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from asgiref.sync import sync_to_async
+from django.db import IntegrityError
 from django.utils import timezone
 
 from abx_dl.events import PROCESS_EXIT_SKIPPED, ArchiveResultEvent, ProcessCompletedEvent, ProcessStartedEvent, SnapshotEvent
@@ -258,19 +259,44 @@ class ArchiveResultService(BaseService):
             "end_ts": end_ts,
         }
         if process is not None:
-            defaults["process"] = process
+            defaults["process_id"] = process.id
         if event.error:
             defaults["notes"] = event.error
 
         key = (str(snapshot.id), event.plugin, event.hook_name)
         lock = self._save_locks.setdefault(key, asyncio.Lock())
         async with lock:
-            result, _created = await ArchiveResult.objects.aupdate_or_create(
+            # Avoid update_or_create(): Django wraps it in transaction.atomic().
+            # On SQLite a lock retry inside that read-then-write transaction can
+            # keep the read transaction open and block the writer that would have
+            # released the lock. Use autocommit-sized writes instead.
+            result = await ArchiveResult.objects.filter(
                 snapshot=snapshot,
                 plugin=event.plugin,
                 hook_name=event.hook_name,
-                defaults=defaults,
-            )
+            ).afirst()
+            if result is None:
+                try:
+                    result = await ArchiveResult.objects.acreate(
+                        snapshot=snapshot,
+                        plugin=event.plugin,
+                        hook_name=event.hook_name,
+                        **defaults,
+                    )
+                except IntegrityError:
+                    result = await ArchiveResult.objects.aget(
+                        snapshot=snapshot,
+                        plugin=event.plugin,
+                        hook_name=event.hook_name,
+                    )
+
+            update_fields = []
+            for field, value in defaults.items():
+                if getattr(result, field) != value:
+                    setattr(result, field, value)
+                    update_fields.append(field)
+            if update_fields:
+                await result.asave(update_fields=[*update_fields, "modified_at"])
 
         if result.status in (ArchiveResult.StatusChoices.SUCCEEDED, ArchiveResult.StatusChoices.NORESULTS):
             next_title = _extract_snapshot_title(str(snapshot.output_dir), event.plugin, result.output_str, snapshot_url=snapshot.url)

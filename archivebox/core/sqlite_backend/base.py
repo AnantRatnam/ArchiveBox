@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
+import os
 from collections.abc import Mapping
 from itertools import tee
 import re
@@ -14,6 +15,17 @@ def _is_locked_error(error: BaseException) -> bool:
     from django.db import OperationalError
 
     return isinstance(error, (sqlite3.OperationalError, OperationalError)) and "database is locked" in str(error).lower()
+
+
+def _float_env(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+SQLITE_LOCK_RETRY_TIMEOUT = _float_env("ARCHIVEBOX_SQLITE_LOCK_RETRY_TIMEOUT", 60.0)
+SQLITE_LOCK_RETRY_INTERVAL = _float_env("ARCHIVEBOX_SQLITE_LOCK_RETRY_INTERVAL", 5.0)
 
 
 def _format_sql(query: str, params=None) -> str:
@@ -59,7 +71,38 @@ def _log_locked_database(query: str, params=None, *, attempt: int, elapsed: floa
         )
 
 
-def _retry_locked_database(action, query: str, params=None):
+def _connection_in_transaction(connection) -> bool:
+    try:
+        return bool(connection and connection.in_transaction)
+    except (AttributeError, sqlite3.Error):
+        return False
+
+
+def _recover_non_atomic_connection(db_wrapper, query: str) -> None:
+    if db_wrapper is None or getattr(db_wrapper, "in_atomic_block", False):
+        return
+    connection = getattr(db_wrapper, "connection", None)
+    if not _connection_in_transaction(connection):
+        return
+    try:
+        connection.rollback()
+    except sqlite3.Error:
+        return
+
+
+def _is_inside_atomic(db_wrapper) -> bool:
+    return bool(db_wrapper is not None and getattr(db_wrapper, "in_atomic_block", False))
+
+
+def _abort_locked_database(query: str, params=None, *, elapsed: float, db_wrapper=None) -> None:
+    _recover_non_atomic_connection(db_wrapper, query)
+    raise sqlite3.OperationalError(
+        f"SQLite database remained locked for {elapsed:.0f}s while running {_format_sql(query, params)}; "
+        "aborting instead of retrying indefinitely",
+    )
+
+
+def _retry_locked_database(action, query: str, params=None, *, db_wrapper=None):
     attempt = 0
     started_at = time.monotonic()
     while True:
@@ -69,20 +112,34 @@ def _retry_locked_database(action, query: str, params=None):
             if not _is_locked_error(err):
                 raise
             attempt += 1
-            _log_locked_database(query, params, attempt=attempt, elapsed=time.monotonic() - started_at)
-            time.sleep(5.0)
+            elapsed = time.monotonic() - started_at
+            _log_locked_database(query, params, attempt=attempt, elapsed=elapsed)
+            # If SQLite raised while Django is in autocommit mode, do not keep a
+            # partially-open sqlite transaction around while waiting. Explicit
+            # transaction.atomic() callers keep their normal transaction boundary.
+            _recover_non_atomic_connection(db_wrapper, query)
+            if _is_inside_atomic(db_wrapper):
+                raise
+            if SQLITE_LOCK_RETRY_TIMEOUT and elapsed >= SQLITE_LOCK_RETRY_TIMEOUT:
+                _abort_locked_database(query, params, elapsed=elapsed, db_wrapper=db_wrapper)
+            time.sleep(SQLITE_LOCK_RETRY_INTERVAL)
 
 
 class SQLiteCursorWrapper(DjangoSQLiteCursorWrapper):
     def execute(self, query, params=None):
         if params is None:
-            return _retry_locked_database(lambda: super(SQLiteCursorWrapper, self).execute(query), query)
+            return _retry_locked_database(
+                lambda: super(SQLiteCursorWrapper, self).execute(query),
+                query,
+                db_wrapper=getattr(self, "db_wrapper", None),
+            )
         param_names = list(params) if isinstance(params, Mapping) else None
         converted_query = self.convert_query(query, param_names=param_names)
         return _retry_locked_database(
             lambda: super(DjangoSQLiteCursorWrapper, self).execute(converted_query, params),
             converted_query,
             params,
+            db_wrapper=getattr(self, "db_wrapper", None),
         )
 
     def executemany(self, query, param_list):
@@ -97,15 +154,18 @@ class SQLiteCursorWrapper(DjangoSQLiteCursorWrapper):
             lambda: super(DjangoSQLiteCursorWrapper, self).executemany(converted_query, param_list),
             converted_query,
             f"{len(param_list)} parameter sets",
+            db_wrapper=getattr(self, "db_wrapper", None),
         )
 
 
 class DatabaseWrapper(DjangoSQLiteDatabaseWrapper):
     def create_cursor(self, name=None):
-        return self.connection.cursor(factory=SQLiteCursorWrapper)
+        cursor = self.connection.cursor(factory=SQLiteCursorWrapper)
+        cursor.db_wrapper = self
+        return cursor
 
     def _commit(self):
-        return _retry_locked_database(lambda: super(DatabaseWrapper, self)._commit(), "COMMIT")
+        return _retry_locked_database(lambda: super(DatabaseWrapper, self)._commit(), "COMMIT", db_wrapper=self)
 
     def _rollback(self):
-        return _retry_locked_database(lambda: super(DatabaseWrapper, self)._rollback(), "ROLLBACK")
+        return _retry_locked_database(lambda: super(DatabaseWrapper, self)._rollback(), "ROLLBACK", db_wrapper=self)

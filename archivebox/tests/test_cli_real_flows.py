@@ -11,7 +11,6 @@ import sys
 import time
 from pathlib import Path
 
-import psutil
 import pytest
 
 from archivebox.core.models import ArchiveResult, Snapshot
@@ -19,7 +18,7 @@ from archivebox.crawls.models import Crawl
 from archivebox.machine.models import Process
 from archivebox.tests.test_orm_helpers import use_archivebox_db
 
-from .conftest import _find_system_browser
+from .conftest import _find_system_browser, wait_for_process
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -144,24 +143,6 @@ def _wait_for_pid_to_disappear(pid: int, *, timeout: float = 20.0) -> None:
             return
         time.sleep(0.1)
     raise AssertionError(f"PID {pid} is still running")
-
-
-def _wait_for_process(predicate, *, timeout: float = 20.0):
-    deadline = time.time() + timeout
-    last_seen = []
-    while time.time() < deadline:
-        last_seen = []
-        for proc in psutil.process_iter(["pid", "ppid", "cmdline"]):
-            try:
-                cmdline = proc.info.get("cmdline") or []
-                command = " ".join(cmdline)
-                last_seen.append(f"{proc.info.get('pid')} {proc.info.get('ppid')} {command}")
-                if predicate(proc, command):
-                    return proc
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                continue
-        time.sleep(0.2)
-    raise AssertionError("No matching live process found. Last seen:\n" + "\n".join(last_seen[-50:]))
 
 
 def _supervisor_pid_from_log(log_path: Path) -> int:
@@ -568,13 +549,13 @@ def test_live_daemonized_server_keeps_supervisord_owned_by_archivebox_parent(tmp
         assert result.returncode == 0, result.stderr or result.stdout
         _wait_for_port("127.0.0.1", port, timeout=30)
 
-        server_process = _wait_for_process(
+        server_process = wait_for_process(
             lambda _proc, command: "archivebox" in command and " server " in f" {command} " and bind_url.replace("http://", "") in command,
         )
-        supervisord = _wait_for_process(
+        supervisord = wait_for_process(
             lambda proc, command: proc.ppid() == server_process.pid and "supervisord" in command,
         )
-        _wait_for_process(
+        wait_for_process(
             lambda proc, command: proc.ppid() == supervisord.pid and "supervisord_watchdog" in command,
         )
 
@@ -603,7 +584,7 @@ def test_live_second_server_takes_over_existing_server_process(tmp_path, process
         assert first.poll() is None
         first_text = first_log.read_text(encoding="utf-8", errors="replace")
         second_text = second_log.read_text(encoding="utf-8", errors="replace")
-        assert "A newer archivebox process took over the runtime stack" in first_text
+        assert "A newer archivebox process took over the orchestrator, server" in first_text
         assert "Starting orchestrator, server" in second_text
 
         status = subprocess.run(
@@ -655,7 +636,7 @@ def test_live_repeated_server_startups_take_over_cleanly(tmp_path, process):
                 current_log = log_path.read_text(encoding="utf-8", errors="replace")
                 assert previous_server.poll() is None
                 assert _pid_is_alive(server_pids[index - 1])
-                assert "A newer archivebox process took over the runtime stack" in previous_log
+                assert "A newer archivebox process took over the orchestrator, server" in previous_log
                 assert "Starting orchestrator, server" in current_log
                 _wait_for_pid_to_disappear(daphne_pids[index - 1], timeout=15)
                 _wait_for_pid_to_disappear(runner_pids[index - 1], timeout=15)

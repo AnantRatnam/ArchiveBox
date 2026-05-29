@@ -5,7 +5,7 @@ import signal
 import subprocess
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 
@@ -100,6 +100,8 @@ def foreground_shutdown_signals(
     handled_signals: tuple[signal.Signals, ...] = (signal.SIGHUP, signal.SIGINT, signal.SIGTERM),
     *,
     first_signal_message: str | None = "\n[🛑] Got {signal_name}, stopping gracefully...\n",
+    on_signal: Callable[[signal.Signals], None] | None = None,
+    raise_on_first_signal: bool = True,
 ) -> Iterator[ShutdownSignalState]:
     """Install foreground signal handlers that print an immediate exit notice.
 
@@ -110,16 +112,30 @@ def foreground_shutdown_signals(
 
     global _active_shutdown_state
 
+    if threading.current_thread() is not threading.main_thread():
+        yield ShutdownSignalState()
+        return
+
     state = ShutdownSignalState()
     previous_active_state = _active_shutdown_state
     previous_handlers = {sig: signal.getsignal(sig) for sig in handled_signals}
 
     def raise_keyboard_interrupt(signum, _frame):
-        if state.signal_name is None:
-            state.signal_name = signal.Signals(signum).name
+        sig = signal.Signals(signum)
+        already_requested = state.signal_name is not None
+        if not already_requested:
+            state.signal_name = sig.name
             if first_signal_message is not None:
                 os.write(sys.stdout.fileno(), first_signal_message.format(signal_name=state.signal_name).encode())
-        raise KeyboardInterrupt
+        if on_signal is not None:
+            on_signal(sig)
+        # Foreground `archivebox add` uses the first signal to abort the active
+        # hook through the bus-facing runner code, then reserves the second
+        # signal for hard foreground-command shutdown. Server/update/run and
+        # other non-interactive commands raise immediately so their finally
+        # blocks can stop owned children without prompting.
+        if raise_on_first_signal or already_requested:
+            raise KeyboardInterrupt
 
     try:
         _active_shutdown_state = state

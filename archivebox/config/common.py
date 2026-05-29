@@ -6,6 +6,7 @@ import re
 import secrets
 import sys
 import shutil
+from functools import lru_cache
 from collections.abc import Mapping
 from datetime import timedelta
 from typing import Any, ClassVar, cast
@@ -431,6 +432,7 @@ def _plugin_config_model(plugin_schemas: PluginSchemaDocuments) -> type[BaseMode
     return build_config_model("ArchiveBoxPluginConfig", _plugin_config_properties(plugin_schemas))
 
 
+@lru_cache(maxsize=1)
 def _archivebox_config_input_names() -> set[str]:
     names = set(ArchiveBoxConfig.model_fields)
     for field in ArchiveBoxConfig.model_fields.values():
@@ -527,6 +529,7 @@ ArchiveBoxConfig = _build_archivebox_config_model(PLUGIN_CONFIG_SCHEMAS)
 def get_config(
     defaults: ConfigOverrides | None = None,
     overrides: ConfigOverrides | None = None,
+    base_config: ArchiveBoxBaseConfig | Mapping[str, object] | None = None,
     persona: Any = None,
     user: Any = None,
     crawl: Any = None,
@@ -573,11 +576,13 @@ def get_config(
         persona = crawl.resolve_persona()
 
     config_data: ConfigPayload = dict(defaults or {})
-    config_data.update(ArchiveBoxConfig().model_dump(mode="json"))
-
-    plugin_schemas = {
-        plugin_name: schema.get("properties", {}) for plugin_name, schema in PLUGIN_CONFIG_SCHEMAS.items() if isinstance(schema, dict)
-    }
+    if base_config is not None:
+        if isinstance(base_config, ArchiveBoxBaseConfig):
+            config_data.update(base_config.model_dump(mode="json"))
+        else:
+            config_data.update(dict(base_config))
+    else:
+        config_data.update(ArchiveBoxConfig().model_dump(mode="json"))
 
     scope_overrides: ConfigPayload = {}
 
@@ -589,8 +594,9 @@ def get_config(
     if persona is not None:
         scope_overrides.update(persona.get_derived_config())
 
-    if user is not None and user.config:
-        scope_overrides.update(user.config)
+    user_config = getattr(user, "config", None)
+    if user_config:
+        scope_overrides.update(user_config)
 
     if crawl is not None and crawl.config:
         scope_overrides.update(crawl.config)
@@ -615,6 +621,9 @@ def get_config(
     config_data.update(archivebox_scope_overrides)
 
     if resolve_plugins:
+        plugin_schemas = {
+            plugin_name: schema.get("properties", {}) for plugin_name, schema in PLUGIN_CONFIG_SCHEMAS.items() if isinstance(schema, dict)
+        }
         plugin_global_config = {key: str(value) if isinstance(value, Path) else value for key, value in config_data.items()}
         plugin_sections = resolve_plugin_configs(
             plugin_schemas,

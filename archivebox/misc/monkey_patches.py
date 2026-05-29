@@ -2,6 +2,7 @@ __package__ = "archivebox"
 
 
 import datetime
+import re
 import warnings
 
 from daphne import access
@@ -30,6 +31,9 @@ setattr(timezone, "utc", datetime.UTC)
 warnings.filterwarnings("ignore", category=SyntaxWarning, module="sonic")
 
 
+SENSITIVE_QUERY_PARAM_RE = re.compile(r"(?i)([?&](?:api_key|token|access_token|password|secret)=)([^&#\s]+)")
+
+
 # Make daphne log requests quieter and easier to read
 class ModifiedAccessLogGenerator(access.AccessLogGenerator):
     """Clutge workaround until daphne uses the Python logging framework. https://github.com/django/daphne/pull/473/files"""
@@ -48,6 +52,7 @@ class ModifiedAccessLogGenerator(access.AccessLogGenerator):
         return super().__call__(protocol, action, details)
 
     def write_entry(self, host, date, request, status=None, length=None, ident=None, user=None, time_taken=None):
+        request = SENSITIVE_QUERY_PARAM_RE.sub(r"\1[REDACTED]", request)
 
         # Ignore noisy requests to staticfiles / favicons / etc.
         if "GET /static/" in request:
@@ -55,6 +60,8 @@ class ModifiedAccessLogGenerator(access.AccessLogGenerator):
         if "GET /health/" in request:
             return
         if "GET /admin/live-progress/" in request and (time_taken is None or time_taken < 1.0):
+            return
+        if "GET /api/v1/crawls/crawl/" in request and "/files/chrome_screencast/latest.jpg" in request:
             return
         if "GET /admin/jsi18n/" in request:
             return

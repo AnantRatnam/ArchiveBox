@@ -10,6 +10,7 @@ import subprocess
 import pytest
 
 from archivebox.core.models import Snapshot
+from archivebox.tests.conftest import run_queued_crawls
 from archivebox.tests.test_orm_helpers import use_archivebox_db
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -39,6 +40,7 @@ def test_update_reconciles_existing_snapshots(tmp_path, process, disable_extract
         capture_output=True,
         env=disable_extractors_dict,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     # Run update - should reconcile and queue
     result = subprocess.run(
@@ -68,6 +70,7 @@ def test_update_specific_snapshot_by_filter(tmp_path, process, disable_extractor
         env=disable_extractors_dict,
         timeout=90,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     # Update with filter pattern (uses filter_patterns argument)
     result = subprocess.run(
@@ -92,6 +95,7 @@ def test_update_preserves_snapshot_count(tmp_path, process, disable_extractors_d
         env=disable_extractors_dict,
         timeout=90,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     # Count before update
     with use_archivebox_db(tmp_path):
@@ -125,6 +129,7 @@ def test_update_seals_migrated_snapshots(tmp_path, process, disable_extractors_d
         env=disable_extractors_dict,
         timeout=90,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     # Run update
     result = subprocess.run(

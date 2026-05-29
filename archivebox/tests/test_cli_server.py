@@ -8,6 +8,7 @@ import os
 import asyncio
 import json
 import signal
+import socket
 import subprocess
 import sys
 from datetime import datetime
@@ -60,6 +61,15 @@ def test_runner_worker_uses_current_interpreter():
     from archivebox.workers.supervisord_util import RUNNER_WORKER
 
     assert RUNNER_WORKER["command"] == f"{sys.executable} -m archivebox run --daemon"
+
+
+def test_daphne_worker_uses_default_application_close_timeout():
+    from archivebox.workers.supervisord_util import SERVER_WORKER
+
+    command = SERVER_WORKER("127.0.0.1", "8000")["command"]
+
+    assert "daphne" in command
+    assert "--application-close-timeout=0" not in command
 
 
 def test_reload_workers_use_current_interpreter_and_supervisord_managed_runner():
@@ -158,6 +168,50 @@ def test_sonic_daemon_event_handler_accepts_real_running_worker(archivebox_daemo
             await bus.destroy()
 
     asyncio.run(run_test())
+
+
+def test_supervisord_sync_does_not_start_duplicate_sonic_listener(tmp_path, process, db):
+    from abx_plugins.plugins.search_backend_sonic.daemon import get_sonic_supervisord_worker
+    from archivebox.tests.test_orm_helpers import use_archivebox_db
+    from archivebox.workers.supervisord_util import (
+        get_or_create_supervisord_process,
+        get_worker,
+        stop_existing_supervisord_process,
+        sync_supervisord_workers,
+    )
+
+    os.chdir(tmp_path)
+    assert process.returncode == 0, process.stderr
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    sonic_port = listener.getsockname()[1]
+    worker = get_sonic_supervisord_worker(
+        SimpleNamespace(
+            DATA_DIR=str(tmp_path),
+            SEARCH_BACKEND_ENGINE="sonic",
+            USE_INDEXING_BACKEND=True,
+            SEARCH_BACKEND_SONIC_HOST_NAME="127.0.0.1",
+            SEARCH_BACKEND_SONIC_PORT=sonic_port,
+            SEARCH_BACKEND_SONIC_PASSWORD="SecretPassword",
+            SONIC_BINARY="sonic",
+        ),
+    )
+    assert worker is not None
+
+    try:
+        with use_archivebox_db(tmp_path):
+            supervisor = get_or_create_supervisord_process(daemonize=False)
+            state = sync_supervisord_workers(supervisor, [(worker, False)], prune=True)
+            sonic_state = state["worker_sonic"]
+            assert sonic_state["statename"] != "RUNNING", sonic_state
+            assert get_worker(supervisor, "worker_sonic")["statename"] != "RUNNING"
+    finally:
+        listener.close()
+        with use_archivebox_db(tmp_path):
+            stop_existing_supervisord_process()
 
 
 def test_supervisord_takeover_stops_all_live_process_rows(tmp_path, process, db):

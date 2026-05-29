@@ -159,6 +159,14 @@ def validate_url_length(url: str) -> str:
     return url
 
 
+def validate_url(url: str) -> str:
+    url = validate_url_length((url or "").strip())
+    parsed = urlparse(url)
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
+        raise ValueError("URL must start with http:// or https:// and include a hostname.")
+    return url
+
+
 def parens_are_matched(string: str, open_char="(", close_char=")"):
     """check that all parentheses in a string are balanced and nested properly"""
     count = 0

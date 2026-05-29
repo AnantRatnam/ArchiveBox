@@ -16,6 +16,7 @@ from archivebox.config.common import get_config
 from archivebox.core.models import ArchiveResult, Snapshot
 from archivebox.crawls.models import Crawl
 from archivebox.machine.models import Machine
+from archivebox.tests.conftest import run_queued_crawls
 from archivebox.tests.test_orm_helpers import use_archivebox_db
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -194,6 +195,7 @@ def test_init_with_existing_data_preserves_snapshots(tmp_path, process, disable_
         capture_output=True,
         env=disable_extractors_dict,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     # Check snapshot was created
     with use_archivebox_db(tmp_path):
@@ -251,6 +253,7 @@ def test_init_ignores_unrecognized_archive_directories(tmp_path, process, disabl
         env=disable_extractors_dict,
         check=True,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
     (tmp_path / "archive" / "some_random_folder").mkdir(parents=True, exist_ok=True)
 
     result = subprocess.run(

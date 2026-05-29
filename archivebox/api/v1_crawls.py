@@ -117,9 +117,6 @@ def create_crawl(request: HttpRequest, data: CrawlCreateSchema):
         retry_at=timezone.now(),
         created_by=request.user if isinstance(request.user, User) else None,
     )
-    crawl.create_snapshots_from_urls()
-    if not crawl.snapshot_set.exists():
-        crawl.sm.seal()
     return crawl
 
 

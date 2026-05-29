@@ -1237,6 +1237,7 @@ class AddView(UserPassesTestMixin, FormView):
             created_by_id=created_by_id,
             config=config,
             persona_id=persona.id if persona else None,
+            retry_at=None if index_only else timezone.now(),
         )
 
         # 3. create a CrawlSchedule if schedule is provided
@@ -1252,15 +1253,12 @@ class AddView(UserPassesTestMixin, FormView):
                 created_by_id=created_by_id,
             )
             crawl.schedule = crawl_schedule
-            crawl.save(update_fields=["schedule"])
+            crawl.safe_update({"schedule": crawl_schedule}, refresh=False)
 
-        crawl.create_snapshots_from_urls()
-        if crawl.snapshot_set.exists():
+        if not index_only:
             from archivebox.services.runner import ensure_background_runner
 
             ensure_background_runner()
-        else:
-            crawl.sm.seal()
 
         return crawl
 
@@ -1544,7 +1542,7 @@ def live_progress_view(request):
                 return ""
             if now.timestamp() - frame_stat.st_mtime > 15:
                 return ""
-            return f"/api/v1/crawls/crawl/{crawl_id}/files/chrome_screencast/latest.jpg"
+            return f"/api/v1/crawls/crawl/{crawl_id}/files/chrome_screencast/latest.jpg?v={frame_stat.st_mtime_ns}"
 
         machine_id = Machine.current().id
         orchestrator_proc = (
@@ -1576,10 +1574,11 @@ def live_progress_view(request):
         orchestrator_pid = orchestrator_proc.pid if orchestrator_proc_running and orchestrator_proc else runner_worker_pid
 
         def count_statuses(queryset, statuses) -> dict[str, int]:
-            counts = {status: 0 for status in statuses}
-            for row in queryset.filter(status__in=statuses).values("status").annotate(count=Count("id")):
-                counts[row["status"]] = row["count"]
-            return counts
+            # Keep these as individual indexed COUNTs instead of GROUP BY over
+            # every matching row. On large SQLite data dirs, GROUP BY can scan
+            # and sort far more of the status index than the live-progress
+            # header needs before the runner gets CPU again.
+            return {status: queryset.filter(status=status).count() for status in statuses}
 
         # Get model counts by status
         crawl_status_counts = count_statuses(
@@ -1666,6 +1665,8 @@ def live_progress_view(request):
                 crawl["persona_id"] = str(crawl["persona_id"])
         persona_details_by_id: dict[str, dict[str, str]] = {}
         persona_details_by_name: dict[str, dict[str, str]] = {}
+        persona_objects_by_id = {}
+        persona_objects_by_name = {}
         persona_ids = {crawl["persona_id"] for crawl in active_crawls_list if crawl["persona_id"]}
         persona_names = {
             str((crawl["config"] or {}).get("DEFAULT_PERSONA") or "Default") for crawl in active_crawls_list if not crawl["persona_id"]
@@ -1673,17 +1674,21 @@ def live_progress_view(request):
         if persona_ids or persona_names:
             from archivebox.personas.models import Persona
 
-            for persona in Persona.objects.filter(Q(id__in=persona_ids) | Q(name__in=persona_names)).only("id", "name"):
+            for persona in Persona.objects.filter(Q(id__in=persona_ids) | Q(name__in=persona_names)).only("id", "name", "config"):
                 persona_details = {
                     "name": persona.name,
                     "admin_url": f"/admin/personas/persona/{persona.pk}/change/",
                 }
                 persona_details_by_id[str(persona.id)] = persona_details
                 persona_details_by_name[persona.name] = persona_details
+                persona_objects_by_id[str(persona.id)] = persona
+                persona_objects_by_name[persona.name] = persona
         active_crawl_ids = [crawl["id"] for crawl in active_crawls_list]
-        active_crawl_objects = {
-            str(crawl.id): crawl for crawl in Crawl.objects.filter(id__in=active_crawl_ids).select_related("created_by")
-        }
+        active_crawl_objects = {}
+        if active_crawl_ids:
+            for crawl_obj in Crawl.objects.filter(id__in=active_crawl_ids).select_related("created_by", "persona"):
+                crawl_obj._runtime_config = request_config
+                active_crawl_objects[str(crawl_obj.id)] = crawl_obj
         snapshot_counts_by_crawl: dict[str, dict[str, int]] = {str(crawl_id): {} for crawl_id in active_crawl_ids}
         cancelled_snapshot_counts_by_crawl: dict[str, int] = {str(crawl_id): 0 for crawl_id in active_crawl_ids}
         crawl_output_sizes_by_crawl: dict[str, int] = {str(crawl_id): 0 for crawl_id in active_crawl_ids}
@@ -2161,7 +2166,17 @@ def live_progress_view(request):
             persona_details = persona_details or persona_details_by_name.get(persona_name)
             crawl_output_size = crawl_output_sizes_by_crawl.get(crawl_id, 0)
             avg_snapshot_size = int(crawl_output_size / completed_snapshots) if completed_snapshots else 0
-            effective_crawl_config = get_config(crawl=active_crawl_objects[crawl_id])
+            crawl_obj = active_crawl_objects[crawl_id]
+            persona_obj = (
+                persona_objects_by_id.get(str(crawl["persona_id"])) if crawl["persona_id"] else persona_objects_by_name.get(persona_name)
+            )
+            effective_crawl_config = get_config(
+                base_config=request_config,
+                user=crawl_obj.created_by,
+                persona=persona_obj,
+                crawl=crawl_obj,
+                resolve_plugins=False,
+            )
             max_urls = int(effective_crawl_config.CRAWL_MAX_URLS or 0)
             crawl_max_size = int(effective_crawl_config.CRAWL_MAX_SIZE or 0)
             crawl_timeout = int(effective_crawl_config.CRAWL_TIMEOUT or 0)
@@ -2169,7 +2184,7 @@ def live_progress_view(request):
 
             # Check if retry_at is in the future (would prevent worker from claiming)
             retry_at_future = crawl["retry_at"] > now if crawl["retry_at"] else False
-            is_paused = active_crawl_objects[crawl_id].is_paused
+            is_paused = crawl_obj.is_paused
             seconds_until_retry = (
                 0 if is_paused else int((crawl["retry_at"] - now).total_seconds()) if crawl["retry_at"] and retry_at_future else 0
             )

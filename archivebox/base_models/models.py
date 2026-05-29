@@ -100,7 +100,12 @@ class ModelWithHealthStats(models.Model):
     def increment_health_stats(self, success: bool):
         """Atomically increment success or failure counter using F() expression."""
         field = "num_uses_succeeded" if success else "num_uses_failed"
-        type(self).objects.filter(pk=self.pk).update(**{field: F(field) + 1})
+        type(self).objects.filter(pk=self.pk).update(
+            **{
+                field: F(field) + 1,
+                "modified_at": timezone.now(),
+            },
+        )
 
 
 class ModelWithConfig(models.Model):
@@ -150,18 +155,34 @@ class ModelWithDeleteAfter(models.Model):
         return cls.objects.none()
 
     @classmethod
-    def delete_expired(cls, *, batch_size: int = 100) -> int:
-        missing_delete_at = list(cls.missing_delete_at_candidates().order_by("created_at", "pk")[:batch_size])
-        for obj in missing_delete_at:
-            if obj.set_delete_at_from_config():
-                cls.objects.filter(pk=obj.pk, delete_at__isnull=True).update(delete_at=obj.delete_at)
+    def delete_expired(cls, *, batch_size: int = 100, backfill_missing: bool = True) -> int:
+        if backfill_missing:
+            missing_delete_at = list(cls.missing_delete_at_candidates().order_by("created_at", "pk")[:batch_size])
+            for obj in missing_delete_at:
+                if obj.set_delete_at_from_config():
+                    cls.objects.filter(pk=obj.pk, delete_at__isnull=True).update(
+                        delete_at=obj.delete_at,
+                        modified_at=timezone.now(),
+                    )
 
-        queryset = cls.objects.filter(delete_at__isnull=False, delete_at__lte=timezone.now())
+        # Keep the expiration sweep anchored on delete_at. Some large tables
+        # have millions of final-status rows but almost no retained rows; adding
+        # the status filter before SQLite has narrowed by delete_at can make the
+        # runner scan the hot status index before it claims new work.
+        due_pks = list(
+            cls.objects.filter(delete_at__isnull=False, delete_at__lte=timezone.now())
+            .order_by("delete_at", "pk")
+            .values_list("pk", flat=True)[:batch_size],
+        )
+        if not due_pks:
+            return 0
+
+        queryset = cls.objects.filter(pk__in=due_pks)
         if cls.delete_after_final_statuses:
             queryset = queryset.filter(status__in=cls.delete_after_final_statuses)
 
         count = 0
-        expired = list(queryset.order_by("delete_at", "pk")[:batch_size])
+        expired = list(queryset.order_by("delete_at", "pk"))
         for obj in expired:
             obj.delete()
             count += 1

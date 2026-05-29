@@ -71,7 +71,7 @@ def test_binary_request_installs_env_binary_and_recovers_stale_cache(initialized
     assert first_abspath.resolve() == Path(shutil.which("rg") or "").resolve()
     assert first_abspath.is_relative_to(initialized_archive / "lib")
     assert (initialized_archive / "lib" / "env" / "bin" / name).exists()
-    assert (initialized_archive / "lib" / "bin" / "rg").exists()
+    assert (initialized_archive / "lib" / "bin" / name).exists()
     assert (initialized_archive / "machines" / machine_id / "binaries" / name / "index.jsonl").exists()
     assert binary_processes
     assert binary_processes[-1].status == Process.StatusChoices.EXITED
@@ -89,7 +89,7 @@ def test_binary_request_installs_env_binary_and_recovers_stale_cache(initialized
     assert binary.version in version_stdout
 
     first_abspath.unlink()
-    (initialized_archive / "lib" / "bin" / "rg").unlink(missing_ok=True)
+    (initialized_archive / "lib" / "bin" / name).unlink(missing_ok=True)
     _link_real_binary(bootstrap_bin_dir, name, source="rg")
 
     rerun_stdout, rerun_stderr, rerun_code = run_archivebox_cmd(

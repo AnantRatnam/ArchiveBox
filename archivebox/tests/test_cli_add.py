@@ -12,6 +12,7 @@ import pytest
 
 from archivebox.core.models import Snapshot
 from archivebox.crawls.models import Crawl
+from archivebox.tests.conftest import run_queued_crawls
 from archivebox.tests.test_orm_helpers import use_archivebox_db
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -32,7 +33,7 @@ def _find_snapshot_dir(data_dir: Path, snapshot_id: str) -> Path | None:
 
 
 def test_add_single_url_creates_snapshot_in_db(tmp_path, process, disable_extractors_dict):
-    """Test that adding a single URL creates a snapshot in the database."""
+    """Test that adding a single URL queues a crawl whose runner creates the snapshot."""
     os.chdir(tmp_path)
     result = subprocess.run(
         ["archivebox", "add", "--index-only", "--depth=0", "https://example.com"],
@@ -41,6 +42,7 @@ def test_add_single_url_creates_snapshot_in_db(tmp_path, process, disable_extrac
     )
 
     assert result.returncode == 0
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     with use_archivebox_db(tmp_path):
         snapshots = list(Snapshot.objects.values_list("url", flat=True))
@@ -49,8 +51,8 @@ def test_add_single_url_creates_snapshot_in_db(tmp_path, process, disable_extrac
     assert snapshots[0] == "https://example.com"
 
 
-def test_add_bg_creates_root_snapshot_rows_immediately(tmp_path, process, disable_extractors_dict):
-    """Background add should create root snapshots immediately so the queue is visible in the DB."""
+def test_add_bg_queues_crawl_without_creating_snapshots(tmp_path, process, disable_extractors_dict):
+    """Background add should leave root snapshot creation to the runner."""
     os.chdir(tmp_path)
     result = subprocess.run(
         ["archivebox", "add", "--bg", "--depth=0", "https://example.com"],
@@ -61,10 +63,49 @@ def test_add_bg_creates_root_snapshot_rows_immediately(tmp_path, process, disabl
     assert result.returncode == 0
 
     with use_archivebox_db(tmp_path):
-        snapshots = list(Snapshot.objects.values_list("url", "status"))
+        crawl = Crawl.objects.get()
+        snapshot_count = Snapshot.objects.count()
 
-    assert len(snapshots) == 1
-    assert snapshots[0] == ("https://example.com", "queued")
+    assert crawl.status == Crawl.StatusChoices.QUEUED
+    assert crawl.retry_at is None
+    assert snapshot_count == 0
+
+
+def test_add_index_only_rejected_urls_leave_empty_crawl_for_runner_to_seal(tmp_path, process, disable_extractors_dict):
+    """Index-only add only creates the crawl; rejected URLs are sealed by the runner."""
+    os.chdir(tmp_path)
+    result = subprocess.run(
+        [
+            "archivebox",
+            "add",
+            "--index-only",
+            "--depth=0",
+            "--url-denylist=example.com",
+            "https://example.com",
+        ],
+        capture_output=True,
+        env=disable_extractors_dict,
+    )
+
+    assert result.returncode == 0
+
+    with use_archivebox_db(tmp_path):
+        crawl = Crawl.objects.get()
+        snapshot_count = Snapshot.objects.count()
+
+    assert crawl.status == Crawl.StatusChoices.QUEUED
+    assert crawl.retry_at is None
+    assert snapshot_count == 0
+
+    run_queued_crawls(tmp_path, disable_extractors_dict)
+
+    with use_archivebox_db(tmp_path):
+        crawl = Crawl.objects.get()
+        snapshot_count = Snapshot.objects.count()
+
+    assert crawl.status == Crawl.StatusChoices.SEALED
+    assert crawl.retry_at is None
+    assert snapshot_count == 0
 
 
 def test_add_creates_crawl_record(tmp_path, process, disable_extractors_dict):
@@ -111,6 +152,7 @@ def test_add_multiple_urls_single_command(tmp_path, process, disable_extractors_
     )
 
     assert result.returncode == 0
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     with use_archivebox_db(tmp_path):
         snapshot_count = Snapshot.objects.count()
@@ -140,6 +182,7 @@ def test_add_from_file(tmp_path, process, disable_extractors_dict):
     )
 
     assert result.returncode == 0
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     with use_archivebox_db(tmp_path):
         crawl_count = Crawl.objects.count()
@@ -270,6 +313,7 @@ def test_add_duplicate_url_creates_separate_crawls(tmp_path, process, disable_ex
         capture_output=True,
         env=disable_extractors_dict,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     # Add same URL second time
     subprocess.run(
@@ -277,6 +321,7 @@ def test_add_duplicate_url_creates_separate_crawls(tmp_path, process, disable_ex
         capture_output=True,
         env=disable_extractors_dict,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     with use_archivebox_db(tmp_path):
         snapshot_count = Snapshot.objects.filter(url="https://example.com").count()
@@ -317,6 +362,7 @@ def test_add_creates_snapshot_output_directory(tmp_path, process, disable_extrac
         capture_output=True,
         env=disable_extractors_dict,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     with use_archivebox_db(tmp_path):
         snapshot_id = str(Snapshot.objects.values_list("id", flat=True).get())
@@ -391,8 +437,8 @@ def test_add_without_args_shows_usage(tmp_path, process):
     assert "usage" in combined.lower() or "url" in combined.lower()
 
 
-def test_add_index_only_skips_extraction(tmp_path, process, disable_extractors_dict):
-    """Test that --index-only flag skips extraction (fast)."""
+def test_add_index_only_queues_crawl_without_starting_runner(tmp_path, process, disable_extractors_dict):
+    """Test that --index-only creates only a queued crawl and returns fast."""
     os.chdir(tmp_path)
     result = subprocess.run(
         ["archivebox", "add", "--index-only", "--depth=0", "https://example.com"],
@@ -403,11 +449,13 @@ def test_add_index_only_skips_extraction(tmp_path, process, disable_extractors_d
 
     assert result.returncode == 0
 
-    # Snapshot should exist but archive results should be minimal
     with use_archivebox_db(tmp_path):
+        crawl = Crawl.objects.get()
         snapshot_count = Snapshot.objects.count()
 
-    assert snapshot_count == 1
+    assert crawl.status == Crawl.StatusChoices.QUEUED
+    assert crawl.retry_at is None
+    assert snapshot_count == 0
 
 
 def test_add_links_snapshot_to_crawl(tmp_path, process, disable_extractors_dict):
@@ -418,6 +466,7 @@ def test_add_links_snapshot_to_crawl(tmp_path, process, disable_extractors_dict)
         capture_output=True,
         env=disable_extractors_dict,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     with use_archivebox_db(tmp_path):
         crawl_id = Crawl.objects.values_list("id", flat=True).get()
@@ -434,6 +483,7 @@ def test_add_sets_snapshot_timestamp(tmp_path, process, disable_extractors_dict)
         capture_output=True,
         env=disable_extractors_dict,
     )
+    run_queued_crawls(tmp_path, disable_extractors_dict)
 
     with use_archivebox_db(tmp_path):
         timestamp = Snapshot.objects.values_list("timestamp", flat=True).get()

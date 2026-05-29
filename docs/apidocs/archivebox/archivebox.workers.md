@@ -23,7 +23,6 @@ archivebox.workers.management
 :maxdepth: 1
 
 archivebox.workers.worker
-archivebox.workers.tasks
 archivebox.workers.models
 archivebox.workers.apps
 archivebox.workers.admin

@@ -212,12 +212,12 @@
     #progress-monitor .screencast-frame img {
         display: block;
         width: 120%;
-        height: auto;
-        min-height: 100%;
-        max-width: none;
+        height: 100%;
         margin-left: -10%;
         object-fit: cover;
         object-position: top center;
+        background: #ffffff;
+        opacity: 1 !important;
     }
     #progress-monitor .screencast-placeholder {
         display: flex;
@@ -1105,7 +1105,15 @@
         const headers = { 'Content-Type': 'application/json' };
         const apiKey = getApiKey();
         if (apiKey) headers['X-ArchiveBox-API-Key'] = apiKey;
+        const csrfToken = getCSRFToken();
+        if (csrfToken) headers['X-CSRFToken'] = csrfToken;
         return headers;
+    }
+    function getCSRFToken() {
+        const input = document.querySelector('input[name="csrfmiddlewaretoken"]');
+        if (input && input.value) return input.value;
+        const cookie = document.cookie.split('; ').find(part => part.startsWith('csrftoken='));
+        return cookie ? decodeURIComponent(cookie.slice('csrftoken='.length)) : '';
     }
     function escapeHtml(value) {
         return String(value ?? '').replace(/[&<>"']/g, char => ({
@@ -1201,21 +1209,6 @@
             }
         }
         for (const crawl of data.active_crawls || []) {
-            if (crawl.screencast_url) {
-                return {
-                    type: 'frame',
-                    crawl,
-                    snapshot: {
-                        id: crawl.id,
-                        title: 'Live browser setup',
-                        url: 'Crawl setup',
-                        admin_url: `/admin/crawls/crawl/${crawl.id}/change/`,
-                        screencast_url: crawl.screencast_url,
-                        screencast_link: crawl.screencast_link,
-                    },
-                };
-            }
-
             if (fallback) continue;
 
             const setupPlugins = crawl.setup_plugins || [];
@@ -1262,15 +1255,61 @@
     }
 
     function updateScreencastPanel(data) {
-        const target = activeScreencastTarget(data);
+        const hasWork = (data.active_crawls || []).length > 0 ||
+            (data.crawls_pending || 0) > 0 ||
+            (data.crawls_started || 0) > 0 ||
+            (data.snapshots_pending || 0) > 0 ||
+            (data.snapshots_started || 0) > 0;
+        let target = activeScreencastTarget(data);
         if (!target) {
-            screencastPanel.classList.remove('visible');
-            screencastPanel.innerHTML = '';
-            return;
+            const currentFrame = screencastPanel.querySelector('.screencast-frame img');
+            if (
+                hasWork &&
+                screencastPanel.dataset.mode === 'frame' &&
+                currentFrame?.getAttribute('src') &&
+                currentFrame.complete &&
+                currentFrame.naturalWidth > 0
+            ) {
+                screencastPanel.classList.add('visible');
+                currentFrame.style.opacity = '1';
+                return;
+            }
+            if (!hasWork) {
+                screencastPanel.classList.remove('visible');
+                screencastPanel.dataset.mode = '';
+                screencastPanel.innerHTML = '';
+                return;
+            }
+            target = {
+                type: 'placeholder',
+                state: 'not-launched',
+                icon: '▯',
+                title: 'Waiting for browser',
+                subtitle: 'Live preview will appear as soon as Chrome publishes a page frame.',
+            };
+        }
+        if (hasWork) {
+            screencastPanel.classList.add('visible');
         }
         if (target.type === 'placeholder') {
+            const currentFrame = screencastPanel.querySelector('.screencast-frame img');
+            if (
+                screencastPanel.dataset.mode === 'frame' &&
+                currentFrame?.getAttribute('src') &&
+                currentFrame.complete &&
+                currentFrame.naturalWidth > 0
+            ) {
+                screencastPanel.classList.add('visible');
+                currentFrame.style.opacity = '1';
+                return;
+            }
             const crawlUrl = target.crawl?.id ? `/admin/crawls/crawl/${target.crawl.id}/change/` : '/admin/';
-            screencastPanel.classList.add('visible');
+            const placeholderKey = [target.state, target.title, target.subtitle, crawlUrl].join('|');
+            if (screencastPanel.dataset.mode === 'placeholder' && screencastPanel.dataset.key === placeholderKey) {
+                return;
+            }
+            screencastPanel.dataset.mode = 'placeholder';
+            screencastPanel.dataset.key = placeholderKey;
             screencastPanel.innerHTML = `
                 <a class="screencast-frame" href="${escapeAttr(crawlUrl)}" title="Open crawl admin">
                     <span class="screencast-placeholder ${escapeAttr(target.state)}">
@@ -1294,19 +1333,57 @@
         const linkUrl = snapshot.screencast_link || snapshot.view_url || adminUrl;
         const titleText = snapshot.title || formatUrl(snapshot.full_url || snapshot.url);
         const urlText = snapshot.full_url || snapshot.url || '';
-        screencastPanel.classList.add('visible');
-        screencastPanel.innerHTML = `
-            <a class="screencast-frame" href="${escapeAttr(linkUrl)}" title="Open active snapshot">
-                <img src="${escapeAttr(snapshot.screencast_url)}" alt="" decoding="async" onerror="this.closest('.screencast-panel').classList.remove('visible')">
-            </a>
-            <a class="screencast-caption" href="${escapeAttr(adminUrl)}" title="Open snapshot admin">
-                <span class="screencast-dot"></span>
-                <span class="screencast-text">
-                    <span class="screencast-title">${escapeHtml(titleText)}</span>
-                    <span class="screencast-url">${escapeHtml(urlText)}</span>
-                </span>
-            </a>
-        `;
+        if (screencastPanel.dataset.mode !== 'frame') {
+            screencastPanel.dataset.mode = 'frame';
+            screencastPanel.dataset.key = '';
+            screencastPanel.innerHTML = `
+                <a class="screencast-frame" href="" title="Open active snapshot">
+                    <img src="" alt="" decoding="async">
+                </a>
+                <a class="screencast-caption" href="" title="Open snapshot admin">
+                    <span class="screencast-dot"></span>
+                    <span class="screencast-text">
+                        <span class="screencast-title"></span>
+                        <span class="screencast-url"></span>
+                    </span>
+                </a>
+            `;
+        }
+        const frameLink = screencastPanel.querySelector('.screencast-frame');
+        const captionLink = screencastPanel.querySelector('.screencast-caption');
+        const img = screencastPanel.querySelector('.screencast-frame img');
+        const titleEl = screencastPanel.querySelector('.screencast-title');
+        const urlEl = screencastPanel.querySelector('.screencast-url');
+        frameLink.href = linkUrl;
+        captionLink.href = adminUrl;
+        titleEl.textContent = titleText;
+        urlEl.textContent = urlText;
+        if (img.getAttribute('src')) {
+            img.style.opacity = '1';
+            screencastPanel.classList.add('visible');
+        }
+        if (img.dataset.src !== snapshot.screencast_url || !img.getAttribute('src')) {
+            const newUrl = snapshot.screencast_url;
+            img.dataset.src = newUrl;
+            const nextFrame = new Image();
+            nextFrame.decoding = 'async';
+            nextFrame.onload = () => {
+                if (img.dataset.src === newUrl) {
+                    img.style.opacity = '1';
+                    img.src = newUrl;
+                    screencastPanel.classList.add('visible');
+                }
+            };
+            nextFrame.onerror = () => {
+                if (img.dataset.src === newUrl) {
+                    img.dataset.src = '';
+                    if (!img.getAttribute('src')) {
+                        screencastPanel.classList.remove('visible');
+                    }
+                }
+            };
+            nextFrame.src = newUrl;
+        }
     }
 
     function renderExtractor(extractor) {
@@ -1623,7 +1700,7 @@
             dot.classList.remove('stopped', 'idle');
             dot.classList.add('running');
             text.textContent = 'Running';
-        } else if (hasActivity && hasBlockedCrawl) {
+        } else if (hasActivity && hasBlockedCrawl && !data.orchestrator_running) {
             dot.classList.remove('idle', 'running');
             dot.classList.add('stopped');
             text.textContent = 'Runner stopped';
@@ -1745,23 +1822,17 @@
 
     function cancelCrawl(crawlId, btn) {
         if (!crawlId) return;
-        if (!getApiKey()) {
-            console.warn('API key unavailable for this session.');
-            setActionButtonState(btn, false);
-            return;
-        }
         setActionButtonState(btn, true);
 
         fetch(buildApiUrl(`/api/v1/crawls/crawl/${crawlId}`), {
             method: 'PATCH',
             headers: buildApiHeaders(),
+            credentials: 'same-origin',
             body: JSON.stringify({ action: 'cancel' }),
         })
-        .then(response => response.json())
-        .then(data => {
-            if (data.error) {
-                console.error('Cancel crawl error:', data.error);
-            }
+        .then(response => response.json().then(data => ({response, data})))
+        .then(({response, data}) => {
+            if (!response.ok) throw new Error(data.detail || data.error || `HTTP ${response.status}`);
             fetchProgress();
         })
         .catch(error => {
@@ -1772,16 +1843,12 @@
 
     function setCrawlPaused(crawlId, action, btn) {
         if (!crawlId) return;
-        if (!getApiKey()) {
-            console.warn('API key unavailable for this session.');
-            setActionButtonState(btn, false);
-            return;
-        }
         setActionButtonState(btn, true);
 
         fetch(buildApiUrl(`/api/v1/crawls/crawl/${crawlId}`), {
             method: 'PATCH',
             headers: buildApiHeaders(),
+            credentials: 'same-origin',
             body: JSON.stringify({ action: action }),
         })
         .then(response => response.json())
@@ -1799,16 +1866,12 @@
 
     function cancelSnapshot(snapshotId, btn) {
         if (!snapshotId) return;
-        if (!getApiKey()) {
-            console.warn('API key unavailable for this session.');
-            setActionButtonState(btn, false);
-            return;
-        }
         setActionButtonState(btn, true);
 
         fetch(buildApiUrl(`/api/v1/core/snapshot/${snapshotId}`), {
             method: 'PATCH',
             headers: buildApiHeaders(),
+            credentials: 'same-origin',
             body: JSON.stringify({ action: 'cancel' }),
         })
         .then(response => response.json())

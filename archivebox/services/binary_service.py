@@ -160,4 +160,4 @@ class BinaryService(BaseService):
             update_fields=["abspath", "version", "sha256", "binproviders", "binprovider", "overrides", "status", "retry_at", "modified_at"],
         )
         lib_bin_dir = await sync_to_async(lambda: get_config().LIB_BIN_DIR, thread_sensitive=True)()
-        await sync_to_async(binary.symlink_to_lib_bin, thread_sensitive=True)(lib_bin_dir)
+        await sync_to_async(binary.symlink_to_lib_bin_after_commit, thread_sensitive=True)(lib_bin_dir)
