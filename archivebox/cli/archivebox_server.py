@@ -111,7 +111,7 @@ def _parse_and_validate_bind_spec(spec: str) -> tuple[str, str]:
     return host, port
 
 
-def _print_server_startup_warnings(config, host: str, *, base_url_explicit: bool) -> None:
+def _print_server_startup_warnings(config, host: str, port: str) -> None:
     """Print startup-time security / routing warnings for the server command.
 
     Runs only from ``archivebox server`` so other entry points (manage shell,
@@ -130,7 +130,32 @@ def _print_server_startup_warnings(config, host: str, *, base_url_explicit: bool
         )
         print()
 
-    if base_url_explicit:
+    # ``config.BASE_URL`` is the merged value (env > Machine.config > file >
+    # default), which is what the running server will actually use. Earlier we
+    # gated the "BASE_URL not set" warning on ``os.environ["BASE_URL"]`` alone,
+    # which fired noisily when the user pinned BASE_URL via Machine.config /
+    # ArchiveBox.conf instead of via env.
+    base_url = (config.BASE_URL or "").strip()
+    if base_url:
+        # BASE_URL is pinned. The only thing left to surface is a port
+        # mismatch — bind port ≠ BASE_URL's explicit port usually means the
+        # operator started the server with the wrong ``archivebox server PORT``
+        # argument (or forgot to update one side after moving the listener).
+        # A reverse-proxy setup typically omits the port in BASE_URL
+        # (``https://archive.example.com``), so we only warn when BASE_URL
+        # carries an explicit port — otherwise we'd nag every proxy deployment.
+        from urllib.parse import urlparse
+
+        try:
+            base_port = urlparse(base_url).port
+        except (ValueError, TypeError):
+            base_port = None
+        if base_port is not None and str(base_port) != str(port):
+            print(
+                f"[yellow][!] BASE_URL ({base_url}) port {base_port} does not match the port the server is running on ({port}). "
+                "Make sure this is intentional![/yellow]",
+            )
+            print()
         return
 
     # If the user is upgrading from 0.7.3 and already had
@@ -273,9 +298,10 @@ def server(
         return
 
     os.environ["BIND_ADDR"] = f"{host}:{port}"
-    from archivebox.core.host_utils import build_admin_url
+    from archivebox.core.host_utils import get_base_url
 
-    admin_url = build_admin_url("/admin/")
+    base_url = get_base_url().rstrip("/")
+    admin_url = f"{base_url}/admin/"
 
     from archivebox.workers.supervisord_util import (
         active_supervisord_runtime_components,
@@ -298,10 +324,10 @@ def server(
     else:
         print("[green][+] Starting ArchiveBox webserver...[/green]")
     print(
-        f"    [blink][green]>[/green][/blink] Starting ArchiveBox webserver on [deep_sky_blue4][link=http://{host}:{port}]http://{host}:{port}[/link][/deep_sky_blue4]",
+        f"    [blink][green]>[/green][/blink] Starting ArchiveBox webserver on [dim]BIND_ADDR[/dim] [deep_sky_blue4][link=http://{host}:{port}]http://{host}:{port}[/link][/deep_sky_blue4]",
     )
     print(
-        f"    [green]>[/green] Log in to ArchiveBox Admin UI on [deep_sky_blue3][link={admin_url}]{admin_url}[/link][/deep_sky_blue3]",
+        f"    [green]>[/green] Log in to ArchiveBox Admin UI on [dim]BASE_URL [/dim] [deep_sky_blue3][link={admin_url}]{admin_url}[/link][/deep_sky_blue3]",
     )
     print("    > Writing ArchiveBox error log to ./logs/errors.log")
     print()
@@ -309,11 +335,7 @@ def server(
     # Reload config after we've set os.environ["BIND_ADDR"] above so the
     # security-mode + base-url warnings see the effective values.
     runtime_config = get_config()
-    _print_server_startup_warnings(
-        runtime_config,
-        host,
-        base_url_explicit=bool(os.environ.get("BASE_URL", "").strip()),
-    )
+    _print_server_startup_warnings(runtime_config, host, port)
     bind_url = f"http://{host}:{port}"
     command = current_command(Process.TypeChoices.SERVER, data_dir=config.DATA_DIR, url=bind_url)
 

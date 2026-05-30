@@ -211,6 +211,16 @@ class Machine(ModelWithHealthStats):
             _CURRENT_MACHINE = None
         if _CURRENT_MACHINE:
             if timezone.now() < _CURRENT_MACHINE.modified_at + timedelta(seconds=MACHINE_RECHECK_INTERVAL):
+                # One-time-per-process reconciliation between ArchiveBox.conf
+                # and Machine.config. Fast-path: bool check + early-return when
+                # the sync has already run, so the cached-machine return path
+                # stays sub-microsecond.
+                try:
+                    from archivebox.config.collection import sync_machine_and_file
+
+                    sync_machine_and_file(_CURRENT_MACHINE)
+                except Exception:
+                    pass
                 return _CURRENT_MACHINE
             else:
                 _CURRENT_MACHINE = None
@@ -252,7 +262,17 @@ class Machine(ModelWithHealthStats):
                         "modified_at",
                     ],
                 )
-        return cls._sanitize_config(_CURRENT_MACHINE)
+        machine = cls._sanitize_config(_CURRENT_MACHINE)
+        # Same one-time sync as the cached-return path. Triggers here on the
+        # very first ``Machine.current()`` call in a process before any
+        # cached return can occur.
+        try:
+            from archivebox.config.collection import sync_machine_and_file
+
+            sync_machine_and_file(_CURRENT_MACHINE)
+        except Exception:
+            pass
+        return machine
 
     @classmethod
     def _sanitize_config(cls, machine: Machine) -> Machine:
@@ -270,6 +290,7 @@ class Machine(ModelWithHealthStats):
         Convert Machine model instance to a JSON-serializable dict.
         """
         from archivebox.config import VERSION
+        from archivebox.config.common import redact_sensitive_config
 
         return {
             "type": "Machine",
@@ -288,7 +309,7 @@ class Machine(ModelWithHealthStats):
             "os_kernel": self.os_kernel,
             "os_release": self.os_release,
             "stats": self.stats,
-            "config": self.config or {},
+            "config": redact_sensitive_config(self.config),
         }
 
     @staticmethod
@@ -320,10 +341,27 @@ class Machine(ModelWithHealthStats):
         # never moves forward on the cached object even when the row is
         # updated in the DB, so without this we'd keep serving stale
         # ``machine.config`` (incl. ``BASE_URL``) until the worker restarts.
+        update_fields = kwargs.get("update_fields")
         super().save(*args, **kwargs)
         global _CURRENT_MACHINE
         if _CURRENT_MACHINE is not None and _CURRENT_MACHINE.pk == self.pk:
             _CURRENT_MACHINE = None
+
+        # Mirror Machine.config into ArchiveBox.conf so the two stores stay
+        # 1:1. Skipped when ``update_fields`` is set and doesn't touch
+        # ``config`` (binary autodetection + ``hostname``/``stats`` refreshes
+        # save fields we don't need to disk-mirror, which keeps hot paths
+        # zero-IO). Errors during mirroring are swallowed: the DB write
+        # already succeeded and we don't want a config-file write hiccup to
+        # turn a routine save into a 500.
+        if update_fields is not None and "config" not in update_fields:
+            return
+        try:
+            from archivebox.config.collection import mirror_machine_config_to_file
+
+            mirror_machine_config_to_file(self.config)
+        except Exception:
+            pass
 
 
 class NetworkInterfaceManager(models.Manager):

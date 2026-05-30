@@ -373,7 +373,15 @@ class PluginConfigFormMixin:
         default_value = prop_schema.get("default", "")
         fallback_key = prop_schema.get("x-fallback")
         default_display = f"{{{fallback_key}}}" if fallback_key else default_value
-        is_sensitive = bool(prop_schema.get("x-sensitive"))
+        # A field is sensitive if either the schema explicitly marks it
+        # (``x-sensitive``) or the key name matches our credential heuristic
+        # (``*TOKEN*`` / ``*SECRET*`` / ``*API_KEY*`` / ``*APIKEY*``). The
+        # plugin grid lives on user-facing pages, so we redact the value,
+        # render a password input, and on empty submit we preserve the
+        # previously-saved value in ``clean_plugin_config_overrides`` below.
+        from archivebox.config.common import is_sensitive_config_key
+
+        is_sensitive = bool(prop_schema.get("x-sensitive")) or is_sensitive_config_key(config_key)
         input_value = "" if is_sensitive else _jsonish(current_value)
         field_kind = "text"
         input_type = "text"
@@ -441,7 +449,9 @@ class PluginConfigFormMixin:
                 if "array" in _schema_types(prop_schema) and isinstance(prop_schema.get("enum"), list):
                     raw_value = self.data.getlist(input_name)
 
-                if prop_schema.get("x-sensitive") and raw_value == "":
+                from archivebox.config.common import is_sensitive_config_key
+
+                if (prop_schema.get("x-sensitive") or is_sensitive_config_key(config_key)) and raw_value == "":
                     continue
 
                 try:

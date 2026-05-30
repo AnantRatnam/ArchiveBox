@@ -51,6 +51,14 @@ class PersonaSchema(Schema):
     def resolve_created_by_username(obj) -> str:
         return obj.created_by.username
 
+    @staticmethod
+    def resolve_config(obj):
+        # Redact credential values so REST responses don't leak the raw
+        # token/secret/api-key the operator stored in Persona.config.
+        from archivebox.config.common import redact_sensitive_config
+
+        return redact_sensitive_config(obj.config)
+
 
 class PersonaSyncResponseSchema(Schema):
     success: bool

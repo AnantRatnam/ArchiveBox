@@ -1173,12 +1173,21 @@ class AddView(UserPassesTestMixin, FormView):
         required_search_plugin = f"search_backend_{request_config.SEARCH_BACKEND_ENGINE}".strip()
         can_override_crawl_config = self._can_override_crawl_config()
         plugin_configs = discover_plugin_configs() if can_override_crawl_config else {}
+        from archivebox.config.common import is_sensitive_config_key
+
         sensitive_keys = {
             str(config_key)
             for schema in plugin_configs.values()
             for config_key, prop_schema in (schema.get("properties") or {}).items()
             if isinstance(prop_schema, dict) and prop_schema.get("x-sensitive")
         }
+
+        def _drop_sensitive(items):
+            # Filter by both the schema-level ``x-sensitive`` marker (above) and
+            # the key-name heuristic so a persona/effective config can never
+            # ship credential values to the public ``/add`` UI.
+            return {str(key): value for key, value in items if str(key) not in sensitive_keys and not is_sensitive_config_key(str(key))}
+
         public_persona_config_keys = {
             "CRAWL_MAX_CONCURRENT_SNAPSHOTS",
             "DELETE_AFTER",
@@ -1193,8 +1202,8 @@ class AddView(UserPassesTestMixin, FormView):
         for persona in persona_queryset.order_by("name"):
             effective_config = get_config(persona=persona)
             if can_override_crawl_config:
-                raw_config = {str(key): value for key, value in (persona.config or {}).items() if str(key) not in sensitive_keys}
-                effective_config_json = {str(key): value for key, value in effective_config.items() if str(key) not in sensitive_keys}
+                raw_config = _drop_sensitive((persona.config or {}).items())
+                effective_config_json = _drop_sensitive(effective_config.items())
                 binary_urls = get_plugin_config_binary_urls(effective_config)
             else:
                 raw_config = {}

@@ -407,6 +407,7 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
         Convert Crawl model instance to a JSON-serializable dict.
         """
         from archivebox.config import VERSION
+        from archivebox.config.common import redact_sensitive_config
 
         return {
             "type": "Crawl",
@@ -415,7 +416,7 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
             "urls": self.urls,
             "status": self.status,
             "max_depth": self.max_depth,
-            "config": self.config or {},
+            "config": redact_sensitive_config(self.config),
             "tags_str": self.tags_str,
             "label": self.label,
             "created_at": self.created_at.isoformat() if self.created_at else None,

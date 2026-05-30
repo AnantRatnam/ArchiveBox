@@ -62,6 +62,47 @@ def permissions_from_legacy_public_flags(raw_config: Mapping[str, object]) -> st
     return None
 
 
+_SENSITIVE_CONFIG_KEY_NEEDLES = ("TOKEN", "SECRET", "API_KEY", "APIKEY", "PASSWORD")
+SENSITIVE_CONFIG_VALUE_REDACTED = "********"
+
+
+def is_sensitive_config_key(key: str) -> bool:
+    """True if a config key names a credential and must be write-only in the UI.
+
+    Matches any key whose uppercase form contains ``TOKEN``, ``SECRET``,
+    ``API_KEY``, ``APIKEY``, or ``PASSWORD`` — covers ``SECRET_KEY``,
+    ``OPENAI_API_KEY``, ``TWOCAPTCHA_APIKEY``, ``GITHUB_TOKEN``,
+    ``ADMIN_PASSWORD``, etc. Centralized here so the KeyValueWidget
+    (Machine/Crawl/Snapshot/Persona admin forms), the plugin config grid,
+    REST API responses, and any future surface that round-trips raw config
+    values all agree on which keys to redact.
+    """
+    upper = (key or "").upper()
+    return any(needle in upper for needle in _SENSITIVE_CONFIG_KEY_NEEDLES)
+
+
+def redact_sensitive_config(config: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return a copy of ``config`` with credential values replaced by ``********``.
+
+    Used wherever a config dict crosses an API/export/debug-dump boundary. The
+    widget-side write-only treatment handles the form-render path; this helper
+    handles every JSON-response path (REST schemas, ``to_json`` exports, admin
+    debug views, etc.). Empty values are passed through unchanged so callers
+    can still tell "unset" from "set-but-hidden."
+    """
+    if config is None:
+        return {}
+    if not isinstance(config, Mapping):
+        return {}
+    redacted: dict[str, Any] = {}
+    for key, value in config.items():
+        if is_sensitive_config_key(str(key)) and value not in (None, ""):
+            redacted[key] = SENSITIVE_CONFIG_VALUE_REDACTED
+        else:
+            redacted[key] = value
+    return redacted
+
+
 def rprint(*args, file=None, **kwargs):
     console = _STDERR_CONSOLE if file is sys.stderr else _STDOUT_CONSOLE
     console.print(*args, **kwargs)

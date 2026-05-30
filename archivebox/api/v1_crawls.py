@@ -62,6 +62,14 @@ class CrawlSchema(Schema):
         return username if isinstance(username, str) else str(user)
 
     @staticmethod
+    def resolve_config(obj):
+        # Redact credential values so REST responses can never leak the raw
+        # token/secret/api-key that the operator stored in Crawl.config.
+        from archivebox.config.common import redact_sensitive_config
+
+        return redact_sensitive_config(obj.config)
+
+    @staticmethod
     def resolve_snapshots(obj, context):
         if bool(getattr(context["request"], "with_snapshots", False)):
             return obj.snapshot_set.all().distinct()

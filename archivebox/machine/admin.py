@@ -9,6 +9,7 @@ from django.db.models.functions import Coalesce, Now
 from django.shortcuts import redirect
 from django.utils import timezone
 from django.utils.html import format_html
+from django.utils.safestring import mark_safe
 from django_object_actions import action
 
 from archivebox.base_models.admin import BaseModelAdmin, ConfigEditorMixin
@@ -70,7 +71,7 @@ def _format_process_duration_seconds(started_at, ended_at) -> str:
 
 class MachineAdmin(ConfigEditorMixin, BaseModelAdmin):
     list_display = (
-        "id",
+        "id_display",
         "created_at",
         "hostname",
         "ips",
@@ -137,6 +138,17 @@ class MachineAdmin(ConfigEditorMixin, BaseModelAdmin):
             {
                 "fields": ("config",),
                 "classes": ("card", "wide"),
+                "description": mark_safe(
+                    '<div style="padding:8px 10px;margin-bottom:8px;background:#fff7ed;'
+                    "border:1px solid #fed7aa;border-left:4px solid #f59e0b;border-radius:4px;"
+                    'color:#7c2d12;font-size:12px;line-height:1.45;">'
+                    "<b>Heads up:</b> saving here also rewrites "
+                    "<code>data/ArchiveBox.conf</code> on disk to match — the two stores are "
+                    "kept in 1:1 sync, so any keys you remove here will be removed from the file "
+                    "too. Edits to <code>ArchiveBox.conf</code> (or <code>archivebox config --set</code>) "
+                    "propagate back into this field on the next request."
+                    "</div>",
+                ),
             },
         ),
         (
@@ -166,6 +178,36 @@ class MachineAdmin(ConfigEditorMixin, BaseModelAdmin):
         h = obj.health
         color = "green" if h >= 80 else "orange" if h >= 50 else "red"
         return format_html('<span style="color: {};">{}</span>', color, h)
+
+    @admin.display(description="ID", ordering="id")
+    def id_display(self, machine):
+        # Highlight the row representing the machine that ``Machine.current()``
+        # resolves to in this process — that's the one whose ``config`` is
+        # actually being applied at runtime. Important to surface here because
+        # a collection can accumulate stale Machine rows from prior hosts (VM
+        # snapshots, container rebuilds, hostname changes), and editing the
+        # wrong one silently produces "I set BASE_URL but it didn't stick."
+        from archivebox.machine.models import Machine
+
+        try:
+            current_id = str(Machine.current().pk)
+        except Exception:
+            current_id = None
+
+        machine_id = str(machine.pk)
+        short_id = machine_id[:8]
+        if current_id and machine_id == current_id:
+            return format_html(
+                '<span style="display:inline-block;background:#16a34a;color:#fff;'
+                "padding:1px 6px;border-radius:3px;font-weight:800;font-size:11px;"
+                'margin-right:6px;letter-spacing:0.3px;">★ CURRENT</span>'
+                '<code style="font-weight:700;">{}</code>',
+                short_id,
+            )
+        return format_html(
+            '<code style="color:#888;">{}</code>',
+            short_id,
+        )
 
 
 class NetworkInterfaceAdmin(BaseModelAdmin):

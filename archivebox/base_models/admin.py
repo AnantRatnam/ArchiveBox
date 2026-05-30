@@ -722,12 +722,34 @@ class KeyValueWidget(forms.Widget):
         return mark_safe(html)
 
     def _render_row(self, widget_id: str, key: str, value: str) -> str:
+        from archivebox.config.common import is_sensitive_config_key
+
+        # Sensitive keys (``*TOKEN*``, ``*SECRET*``, ``*API_KEY*``, ``*APIKEY*``) are
+        # rendered write-only: the input is a password field with a placeholder
+        # showing the value is set, but the raw value is NEVER sent to the browser.
+        # When the user submits the form with the field left blank, the
+        # ``ConfigEditorMixin.save_model`` hook re-merges the previously-saved
+        # value so leaving it untouched is a no-op rather than a destructive clear.
+        is_sensitive = is_sensitive_config_key(key)
+        has_value = bool(value)
+        if is_sensitive:
+            input_type = "password"
+            rendered_value = ""
+            placeholder = (
+                "•••••• (saved — enter new value to replace, clear by deleting row)" if has_value else "value (will be saved write-only)"
+            )
+            extra_attrs = ' autocomplete="off" data-sensitive="1"' + (' data-had-value="1"' if has_value else "")
+        else:
+            input_type = "text"
+            rendered_value = self._escape(value)
+            placeholder = "value"
+            extra_attrs = ""
         return f'''
             <div class="key-value-row" style="margin-bottom: 6px;">
                 <div class="kv-inputs" style="display: flex; gap: 8px; align-items: center;">
                     <input type="text" class="kv-key" value="{self._escape(key)}" placeholder="KEY" list="{widget_id}_keys"
                            style="flex: 1; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; font-family: monospace; font-size: 12px;">
-                    <input type="text" class="kv-value" value="{self._escape(value)}" placeholder="value"
+                    <input type="{input_type}" class="kv-value" value="{rendered_value}" placeholder="{self._escape(placeholder)}"{extra_attrs}
                            style="flex: 2; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; font-family: monospace; font-size: 12px;">
                     <datalist class="kv-value-options"></datalist>
                     <button type="button" onclick="removeKeyValueRow_{widget_id}(this)"
@@ -770,6 +792,37 @@ class ConfigEditorMixin(admin.ModelAdmin):
         if db_field.name == "config":
             kwargs["widget"] = KeyValueWidget()
         return super().formfield_for_dbfield(db_field, request, **kwargs)
+
+    def save_model(self, request: HttpRequest, obj, form, change):
+        """Preserve write-only redacted credentials on save.
+
+        The KeyValueWidget renders sensitive keys (``*TOKEN*``, ``*SECRET*``,
+        ``*API_KEY*``, ``*APIKEY*``) with an empty value + password input —
+        the real value never leaves the server. On submit, an empty value
+        for a sensitive key that was previously set means "leave untouched",
+        not "clear it." We honor that here by re-merging the stored value
+        before the row is written. Explicitly removing the row in the UI
+        still clears it (the key is gone from the submitted JSON, so there's
+        nothing to merge over).
+        """
+        from archivebox.config.common import is_sensitive_config_key
+
+        if change and obj.pk and getattr(obj, "config", None) is not None:
+            try:
+                stored = type(obj).objects.filter(pk=obj.pk).values_list("config", flat=True).first() or {}
+            except Exception:
+                stored = {}
+            if isinstance(stored, dict):
+                new_config = dict(obj.config or {})
+                for key, new_value in list(new_config.items()):
+                    if not is_sensitive_config_key(key):
+                        continue
+                    if new_value not in (None, "") and new_value != "********":
+                        continue
+                    if key in stored:
+                        new_config[key] = stored[key]
+                obj.config = new_config
+        super().save_model(request, obj, form, change)
 
 
 class BaseModelAdmin(DjangoObjectActions, admin.ModelAdmin):
