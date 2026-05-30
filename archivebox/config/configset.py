@@ -39,10 +39,27 @@ class IniConfigSettingsSource(PydanticBaseSettingsSource):
     def get_field_value(self, field: Any, field_name: str) -> tuple[Any, str, bool]:
         config_vals = self._load_config_file()
         field_value = config_vals.get(field_name.upper())
-        return field_value, field_name, False
+        # Mark complex-typed fields (``dict``/``list``) so the parent
+        # ``prepare_field_value`` JSON-decodes the INI string before pydantic
+        # validates against the dict/list annotation. Without this, e.g.
+        # ``ABX_INSTALL_CACHE`` arrives as a raw JSON string and pydantic
+        # rejects it with ``Input should be a valid dictionary``.
+        value_is_complex = bool(field_value is not None and self.field_is_complex(field))
+        return field_value, field_name, value_is_complex
 
     def __call__(self) -> dict[str, Any]:
-        return self._load_config_file()
+        # Use the per-field path (``get_field_value`` + ``prepare_field_value``)
+        # so complex types get JSON-decoded. The previous flat-dict return
+        # skipped pydantic-settings' complex-value handling entirely.
+        result: dict[str, Any] = {}
+        for field_name, field in self.settings_cls.model_fields.items():
+            value, key, value_is_complex = self.get_field_value(field, field_name)
+            if value is None:
+                continue
+            prepared = self.prepare_field_value(field_name, field, value, value_is_complex)
+            if prepared is not None:
+                result[key] = prepared
+        return result
 
     def _load_config_file(self) -> dict[str, Any]:
         try:
