@@ -1678,7 +1678,7 @@
 
 
     <body class="{% if is_popup %}popup {% endif %}{% block bodyclass %}{% endblock %}" data-admin-utc-offset="{% now "Z" %}">
-        {% security_mode_banner %}
+        {% system_warnings_banner %}
         {% include 'progressbar.html' %}
 
         <div id="container">

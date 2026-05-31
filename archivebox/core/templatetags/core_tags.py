@@ -324,20 +324,62 @@ def result_list_tag(parser, token):
     )
 
 
-@register.inclusion_tag("security_mode_banner.html", takes_context=True)
-def security_mode_banner(context):
-    """Render the top-of-page warning banner for one of two conditions:
+_LOW_DISK_THRESHOLD_GB = 1.0
+_HIGH_MEMORY_THRESHOLD_PCT = 95.0
+_HIGH_LOAD_MULTIPLE = 3  # 15-min loadavg > 3 * cpu_count
+_HEALTH_CHECK_INTERVAL_SECONDS = 30
+_health_cache: dict = {"checked_at": 0.0, "stats": {}}
 
-    1. ``mode="unconfigured"`` — ``BASE_URL`` is empty. The server is running
-       on whatever host the operator happens to be hitting; CSRF auto-derive
-       and the request-host fallback in ``get_base_url`` keep things working,
-       but the operator should pin ``BASE_URL`` explicitly so links stay
-       stable across hosts (and the misconfig banner goes away).
-    2. ``mode="unsafe"`` — ``SERVER_SECURITY_MODE`` is a non-subdomain mode.
-       Archived pages share an origin with privileged routes.
 
-    Both conditions can hold; we show the ``unconfigured`` banner first
-    because pinning ``BASE_URL`` is the more immediately actionable fix.
+def _machine_health_stats() -> dict:
+    """Cached wrapper around the Machine-admin stats util.
+
+    The Machine list/change pages already render disk / mem / load via
+    ``archivebox.machine.detect.get_host_stats()`` — we reuse the same call so
+    the banner thresholds line up 1:1 with what's shown on /admin/machine/.
+    Cached for 30s because the inclusion tag fires on every page render and
+    ``get_host_stats`` shells into several psutil probes.
+    """
+    import time
+
+    now = time.monotonic()
+    if _health_cache["stats"] and (now - _health_cache["checked_at"]) < _HEALTH_CHECK_INTERVAL_SECONDS:
+        return _health_cache["stats"]
+
+    try:
+        from archivebox.machine.detect import get_host_stats
+
+        stats = get_host_stats() or {}
+    except Exception:
+        stats = {}
+
+    _health_cache["checked_at"] = now
+    _health_cache["stats"] = stats
+    return stats
+
+
+@register.inclusion_tag("system_warnings_banner.html", takes_context=True)
+def system_warnings_banner(context):
+    """Render the top-of-page warning banner for one of the conditions below,
+    in priority order (highest first):
+
+    1. ``mode="unconfigured"``— ``BASE_URL`` is empty. Security/correctness
+       issue: until it's pinned, generated URLs can echo any Host the client
+       sends, and admin/web/api routing has no canonical anchor.
+    2. ``mode="unsafe"``      — ``SERVER_SECURITY_MODE`` is a non-subdomain
+       mode. Archived pages share an origin with privileged routes.
+    3. ``mode="low_disk"``    — ``DATA_DIR`` has <1 GiB free; new archive
+       jobs will start failing on ENOSPC.
+    4. ``mode="high_memory"`` — virtual memory utilization at/above 95%; the
+       host is one OOM-kill from a crash.
+    5. ``mode="high_load"``   — 15-minute load average exceeds 3 × CPU count
+       (the kernel's own sustained-load EMA, so no rolling buffer of ours is
+       needed).
+
+    Config/security warnings come first because they affect correctness +
+    security and need explicit operator action; host-health warnings come
+    after and reuse ``machine.detect.get_host_stats`` (the same function that
+    populates the Machine admin page), cached for 30s.
     """
     config = context.get("CONFIG")
     if config is None:
@@ -349,6 +391,30 @@ def security_mode_banner(context):
         return _unconfigured_banner_context(context.get("request"))
     if not config.USES_SUBDOMAIN_ROUTING:
         return {"mode": "unsafe"}
+
+    stats = _machine_health_stats()
+    free_gb = stats.get("disk_data_free_gb")
+    if isinstance(free_gb, (int, float)) and free_gb < _LOW_DISK_THRESHOLD_GB:
+        return {"mode": "low_disk", "free_gb": f"{free_gb:.2f}"}
+
+    mem_pct = stats.get("mem_virt_used_pct")
+    if isinstance(mem_pct, (int, float)) and mem_pct >= _HIGH_MEMORY_THRESHOLD_PCT:
+        return {"mode": "high_memory", "mem_pct": f"{mem_pct:.1f}"}
+
+    cpu_load = stats.get("cpu_load") or ()
+    cpu_count = stats.get("cpu_count") or 1
+    # ``cpu_load`` is the (1min, 5min, 15min) tuple from psutil.getloadavg();
+    # we take the 15-min figure because the operator's threshold was
+    # "sustained for 15min" and the kernel already maintains that EMA.
+    load_15 = cpu_load[2] if isinstance(cpu_load, (list, tuple)) and len(cpu_load) >= 3 else None
+    if isinstance(load_15, (int, float)) and load_15 > _HIGH_LOAD_MULTIPLE * cpu_count:
+        return {
+            "mode": "high_load",
+            "load_15": f"{load_15:.2f}",
+            "cpu_count": cpu_count,
+            "load_threshold": _HIGH_LOAD_MULTIPLE * cpu_count,
+        }
+
     return {"mode": ""}
 
 
