@@ -1412,8 +1412,15 @@ class WebAddView(AddView):
             if snapshot:
                 return redirect(f"/{snapshot.url_path}")
 
+        request_host = (request.get_host() or "").lower()
+        if (
+            request.user.is_authenticated
+            and not _get_request_config(request).PUBLIC_ADD_VIEW
+            and host_matches(request_host, get_web_host())
+        ):
+            return redirect(build_admin_url(request.get_full_path(), request=request))
+
         if not self.test_func():
-            request_host = (request.get_host() or "").lower()
             if host_matches(request_host, get_web_host()):
                 return redirect(build_admin_url(request.get_full_path(), request=request))
             if host_matches(request_host, get_admin_host()):

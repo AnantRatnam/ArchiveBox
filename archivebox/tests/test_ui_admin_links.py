@@ -138,7 +138,7 @@ def test_archiveresult_admin_links_plugin_and_process():
     process_html = str(admin.process_link(result))
 
     assert "/admin/environment/plugins/builtin.wget/" in plugin_html
-    assert f"/admin/machine/process/{process.id}/change" in process_html
+    assert f"/admin/machine/process/{process.id.hex}/change" in process_html
 
 
 def test_deleting_binary_and_process_records_preserves_results():
