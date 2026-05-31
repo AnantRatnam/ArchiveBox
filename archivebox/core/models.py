@@ -2693,6 +2693,7 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         )
 
         if count + legacy_result_count > 0:
+            self.refresh_from_db(fields=["modified_at", "retry_at", "status"])
             self.queue_for_extraction(when=now)
 
         return count + legacy_result_count
