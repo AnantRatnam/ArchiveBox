@@ -193,7 +193,7 @@ class ServerConfig(BaseConfigSet):
     CSRF_TRUSTED_ORIGINS: str = Field(default="")
     SERVER_SECURITY_MODE: str = Field(default="safe-subdomains-fullreplay")
 
-    SNAPSHOTS_PER_PAGE: int = Field(default=40)
+    SNAPSHOTS_PER_PAGE: int = Field(default=50, ge=1)
     FOOTER_INFO: str = Field(
         default="Content is hosted for personal archiving purposes only.  Contact server owner for any takedown requests.",
     )

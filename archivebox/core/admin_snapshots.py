@@ -568,7 +568,7 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
                 requested_per_page = 200
             self.list_per_page = min(max(200, requested_per_page), 500)
         else:
-            self.list_per_page = min(max(50, request.archivebox_config.SNAPSHOTS_PER_PAGE), 500)
+            self.list_per_page = request.archivebox_config.SNAPSHOTS_PER_PAGE
         extra_context = extra_context or {}
         extra_context["embedded_changelist"] = embedded_changelist
         extra_context["CONFIG"] = request.archivebox_config
