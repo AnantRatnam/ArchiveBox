@@ -216,7 +216,7 @@ def add(
     #    - Repeat until max_depth reached
 
     if bg:
-        # Background mode: just queue work and return (background runner via server will pick it up)
+        # Background mode: just queue work and return (background runner via server will pick it up).
         print(
             "[yellow]\\[*] URLs queued. The background runner will process them (run `archivebox server` or `archivebox run --daemon` if not already running).[/yellow]",
         )

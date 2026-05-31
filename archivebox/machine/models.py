@@ -1608,6 +1608,18 @@ class Process(ModelWithDeleteAfter, models.Model):
     def _detect_process_type(cls) -> str:
         """
         Detect the type of the current process from sys.argv.
+
+        ``archivebox add --bg`` is a fire-and-forget queue write — it does not
+        run the runner or own the runtime stack — so it's classified as CLI
+        instead of ADD. The ADD process_type is reserved for the foreground
+        ``archivebox add`` flow that actually takes over the runtime stack via
+        ``current_command(TypeChoices.ADD, ...)``. Misclassifying ``--bg`` as
+        ADD makes ``runtime_stack_owner`` treat it as a newer stack owner for
+        the few seconds it's alive, knocks the running ``archivebox server``
+        out of leadership, and triggers a supervisord tear-down + respawn
+        cycle (~5s of dead time per add). Detecting bg here at insert time
+        avoids any race window where the row briefly exists as ADD before a
+        higher-level demotion.
         """
         argv_str = " ".join(sys.argv).lower()
 
@@ -1620,6 +1632,8 @@ class Process(ModelWithDeleteAfter, models.Model):
         elif "archivebox update" in argv_str:
             return cls.TypeChoices.UPDATE
         elif "archivebox add" in argv_str:
+            if "--bg" in sys.argv:
+                return cls.TypeChoices.CLI
             return cls.TypeChoices.ADD
         elif "archivebox search" in argv_str or "archivebox list" in argv_str:
             return cls.TypeChoices.SEARCH

@@ -754,11 +754,28 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
             self.ensure_legacy_archive_symlink()
             self.ensure_crawl_symlink()
             crawl = self.crawl
-            existing_urls = {url for _raw_line, url in crawl._iter_url_lines() if url}
-            if crawl.url_passes_filters(self.url, snapshot=self) and self.url not in existing_urls:
+            if not crawl.url_passes_filters(self.url, snapshot=self):
+                return
+            # Sibling snapshots in the same crawl race to append into the
+            # same ``crawl.urls`` text field; reload + retry on CAS miss
+            # so concurrent appends don't clobber each other.
+            for _ in range(16):
+                crawl.refresh_from_db()
+                existing_urls = {url for _raw_line, url in crawl._iter_url_lines() if url}
+                if self.url in existing_urls:
+                    return
                 urls = f"{crawl.urls}\n{self.url}"
-                crawl.safe_update({"urls": urls, "modified_at": timezone.now()}, refresh=False)
-                crawl.urls = urls
+                if crawl.safe_update({"urls": urls, "modified_at": timezone.now()}, refresh=False):
+                    crawl.urls = urls
+                    return
+            import logging as _logging
+
+            _logging.getLogger("archivebox.crawls").error(
+                "Snapshot %s could not append its URL to crawl %s.urls: %s",
+                self.id,
+                crawl.id,
+                self.url,
+            )
 
         # get_or_create/update_or_create wrap save() in atomic(); defer filesystem
         # work and crawl maintenance so SQLite commits before touching the disk.
