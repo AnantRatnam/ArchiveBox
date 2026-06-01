@@ -83,15 +83,25 @@ check_platforms || (recreate_builder && check_platforms) || exit 1
 # docker login ghcr.io --username=pirate
 
 echo "[^] Uploading docker image"
-mkdir -p "$HOME/.cache/docker/archivebox"
+DOCKER_CACHE_DIR="$HOME/.cache/docker/archivebox"
+DOCKER_CACHE_OUT="$(mktemp -d "$HOME/.cache/docker/archivebox.new.XXXXXX")"
+mkdir -p "$DOCKER_CACHE_DIR"
+cleanup_docker_cache_out() {
+   rm -rf "$DOCKER_CACHE_OUT"
+}
+trap cleanup_docker_cache_out EXIT
 
 # https://docs.docker.com/build/cache/backends/
 # shellcheck disable=SC2068
 docker buildx build \
    --platform "$SELECTED_PLATFORMS" \
-   --cache-from type=local,src="$HOME/.cache/docker/archivebox" \
-   --cache-to type=local,compression=zstd,mode=min,oci-mediatypes=true,dest="$HOME/.cache/docker/archivebox" \
+   --cache-from type=local,src="$DOCKER_CACHE_DIR" \
+   --cache-to type=local,compression=zstd,mode=min,oci-mediatypes=true,dest="$DOCKER_CACHE_OUT" \
    --push . ${FULL_TAG_NAMES[@]}   
+
+rm -rf "$DOCKER_CACHE_DIR"
+mv "$DOCKER_CACHE_OUT" "$DOCKER_CACHE_DIR"
+trap - EXIT
 
 echo "[^] Verifying pushed Docker manifests include: $SELECTED_PLATFORMS"
 for TAG_NAME in "${TAG_NAMES[@]}"; do
