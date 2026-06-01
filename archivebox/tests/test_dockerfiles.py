@@ -52,6 +52,11 @@ def _archivebox_install_commands(dockerfile: Path) -> list[str]:
     return re.findall(r"archivebox install ([^\\\n]+)", text)
 
 
+def _bare_archivebox_install_commands(dockerfile: Path) -> list[str]:
+    text = dockerfile.read_text()
+    return re.findall(r"archivebox install(?:\s+2>&1|\s*\\)", text)
+
+
 def _abx_dl_plugin_install_targets(dockerfile: Path) -> set[str]:
     text = dockerfile.read_text()
     commands = re.findall(r"abx-dl plugins --install((?: \\\n|[^\n])*)", text)
@@ -81,3 +86,8 @@ def test_dockerfile_build_installs_disable_release_age_gate() -> None:
         text = (REPO_ROOT / dockerfile_name).read_text()
         assert "ABXPKG_POSTINSTALL_SCRIPTS=True" in text
         assert "ABXPKG_MIN_RELEASE_AGE=0" in text
+
+
+def test_dockerfiles_do_not_queue_optional_binaries_during_validation() -> None:
+    for dockerfile_name in ("Dockerfile", "Dockerfile.multistage"):
+        assert _bare_archivebox_install_commands(REPO_ROOT / dockerfile_name) == []

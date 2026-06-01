@@ -394,7 +394,6 @@ RUN (echo -e "\n\n[√] Finished Docker build successfully. Saving build summary
 RUN chmod +x "$CODE_DIR"/bin/*.sh \
     && chown -R "$DEFAULT_PUID:$DEFAULT_PGID" "$LIB_DIR" \
     && chmod g+w "$TMP_DIR" "$LIB_DIR" "$LIB_DIR"/bin "$PLAYWRIGHT_BROWSERS_PATH" \
-    && ABXPKG_INSTALL_TIMEOUT=600 ABXPKG_POSTINSTALL_SCRIPTS=True ABXPKG_MIN_RELEASE_AGE=0 TIMEOUT=600 gosu "$ARCHIVEBOX_USER" archivebox install 2>&1 | tee -a /VERSION.txt \
     && ABXPKG_INSTALL_TIMEOUT=600 ABXPKG_POSTINSTALL_SCRIPTS=True ABXPKG_MIN_RELEASE_AGE=0 TIMEOUT=600 gosu "$ARCHIVEBOX_USER" archivebox install archivewebpage defuddle forumdl gallerydl git istilldontcareaboutcookies liteparse mercury papersdl parse_rss_urls readability search_backend_sonic opendataloader search_backend_ripgrep 2>&1 | tee -a /VERSION.txt \
     && gosu "$ARCHIVEBOX_USER" archivebox version 2>&1 | tee -a /VERSION.txt \
     && find /venv "$CODE_DIR" "$LIB_DIR" "$DATA_DIR" -type d -name __pycache__ -prune -exec rm -rf {} + \
