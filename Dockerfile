@@ -70,6 +70,7 @@ ENV TZ=UTC \
     PYTHONIOENCODING=UTF-8 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_ONLY_BINARY=aiohttp \
     npm_config_loglevel=error
 
 # Language Version config
