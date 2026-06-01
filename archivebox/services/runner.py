@@ -51,7 +51,7 @@ from abx_dl.orchestrator import (
     setup_services as setup_abx_services,
 )
 from abx_dl.services.process_service import ProcessService as HookProcessService
-from abx_dl.services.binary_service import PluginBinariesService
+from abx_dl.services.binary_service import PluginBinariesService, split_abxpkg_binary_request_overrides
 from abx_dl.services.snapshot_service import SnapshotService as HookSnapshotService
 from abx_dl.cli import LiveBusUI
 from abxbus import BaseEvent
@@ -708,7 +708,12 @@ class CrawlRunner:
         from archivebox.config.common import get_config
 
         snapshot = Snapshot.objects.select_related("crawl").get(id=snapshot_id)
-        config = get_config(crawl=snapshot.crawl, snapshot=snapshot, include_machine=False)
+        config = get_config(
+            crawl=snapshot.crawl,
+            snapshot=snapshot,
+            base_config=self.base_config or None,
+            include_machine=False,
+        )
         config["CRAWL_DIR"] = self.crawl_output_dir
         config["SNAP_DIR"] = str(snapshot.output_dir)
         extra_context: dict[str, Any] = {}
@@ -1187,18 +1192,21 @@ async def _run_binary(binary_id: str) -> None:
     )
     await _emit_machine_config(bus, config=config, derived_config=derived_config)
 
+    native_overrides, override_extra_context = split_abxpkg_binary_request_overrides(binary.overrides or None)
+
     try:
         await bus.emit(
             BinaryRequestEvent(
                 name=binary.name,
                 binproviders=binary.binproviders,
-                overrides=binary.overrides or None,
+                overrides=native_overrides or None,
                 extra_context={
                     "plugin_name": "archivebox",
                     "hook_name": "archivebox_binary_run",
                     "output_dir": str(binary.output_dir),
                     "binary_id": str(binary.id),
                     "machine_id": str(binary.machine_id),
+                    **override_extra_context,
                 },
             ),
         ).now(first_result=True)

@@ -104,6 +104,35 @@ def test_enqueue_discovered_snapshots_refreshes_crawl_limits(tmp_path):
     ]
 
 
+@pytest.mark.django_db(transaction=True)
+def test_snapshot_payload_uses_crawl_persona_runtime_dirs():
+    from archivebox.base_models.models import get_or_create_system_user_pk
+    from archivebox.crawls.models import Crawl
+    from archivebox.core.models import Snapshot
+    from archivebox.personas.models import Persona
+    from archivebox.services.runner import CrawlRunner
+
+    persona = Persona.objects.create(name="RuntimePersona")
+    crawl = Crawl.objects.create(
+        urls="https://example.com",
+        persona_id=persona.id,
+        created_by_id=get_or_create_system_user_pk(),
+    )
+    snapshot = Snapshot.objects.create(url="https://example.com", crawl=crawl)
+
+    runner = CrawlRunner(crawl)
+    runner.load_run_state()
+    payload = runner.load_snapshot_payload(str(snapshot.id))
+    config = payload["config"]
+
+    assert Path(config["CHROME_USER_DATA_DIR"]).is_relative_to(crawl.output_dir)
+    assert Path(config["CHROME_DOWNLOADS_DIR"]).is_relative_to(crawl.output_dir)
+    assert Path(config["CHROME_USER_DATA_DIR"]).name == "chrome_profile"
+    assert Path(config["CHROME_DOWNLOADS_DIR"]).name == "chrome_downloads"
+    assert Path(config["CRAWL_DIR"]) == crawl.output_dir
+    assert Path(config["SNAP_DIR"]) == snapshot.output_dir
+
+
 def test_ensure_background_runner_skips_under_pytest_guard():
     from archivebox.services.runner import ensure_background_runner
 

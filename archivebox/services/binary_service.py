@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,8 @@ class ArchiveBoxDBBinaryCacheBackend:
             return None
 
         existing = await Binary.objects.filter(machine=machine, name=binary_name).afirst()
+        persisted_overrides = _persisted_overrides_for_request(request)
+        native_overrides = request.overrides or {}
         cache_invalidated = False
         if existing and existing.status == Binary.StatusChoices.INSTALLED:
             changed = False
@@ -49,8 +52,8 @@ class ArchiveBoxDBBinaryCacheBackend:
             if requested_binproviders and existing.binproviders != requested_binproviders:
                 existing.binproviders = requested_binproviders
                 changed = True
-            if request.overrides and existing.overrides != request.overrides:
-                existing.overrides = request.overrides
+            if persisted_overrides and existing.overrides != persisted_overrides:
+                existing.overrides = persisted_overrides
                 changed = True
             if changed:
                 existing.status = Binary.StatusChoices.QUEUED
@@ -62,7 +65,7 @@ class ArchiveBoxDBBinaryCacheBackend:
                 machine=machine,
                 name=binary_name,
                 binproviders=_binproviders_to_str(request.binproviders),
-                overrides=request.overrides or {},
+                overrides=persisted_overrides,
                 status=Binary.StatusChoices.QUEUED,
             )
 
@@ -80,7 +83,7 @@ class ArchiveBoxDBBinaryCacheBackend:
                 installed.retry_at = None
                 await installed.asave(update_fields=["status", "retry_at", "modified_at"])
                 installed = None
-            if installed is not None and request.overrides and installed.overrides != request.overrides:
+            if installed is not None and persisted_overrides and installed.overrides != persisted_overrides:
                 installed.status = Binary.StatusChoices.QUEUED
                 installed.retry_at = None
                 await installed.asave(update_fields=["status", "retry_at", "modified_at"])
@@ -102,7 +105,7 @@ class ArchiveBoxDBBinaryCacheBackend:
                 await installed.asave(update_fields=["status", "retry_at", "modified_at"])
                 return None
 
-        provider = _provider_for_name(provider_name, installed.name, installed.overrides)
+        provider = _provider_for_name(provider_name, installed.name, native_overrides)
         binary_env = BinProvider.build_exec_env(providers=[provider], base_env={}) if provider is not None else {}
         provider_names = _provider_names(installed.binproviders or request.binproviders or "env")
         return AbxBinary.model_validate(
@@ -110,7 +113,7 @@ class ArchiveBoxDBBinaryCacheBackend:
                 "name": request.name,
                 "description": request.description,
                 "binproviders": _providers_for_names(provider_names),
-                "overrides": installed.overrides or request.overrides or {},
+                "overrides": native_overrides,
                 "loaded_binprovider": provider,
                 "loaded_abspath": installed.abspath,
                 "loaded_version": installed.version or None,
@@ -150,7 +153,7 @@ class ArchiveBoxDBBinaryCacheBackend:
         )
         if binary.loaded_binprovider is not None:
             existing.binprovider = binary.loaded_binprovider.name
-        existing.overrides = request.overrides if request is not None and request.overrides is not None else binary.overrides
+        existing.overrides = _persisted_overrides_for_request(request) if request is not None else binary.overrides
         existing.status = Binary.StatusChoices.INSTALLED
         existing.retry_at = None
         await existing.asave(
@@ -302,3 +305,12 @@ def _provider_for_name(provider_name: str, binary_name: str, overrides: dict[str
             overrides={binary_name: provider_overrides},
         )
     return provider
+
+
+def _persisted_overrides_for_request(request: BinaryRequestEvent | None) -> dict[str, Any]:
+    if request is None:
+        return {}
+    raw_overrides = request.extra_context.get("raw_overrides")
+    if isinstance(raw_overrides, Mapping):
+        return dict(raw_overrides)
+    return dict(request.overrides or {})

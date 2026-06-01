@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import uuid
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,62 @@ def _runtime_env(data_dir: Path, bin_dir: Path) -> dict[str, str]:
         "ABXPKG_LIB_DIR": str(data_dir / "lib"),
         "PATH": os.pathsep.join([str(bin_dir), "/usr/bin", "/bin", "/usr/sbin", "/sbin"]),
     }
+
+
+def test_binary_request_preserves_raw_overrides_in_db_while_using_native_event():
+    from abxpkg.binary_service import BinaryCacheService, BinaryEvent, BinaryRequestEvent, BinaryService
+    from abx_dl.orchestrator import create_bus
+    from archivebox.services.binary_service import ArchiveBoxDBBinaryCacheBackend
+
+    machine = Machine.current()
+    raw_overrides = {
+        "pip": {
+            "install_args": ["imagesize>=2.0.0"],
+            "module_name": "imagesize",
+        },
+    }
+    binary = Binary.objects.create(
+        machine=machine,
+        name="sh",
+        abspath="/bin/sh",
+        version="1.0.0",
+        binprovider="env",
+        binproviders="env,pip",
+        overrides=raw_overrides,
+        status=Binary.StatusChoices.INSTALLED,
+    )
+    bus = create_bus(name=f"test_binary_raw_overrides_{uuid.uuid4().hex[:8]}")
+    BinaryCacheService(bus, backend=ArchiveBoxDBBinaryCacheBackend())
+    BinaryService(bus)
+    binary_events: list[BinaryEvent] = []
+
+    async def on_BinaryEvent(event: BinaryEvent) -> None:
+        binary_events.append(event)
+
+    bus.on(BinaryEvent, on_BinaryEvent)
+
+    async def run_event() -> None:
+        await bus.emit(
+            BinaryRequestEvent(
+                name="sh",
+                binproviders="env,pip",
+                overrides={"pip": {"install_args": ["imagesize>=2.0.0"]}},
+                extra_context={
+                    "raw_overrides": raw_overrides,
+                    "provider_metadata": {"pip": {"module_name": "imagesize"}},
+                },
+            ),
+        ).now()
+        await bus.wait_until_idle()
+
+    asyncio.run(run_event())
+
+    binary.refresh_from_db()
+    assert binary.status == Binary.StatusChoices.INSTALLED
+    assert binary.overrides == raw_overrides
+    assert binary_events
+    assert binary_events[-1].overrides == {"pip": {"install_args": ["imagesize>=2.0.0"]}}
+    assert binary_events[-1].extra_context["raw_overrides"] == raw_overrides
 
 
 def test_binary_request_installs_env_binary_and_recovers_stale_cache(initialized_archive, tmp_path):
