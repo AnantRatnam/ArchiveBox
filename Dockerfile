@@ -372,7 +372,10 @@ RUN (echo -e "\n\n[√] Finished Docker build successfully. Saving build summary
 RUN chmod +x "$CODE_DIR"/bin/*.sh \
     && chown -R "$DEFAULT_PUID:$DEFAULT_PGID" "$LIB_DIR" \
     && chmod g+w "$TMP_DIR" "$LIB_DIR" "$PLAYWRIGHT_BROWSERS_PATH" \
-    && TIMEOUT=600 gosu "$ARCHIVEBOX_USER" archivebox install 2>&1 | tee -a /VERSION.txt \
+    && CHROME_BINARY="$(abxpkg load --binproviders=playwright chromium | awk 'NF {print $2; exit}')" \
+    && export CHROME_BINARY \
+    && test -x "$CHROME_BINARY" \
+    && "$CHROME_BINARY" --version | tee -a /VERSION.txt \
     && gosu "$ARCHIVEBOX_USER" archivebox version 2>&1 | tee -a /VERSION.txt \
     && find /venv "$CODE_DIR" "$LIB_DIR" "$DATA_DIR" -type d -name __pycache__ -prune -exec rm -rf {} + \
     && find /venv "$CODE_DIR" "$LIB_DIR" "$DATA_DIR" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
