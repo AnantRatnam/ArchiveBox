@@ -74,3 +74,10 @@ def test_dockerfile_prewarms_stable_plugin_dependencies_without_optional_captcha
     targets = _abx_dl_plugin_install_targets(REPO_ROOT / "Dockerfile")
     assert _REQUIRED_DOCKER_PREINSTALL_TARGETS <= targets
     assert not (_DOCKER_PREINSTALL_EXCLUDED_TARGETS & targets)
+
+
+def test_dockerfile_build_installs_disable_release_age_gate() -> None:
+    for dockerfile_name in ("Dockerfile", "Dockerfile.multistage"):
+        text = (REPO_ROOT / dockerfile_name).read_text()
+        assert "ABXPKG_POSTINSTALL_SCRIPTS=True" in text
+        assert "ABXPKG_MIN_RELEASE_AGE=0" in text
