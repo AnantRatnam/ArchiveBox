@@ -1080,18 +1080,22 @@ class PublicIndexView(ListView):
         return context
 
     def get_queryset(self, **kwargs):
-        qs = public_snapshots_queryset(super().get_queryset(**kwargs)).prefetch_related(
-            "tags",
-            Prefetch(
-                "archiveresult_set",
-                queryset=ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.SUCCEEDED).only(
-                    "id",
-                    "snapshot_id",
-                    "plugin",
-                    "status",
-                    "output_size",
+        qs = (
+            public_snapshots_queryset(super().get_queryset(**kwargs))
+            .select_related("crawl__created_by")
+            .prefetch_related(
+                "tags",
+                Prefetch(
+                    "archiveresult_set",
+                    queryset=ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.SUCCEEDED).only(
+                        "id",
+                        "snapshot_id",
+                        "plugin",
+                        "status",
+                        "output_size",
+                    ),
                 ),
-            ),
+            )
         )
         query = self.request.GET.get("q", default="").strip()
 

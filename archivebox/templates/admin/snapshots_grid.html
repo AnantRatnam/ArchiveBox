@@ -16,7 +16,7 @@
 
   .cards .card {
       position: relative;
-      max-height: 380px;
+      max-height: none;
       overflow: hidden;
     
       background-color: #fffcfc;
@@ -36,7 +36,7 @@
   .cards .card .card-thumbnail {
       display: block;
       width: 100%;
-      height: 345px;
+      height: 245px;
       overflow: hidden;
       border-radius: 4px;
       background-color: #fffcfc;
@@ -74,6 +74,19 @@
       bottom: 0;
       text-align: center;
   }
+  .cards .card .card-media {
+      position: relative;
+      overflow: hidden;
+  }
+  .cards .card .card-media .card-tags {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 2;
+      text-align: center;
+      pointer-events: none;
+  }
   .cards .card .card-title {
       padding: 4px 5px;
       background-color: #fffcfc;
@@ -106,16 +119,30 @@
   }
 
   .cards .card .card-info {
-      padding: 2px 4px;
+      padding: 6px 8px;
       /*border-top: 1px solid #ddd;*/
       background-color: #fffcfc;
       font-size: 11px;
       color: #333;
   }
+  .cards .card .card-meta {
+      display: grid;
+      grid-template-columns: 18px minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      text-align: left;
+  }
+  .cards .card .card-meta .card-date,
+  .cards .card .card-meta .card-size {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+  }
   .cards .card .card-info input[type=checkbox] {
-      float: right;
       width: 18px;
       height: 18px;
+      margin: 0;
   }
   .cards .card .card-info label {
       display: inline-block;
@@ -125,6 +152,25 @@
   }
   .cards .card .card-info .timestamp {
       font-weight: 600;
+  }
+  .cards .card .card-url {
+      display: block;
+      width: 100%;
+      padding: 0 8px 6px;
+      font-size: 10px;
+      opacity: 0.4;
+      user-select: all;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      background: #fffcfc;
+      box-sizing: border-box;
+  }
+  .cards .card .card-outputs {
+      min-height: 24px;
+      padding: 5px 8px 7px;
+      background: #fffcfc;
+      text-align: center;
   }
   .cards .card .card-progress {
       display: flex;
@@ -161,37 +207,38 @@
   <section class="cards">
     {% for obj in results %}
       <div class="card{% if obj.status == 'started' %} archiving{% endif %}">
-          <div class="card-info">
-            <a href="{% url 'admin:core_snapshot_change' obj.pk %}">
+          <div class="card-info card-meta">
+            <input type="checkbox" name="_selected_action" value="{{obj.pk}}"/>
+            <a href="{% url 'admin:core_snapshot_change' obj.pk %}" class="card-date">
               <span class="timestamp">{{obj.bookmarked_at}}</span>
             </a>
-            {% if obj.status == 'started' %}
-              <div class="card-progress">
-                <span class="snapshot-progress-spinner"></span>
-                <span class="progress-text">Archiving...</span>
-              </div>
-            {% else %}
-              <div style="padding: 4px 0;">
-                {{ obj.icons|safe }}
-              </div>
-            {% endif %}
-            <label>
-              <span>🗄&nbsp; {{ obj.archive_size | file_size }}</span>
-              <input type="checkbox" name="_selected_action" value="{{obj.pk}}"/>
-            </label>
+            <span class="card-size">{{ obj.archive_size | file_size }}</span>
           </div>
-          <a href="{% snapshot_base_url obj %}/index.html" class="card-thumbnail">
-            {% snapshot_url obj 'screenshot/screenshot.png' as screenshot_plugin_url %}
-            {% snapshot_url obj 'screenshot.png' as screenshot_root_url %}
-            {% snapshot_url obj 'favicon.ico' as favicon_root_url %}
-            <img
-              src="{{ screenshot_plugin_url }}"
-              alt="{{obj.title|default:'Not yet archived...'}}"
-              data-fallbacks="{{ screenshot_root_url }},{{ favicon_root_url }}"
-              onerror="const fallbacks=(this.dataset.fallbacks || '').split(',').filter(Boolean); if (fallbacks.length) { this.dataset.fallbacks=fallbacks.slice(1).join(','); this.src=fallbacks[0]; } else { this.onerror=null; this.closest('.card-thumbnail').classList.add('missing'); this.src='/static/spinner.gif'; }"
-            />
-          </a>
-          <div class="card-footer">
+          <div class="card-title" title="{{obj.title}}">
+            <a href="{% snapshot_base_url obj %}/index.html">
+              <h4>
+                {% if obj.is_archived %}
+                    <img src="{% snapshot_base_url obj %}/favicon.ico" onerror="this.style.display='none'" class="link-favicon" decoding="async"/>
+                {% else %}
+                    <img src="{% static 'spinner.gif' %}" onerror="this.style.display='none'" class="link-favicon" decoding="async"/>
+                {% endif %}
+                <span class="title-text">{{obj.title|default:'Pending...' }}</span>
+              </h4>
+            </a>
+          </div>
+          <code class="card-url" title="{{obj.url}}">{{obj.url}}</code>
+          <div class="card-media">
+            <a href="{% snapshot_base_url obj %}/index.html" class="card-thumbnail">
+              {% snapshot_url obj 'screenshot/screenshot.png' as screenshot_plugin_url %}
+              {% snapshot_url obj 'screenshot.png' as screenshot_root_url %}
+              {% snapshot_url obj 'favicon.ico' as favicon_root_url %}
+              <img
+                src="{{ screenshot_plugin_url }}"
+                alt="{{obj.title|default:'Not yet archived...'}}"
+                data-fallbacks="{{ screenshot_root_url }},{{ favicon_root_url }}"
+                onerror="const fallbacks=(this.dataset.fallbacks || '').split(',').filter(Boolean); if (fallbacks.length) { this.dataset.fallbacks=fallbacks.slice(1).join(','); this.src=fallbacks[0]; } else { this.onerror=null; this.closest('.card-thumbnail').classList.add('missing'); this.src='/static/spinner.gif'; }"
+              />
+            </a>
               {% if obj.tags_str %}
                 <div class="card-tags">
                   {% for tag in obj.tags_str|split:',' %}
@@ -201,20 +248,17 @@
                   {% endfor %}
                 </div>
               {% endif %}
-              <div class="card-title" title="{{obj.title}}">
-                <a href="{% snapshot_base_url obj %}/index.html">
-                  <h4>
-                    {% if obj.is_archived %}
-                        <img src="{% snapshot_base_url obj %}/favicon.ico" onerror="this.style.display='none'" class="link-favicon" decoding="async"/>
-                    {% else %}
-                        <img src="{% static 'spinner.gif' %}" onerror="this.style.display='none'" class="link-favicon" decoding="async"/>
-                    {% endif %}
-                    <span class="title-text">{{obj.title|default:'Pending...' }}</span>
-                  </h4>
-                </a>
-                <code title="{{obj.url}}">{{obj.url}}</code>
+          </div>
+          <div class="card-outputs">
+            {% if obj.status == 'started' %}
+              <div class="card-progress">
+                <span class="snapshot-progress-spinner"></span>
+                <span class="progress-text">Archiving...</span>
               </div>
-          </div> 
+            {% else %}
+              {{ obj.icons|safe }}
+            {% endif %}
+          </div>
       </div>
     {% endfor %}
   </section>

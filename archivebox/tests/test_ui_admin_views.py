@@ -773,6 +773,35 @@ class TestAdminSnapshotListView:
 
         assert response.status_code == 200
 
+    def test_grid_card_component_order(self, client, admin_user, snapshot):
+        """Snapshot cards should keep metadata, title, URL, preview, and outputs in scan order."""
+        from archivebox.core.models import ArchiveResult, Tag
+
+        snapshot.title = "Example Snapshot"
+        snapshot.status = snapshot.StatusChoices.SEALED
+        snapshot.save(update_fields=["title", "status", "modified_at"])
+        snapshot.tags.add(Tag.objects.create(name="research"))
+        ArchiveResult.objects.create(
+            snapshot=snapshot,
+            plugin="dom",
+            status="succeeded",
+            output_size=1000,
+            output_files={"output.html": {"path": "output.html", "size": 1000}},
+        )
+
+        client.login(username="testadmin", password="testpassword")
+        response = client.get(reverse("admin:grid"), HTTP_HOST=ADMIN_HOST)
+        body = response.content.decode()
+
+        assert response.status_code == 200
+        assert "🗄" not in body
+        assert body.index('name="_selected_action"') < body.index('class="timestamp"')
+        assert body.index('class="timestamp"') < body.index('class="card-size"')
+        assert body.index('class="card-size"') < body.index('class="link-favicon"')
+        assert body.index('class="title-text"') < body.index('class="card-url"')
+        assert body.index('class="card-url"') < body.index('class="card-media"')
+        assert body.index('class="card-tags"') < body.index('class="card-outputs"')
+
     def test_view_mode_switcher_present(self, client, admin_user):
         """Test that view mode switcher is present."""
         client.login(username="testadmin", password="testpassword")

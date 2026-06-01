@@ -1881,10 +1881,19 @@ tbody .output-link:hover {opacity: 1;}
     text-align: left;
 }
 
-.model-snapshot.change-list .cards .card .card-info > a {
+.model-snapshot.change-list .cards .card .card-info:not(.card-meta) > a {
     grid-column: 1 / -1;
     justify-self: center;
     max-width: 100%;
+}
+
+.model-snapshot.change-list .cards .card .card-info.card-meta {
+    grid-template-columns: 18px minmax(0, 1fr) auto;
+}
+
+.model-snapshot.change-list .cards .card .card-info.card-meta > a {
+    grid-column: auto;
+    justify-self: start;
 }
 
 .model-snapshot.change-list .cards .card .card-info .timestamp {
@@ -1895,11 +1904,19 @@ tbody .output-link:hover {opacity: 1;}
     white-space: nowrap;
 }
 
+.model-snapshot.change-list .cards .card .card-info.card-meta .card-size {
+    max-width: 72px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .model-snapshot.change-list .cards .card .card-info > div {
     min-width: 0;
 }
 
-.model-snapshot.change-list .cards .card .card-info .files-icons {
+.model-snapshot.change-list .cards .card .card-info .files-icons,
+.model-snapshot.change-list .cards .card .card-outputs .files-icons {
     display: inline-flex !important;
     flex-flow: row wrap !important;
     justify-content: center !important;
@@ -1909,7 +1926,9 @@ tbody .output-link:hover {opacity: 1;}
 }
 
 .model-snapshot.change-list .cards .card .card-info .files-icons a,
-.model-snapshot.change-list .cards .card .card-info .files-icons .abx-output-icon {
+.model-snapshot.change-list .cards .card .card-info .files-icons .abx-output-icon,
+.model-snapshot.change-list .cards .card .card-outputs .files-icons a,
+.model-snapshot.change-list .cards .card .card-outputs .files-icons .abx-output-icon {
     flex: 0 0 16px;
 }
 
@@ -1971,6 +1990,10 @@ tbody .output-link:hover {opacity: 1;}
     .model-snapshot.change-list .cards .card .card-info {
         grid-template-columns: minmax(0, 1fr) auto;
         padding: 6px;
+    }
+
+    .model-snapshot.change-list .cards .card .card-info.card-meta {
+        grid-template-columns: 18px minmax(0, 1fr) auto;
     }
 }
 

@@ -43,7 +43,6 @@ from archivebox.core.permissions import (
     normalize_permissions,
 )
 from archivebox.core.widgets import TagEditorWidget, InlineTagEditorWidget
-from archivebox.crawls.models import Crawl
 
 
 # GLOBAL_CONTEXT = {'VERSION': VERSION, 'VERSIONS_AVAILABLE': [], 'CAN_UPGRADE': False}
@@ -822,19 +821,7 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         needs_files_sort = "files" in ordering_fields
         needs_tags_sort = "tags_inline" in ordering_fields
         is_change_view = getattr(getattr(request, "resolver_match", None), "url_name", "") == "core_snapshot_change"
-        prefetches = [
-            Prefetch(
-                "crawl",
-                queryset=Crawl.objects.only(
-                    "id",
-                    "permissions",
-                    "persona_id",
-                    "status",
-                    "created_by_id",
-                ).prefetch_related("created_by"),
-            ),
-            "tags",
-        ]
+        prefetches = ["tags"]
         if is_change_view:
             prefetches.append(
                 Prefetch(
@@ -849,7 +836,7 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
                 ),
             )
 
-        qs = super().get_queryset(request)
+        qs = super().get_queryset(request).select_related("crawl__created_by")
         if is_change_view:
             qs = qs.defer("notes")
         else:
@@ -865,6 +852,13 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
                 "fs_version",
                 "output_size",
                 "permissions",
+                "crawl__id",
+                "crawl__permissions",
+                "crawl__persona_id",
+                "crawl__status",
+                "crawl__created_by_id",
+                "crawl__created_by__id",
+                "crawl__created_by__username",
             )
         qs = qs.prefetch_related(*prefetches)
         if needs_files_sort:
