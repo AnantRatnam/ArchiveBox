@@ -313,10 +313,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$T
     && export CHROME_USER_DATA_DIR="$LIB_DIR/chrome_profile" \
     && mkdir -p "$LIB_DIR" \
     && apt-get update -qq \
-    && if [ "$TARGETARCH" = "arm64" ]; then \
-        abxpkg install --binproviders=npm --overrides='{"npm":{"install_args":["playwright@next"]}}' playwright; \
-        abxpkg install --no-cache --install-timeout=600 --binproviders=playwright --bin-dir="$LIB_DIR/env/bin" chromium; \
-    fi \
+    && abxpkg install --no-cache --install-timeout=900 --binproviders=playwright chrome \
+    && CHROME_BINARY="$(abxpkg load --binproviders=playwright chromium | awk 'NF {print $2; exit}')" \
+    && export CHROME_BINARY \
+    && test -x "$CHROME_BINARY" \
+    && "$CHROME_BINARY" --version | tee -a /VERSION.txt \
     && TIMEOUT=600 PUID=0 PGID=0 abx-dl plugins --install \
     && find "$LIB_DIR" -type d -name __pycache__ -prune -exec rm -rf {} + \
     && find "$LIB_DIR" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
