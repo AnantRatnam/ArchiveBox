@@ -314,7 +314,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$T
     && export CHROME_USER_DATA_DIR="$LIB_DIR/chrome_profile" \
     && mkdir -p "$LIB_DIR" \
     && apt-get update -qq \
-    && apt-get install -qq -y --no-install-recommends build-essential \
+    && apt-get install -qq -y --no-install-recommends build-essential tesseract-ocr tesseract-ocr-eng \
+    && abxpkg install --no-cache --binproviders=pip --bin-dir="$LIB_DIR/env/bin" gallery-dl \
     && if [ "$TARGETARCH" = "arm64" ]; then \
         abxpkg install --binproviders=npm --overrides='{"npm":{"install_args":["playwright@next"]}}' playwright; \
         abxpkg install --no-cache --install-timeout=600 --binproviders=playwright --bin-dir="$LIB_DIR/env/bin" chromium; \
@@ -384,7 +385,7 @@ RUN chmod +x "$CODE_DIR"/bin/*.sh \
     && chown -R "$DEFAULT_PUID:$DEFAULT_PGID" "$LIB_DIR" \
     && chmod g+w "$TMP_DIR" "$LIB_DIR" "$LIB_DIR"/bin "$PLAYWRIGHT_BROWSERS_PATH" \
     && TIMEOUT=600 gosu "$ARCHIVEBOX_USER" archivebox install 2>&1 | tee -a /VERSION.txt \
-    && TIMEOUT=600 gosu "$ARCHIVEBOX_USER" archivebox install archivewebpage liteparse mercury papersdl readability search_backend_sonic opendataloader search_backend_ripgrep 2>&1 | tee -a /VERSION.txt \
+    && TIMEOUT=600 gosu "$ARCHIVEBOX_USER" archivebox install archivewebpage gallerydl liteparse mercury papersdl readability search_backend_sonic opendataloader search_backend_ripgrep 2>&1 | tee -a /VERSION.txt \
     && gosu "$ARCHIVEBOX_USER" archivebox version 2>&1 | tee -a /VERSION.txt \
     && find /venv "$CODE_DIR" "$LIB_DIR" "$DATA_DIR" -type d -name __pycache__ -prune -exec rm -rf {} + \
     && find /venv "$CODE_DIR" "$LIB_DIR" "$DATA_DIR" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
