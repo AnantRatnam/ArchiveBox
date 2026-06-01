@@ -4,7 +4,6 @@ Persona management for ArchiveBox.
 A Persona represents a browser profile/identity used for archiving.
 Each persona has its own:
 - Chrome user data directory (for cookies, localStorage, extensions, etc.)
-- Chrome extensions directory
 - Cookies file
 - Config overrides
 """
@@ -66,7 +65,6 @@ class Persona(ModelWithConfig):
 
     Each persona provides:
     - CHROME_USER_DATA_DIR: Chrome profile directory
-    - CHROME_EXTENSIONS_DIR: Installed extensions directory
     - CHROME_DOWNLOADS_DIR: Chrome downloads directory
     - COOKIES_FILE: Cookies file for wget/curl
     - config: JSON field with persona-specific config overrides
@@ -125,11 +123,6 @@ class Persona(ModelWithConfig):
         return str(self.path / "chrome_profile")
 
     @property
-    def CHROME_EXTENSIONS_DIR(self) -> str:
-        """Derived path to Chrome extensions directory for this persona."""
-        return str(self.path / "chrome_extensions")
-
-    @property
     def CHROME_DOWNLOADS_DIR(self) -> str:
         """Derived path to Chrome downloads directory for this persona."""
         return str(self.path / "chrome_downloads")
@@ -153,7 +146,6 @@ class Persona(ModelWithConfig):
         Returns dict with:
         - All values from self.config JSONField
         - CHROME_USER_DATA_DIR (derived from persona path)
-        - CHROME_EXTENSIONS_DIR (derived from persona path)
         - CHROME_DOWNLOADS_DIR (derived from persona path)
         - COOKIES_FILE (derived from persona path, if file exists)
         - AUTH_STORAGE_FILE (derived from persona path, if file exists)
@@ -164,8 +156,6 @@ class Persona(ModelWithConfig):
         # Add derived paths (don't override if explicitly set in config)
         if "CHROME_USER_DATA_DIR" not in derived:
             derived["CHROME_USER_DATA_DIR"] = self.CHROME_USER_DATA_DIR
-        if "CHROME_EXTENSIONS_DIR" not in derived:
-            derived["CHROME_EXTENSIONS_DIR"] = self.CHROME_EXTENSIONS_DIR
         if "CHROME_DOWNLOADS_DIR" not in derived:
             derived["CHROME_DOWNLOADS_DIR"] = self.CHROME_DOWNLOADS_DIR
         if "COOKIES_FILE" not in derived and self.COOKIES_FILE:
@@ -182,7 +172,6 @@ class Persona(ModelWithConfig):
         """Create persona directories if they don't exist."""
         self.path.mkdir(parents=True, exist_ok=True)
         (self.path / "chrome_profile").mkdir(parents=True, exist_ok=True)
-        (self.path / "chrome_extensions").mkdir(parents=True, exist_ok=True)
         (self.path / "chrome_downloads").mkdir(parents=True, exist_ok=True)
 
     def cleanup_chrome_profile(self, profile_dir: Path) -> bool:

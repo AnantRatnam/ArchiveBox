@@ -92,14 +92,12 @@ class PersonaAdmin(ConfigEditorMixin, BaseModelAdmin):
             "<div class='abx-persona-path-list'>"
             "<div><strong>Persona root</strong><code>{}</code></div>"
             "<div><strong>chrome_profile</strong><code>{}</code></div>"
-            "<div><strong>chrome_extensions</strong><code>{}</code></div>"
             "<div><strong>chrome_downloads</strong><code>{}</code></div>"
             "<div><strong>cookies.txt</strong><code>{}</code></div>"
             "<div><strong>auth.json</strong><code>{}</code></div>"
             "</div>",
             obj.path,
             obj.CHROME_USER_DATA_DIR,
-            obj.CHROME_EXTENSIONS_DIR,
             obj.CHROME_DOWNLOADS_DIR,
             obj.COOKIES_FILE or (obj.path / "cookies.txt"),
             obj.AUTH_STORAGE_FILE or (obj.path / "auth.json"),

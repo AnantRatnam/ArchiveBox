@@ -41,8 +41,6 @@ def finalize_completed_snapshot(snapshot_id: str) -> None:
         snapshot.refresh_from_db()
 
     snapshot.write_index_jsonl()
-    snapshot.write_json_details()
-    snapshot.write_html_details()
 
 
 def _crawl_limit_stop_reason(crawl) -> str:

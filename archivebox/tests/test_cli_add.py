@@ -296,7 +296,7 @@ def test_add_records_url_filter_overrides_on_crawl(tmp_path, process, disable_ex
 
     assert crawl.config["URL_ALLOWLIST"] == "example.com,*.example.com"
     assert crawl.config["URL_DENYLIST"] == "static.example.com"
-    assert (tmp_path / "personas" / "Default" / "chrome_extensions").is_dir()
+    assert not (tmp_path / "personas" / "Default" / "chrome_extensions").exists()
 
 
 def test_add_duplicate_url_creates_separate_crawls(tmp_path, process, disable_extractors_dict):

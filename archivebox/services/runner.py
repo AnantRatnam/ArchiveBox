@@ -1273,8 +1273,6 @@ def run_snapshot_maintenance(snapshot_id: str) -> bool:
     snapshot.retry_at = timezone.now() if has_queued_results else None
     snapshot.save(update_fields=["retry_at", "modified_at"])
     snapshot.write_index_jsonl()
-    snapshot.write_json_details()
-    snapshot.write_html_details()
     return True
 
 
@@ -1433,7 +1431,7 @@ def run_due_snapshot(snapshot, *, lock_seconds: int, interactive_interrupts: boo
         snapshot.finalize_completed_upload_results()
         maintenance_ran = False
         if snapshot.fs_migration_needed:
-            # Final snapshots can still need filesystem/json maintenance after
+            # Final snapshots can still need filesystem/index maintenance after
             # a data-dir migration, but queued ArchiveResult rows are the actual
             # runnable work. Do the metadata rewrite first, then continue into
             # the targeted plugin path in the same tick so large migrations do
@@ -1442,6 +1440,7 @@ def run_due_snapshot(snapshot, *, lock_seconds: int, interactive_interrupts: boo
             snapshot.refresh_from_db()
         selected_plugins = queued_plugins_for_snapshot(str(snapshot.id))
         if selected_plugins:
+            search_only_plugins = all(plugin.startswith("search_backend_") for plugin in selected_plugins)
             _runner_console_line(crawl_id=snapshot.crawl_id, snapshot=snapshot)
             run_crawl(
                 str(snapshot.crawl_id),
@@ -1450,6 +1449,21 @@ def run_due_snapshot(snapshot, *, lock_seconds: int, interactive_interrupts: boo
                 process_discovered_snapshots_inline=True,
                 interactive_interrupts=interactive_interrupts,
             )
+            if search_only_plugins:
+                from archivebox.core.models import ArchiveResult
+
+                has_queued_results = ArchiveResult.objects.filter(
+                    snapshot_id=snapshot.id,
+                    status=ArchiveResult.StatusChoices.QUEUED,
+                ).exists()
+                if not has_queued_results:
+                    type(snapshot).objects.filter(
+                        pk=snapshot.pk,
+                        status=snapshot.StatusChoices.SEALED,
+                    ).update(
+                        retry_at=None,
+                        modified_at=timezone.now(),
+                    )
             return True
         if maintenance_ran:
             return True
@@ -1678,8 +1692,8 @@ def _run_due_snapshot_id(snapshot_id, *, lock_seconds: int, interactive_interrup
     return True
 
 
-def _run_due_queued_download_result(
-    download_plugin_names: frozenset[str],
+def _run_due_queued_plugin_result(
+    plugin_names: frozenset[str],
     *,
     crawl_id: str | None,
     lock_seconds: int,
@@ -1688,11 +1702,11 @@ def _run_due_queued_download_result(
 ) -> bool:
     from archivebox.core.models import ArchiveResult, Snapshot
 
-    if not download_plugin_names:
+    if not plugin_names:
         return False
     queued_results = ArchiveResult.objects.filter(
         status=ArchiveResult.StatusChoices.QUEUED,
-        plugin__in=download_plugin_names,
+        plugin__in=plugin_names,
         snapshot__status=Snapshot.StatusChoices.SEALED,
         snapshot__retry_at__lte=timezone.now(),
     )
@@ -1726,6 +1740,53 @@ def _run_due_binary() -> bool:
     return True
 
 
+def _fast_forward_same_path_snapshot_fs_versions(batch_size: int = 10000) -> bool:
+    from django.db import connection
+
+    from archivebox.core.models import Snapshot, ArchiveResult
+
+    now = timezone.now()
+    current_version = Snapshot._fs_current_version()
+    same_path_versions = ("0.9.0", "0.9.1", "0.9.2", "0.9.3")
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            UPDATE core_snapshot
+               SET fs_version = %s,
+                   retry_at = CASE
+                       WHEN EXISTS (
+                           SELECT 1
+                             FROM core_archiveresult
+                            WHERE core_archiveresult.snapshot_id = core_snapshot.id
+                              AND core_archiveresult.status = %s
+                       )
+                       THEN retry_at
+                       ELSE NULL
+                   END,
+                   modified_at = %s
+             WHERE id IN (
+                   SELECT id
+                     FROM core_snapshot
+                    WHERE status = %s
+                      AND retry_at <= %s
+                      AND fs_version IN (%s, %s, %s, %s)
+                    ORDER BY retry_at, created_at
+                    LIMIT %s
+             )
+            """,
+            [
+                current_version,
+                ArchiveResult.StatusChoices.QUEUED,
+                now,
+                Snapshot.StatusChoices.SEALED,
+                now,
+                *same_path_versions,
+                batch_size,
+            ],
+        )
+        return bool(cursor.rowcount)
+
+
 def run_pending_crawls(
     *,
     daemon: bool = False,
@@ -1747,6 +1808,7 @@ def run_pending_crawls(
         for plugin_name, plugin_config in plugin_configs.items()
         if plugin_config.get("output_mimetypes") and not plugin_name.startswith("search_backend_")
     )
+    search_plugin_names = frozenset(plugin_name for plugin_name in plugin_configs if plugin_name.startswith("search_backend_"))
     last_recovery_at = 0.0
     last_retention_at = 0.0
     last_analyze_at = 0.0
@@ -1773,7 +1835,7 @@ def run_pending_crawls(
         # Final-state download rows are always first: they have no parent crawl
         # scheduler of their own, and leaving them behind makes the global
         # counters report stale queued work while new crawls continue.
-        if _run_due_queued_download_result(
+        if _run_due_queued_plugin_result(
             download_plugin_names,
             crawl_id=crawl_id,
             lock_seconds=60,
@@ -1782,13 +1844,22 @@ def run_pending_crawls(
         ):
             continue
 
-        # Other final-state snapshot work comes next: search backfills,
-        # filesystem/json maintenance, and upload finalization should drain
-        # before starting or resuming regular crawl work.
+        if _fast_forward_same_path_snapshot_fs_versions():
+            continue
+
+        # Final-state snapshot maintenance comes before normal crawl work:
+        # filesystem/index maintenance and upload finalization should drain
+        # promptly, but pure search backend backfills are deferred below so
+        # they do not starve live crawls.
         sealed_snapshots = Snapshot.objects.filter(
             retry_at__lte=timezone.now(),
             status=Snapshot.StatusChoices.SEALED,
         )
+        if search_plugin_names:
+            sealed_snapshots = sealed_snapshots.exclude(
+                archiveresult__status=ArchiveResult.StatusChoices.QUEUED,
+                archiveresult__plugin__in=search_plugin_names,
+            )
         if crawl_id:
             sealed_snapshots = sealed_snapshots.filter(crawl_id=crawl_id)
         if _run_due_snapshot_query(
@@ -1868,17 +1939,28 @@ def run_pending_crawls(
             ):
                 continue
 
-        # Final fallback uses only the retry_at scheduler index and selects an
-        # id first. The active/paused/sealed parent-specific branches above get
-        # first priority, so this stays broad without hydrating wide rows or
-        # forcing SQLite into a slow status/join plan.
-        due_snapshots = Snapshot.objects.filter(retry_at__lte=timezone.now())
+        # Final active-state fallback uses only the retry_at scheduler index and
+        # selects an id first. Keep final SEALED rows out of this broad path so
+        # large filesystem/index backfills cannot starve newly queued crawls.
+        due_snapshots = Snapshot.objects.filter(
+            retry_at__lte=timezone.now(),
+            status__in=Snapshot.OPEN_STATES,
+        )
         if maintenance_only:
             due_snapshots = due_snapshots.filter(status=Snapshot.StatusChoices.PAUSED)
         if crawl_id:
             due_snapshots = due_snapshots.filter(crawl_id=crawl_id)
         if _run_due_snapshot_query(
             due_snapshots,
+            lock_seconds=60,
+            interactive_interrupts=interactive_interrupts,
+            runtime_config=runtime_config,
+        ):
+            continue
+
+        if _run_due_queued_plugin_result(
+            search_plugin_names,
+            crawl_id=crawl_id,
             lock_seconds=60,
             interactive_interrupts=interactive_interrupts,
             runtime_config=runtime_config,

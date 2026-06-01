@@ -272,6 +272,7 @@ def test_archiveresult_list_stdout_pipes_into_run(initialized_archive):
     snapshot_stdout, snapshot_stderr, snapshot_code = run_archivebox_cmd(
         ["snapshot", "create", url],
         data_dir=initialized_archive,
+        env=PIPE_TEST_ENV,
     )
     assert snapshot_code == 0, snapshot_stderr
 
@@ -279,6 +280,7 @@ def test_archiveresult_list_stdout_pipes_into_run(initialized_archive):
         ["archiveresult", "create", "--plugin=favicon"],
         stdin=snapshot_stdout,
         data_dir=initialized_archive,
+        env=PIPE_TEST_ENV,
     )
     assert ar_create_code == 0, ar_create_stderr
 
@@ -293,6 +295,7 @@ def test_archiveresult_list_stdout_pipes_into_run(initialized_archive):
     list_stdout, list_stderr, list_code = run_archivebox_cmd(
         ["archiveresult", "list", "--plugin=favicon"],
         data_dir=initialized_archive,
+        env=PIPE_TEST_ENV,
     )
     assert list_code == 0, list_stderr
     _assert_stdout_is_jsonl_only(list_stdout)
