@@ -160,16 +160,18 @@ async def _emit_machine_config(
         config_type="user",
     )
     if parent_event is not None:
-        user_event.event_parent_id = parent_event.event_id
-    await bus.emit(user_event).now()
+        await parent_event.emit(user_event).now()
+    else:
+        await bus.emit(user_event).now()
     if derived_machine_config:
         derived_event = MachineEvent(
             config=derived_machine_config,
             config_type="derived",
         )
         if parent_event is not None:
-            derived_event.event_parent_id = parent_event.event_id
-        await bus.emit(derived_event).now()
+            await parent_event.emit(derived_event).now()
+        else:
+            await bus.emit(derived_event).now()
 
 
 async def _run_event_now(event, timeout: float | None = None):
@@ -409,7 +411,7 @@ class CrawlRunner:
             return
         current_event = crawl_start_event or get_current_event()
         if isinstance(current_event, CrawlStartEvent):
-            task = asyncio.create_task(self.run_snapshot(snapshot_id, current_event), context=_runner_task_context())
+            task = asyncio.create_task(self.run_snapshot(snapshot_id, current_event))
         elif in_handler_context():
             return
         else:
@@ -1053,8 +1055,7 @@ class CrawlRunner:
                     event_timeout=snapshot_phase_timeout,
                     event_handler_slow_timeout=slow_warning_timeout(snapshot_phase_timeout),
                 )
-                snapshot_event.event_parent_id = crawl_start_event.event_id
-                emitted_snapshot_event = self.bus.emit(snapshot_event)
+                emitted_snapshot_event = crawl_start_event.emit(snapshot_event)
                 await _run_event_now(emitted_snapshot_event, snapshot_phase_timeout)
                 completed_snapshot = await self.bus.find(
                     SnapshotCompletedEvent,

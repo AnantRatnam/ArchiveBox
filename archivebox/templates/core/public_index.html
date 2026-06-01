@@ -472,7 +472,7 @@
                 </thead>
                 <tbody>
                     {% for link in object_list %}
-                        {% include 'index_row.html' with link=link %}
+                        {% include 'index_row.html' with link=link compact_public_index=True %}
                     {% empty %}
                         <tr>
                             <td colspan="7" class="public-search-empty">

@@ -69,7 +69,13 @@
     </td>
     <td class="snapshot-files-cell">
         <span data-number-for="{{ link.url }}" title="{{ link.num_outputs }} successful outputs">
-            {% if link.icons %}
+            {% if compact_public_index %}
+                {% if link.num_outputs %}
+                    {{ link.num_outputs }} output{{ link.num_outputs|pluralize }}
+                {% else %}
+                    <span class="empty-value">...</span>
+                {% endif %}
+            {% elif link.icons %}
                 {{ link.icons }}
             {% else %}
                 <span class="empty-value">...</span>

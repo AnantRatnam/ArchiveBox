@@ -19,7 +19,7 @@ from django.utils.safestring import mark_safe
 from django.views import View
 from django.views.generic.list import ListView
 from django.views.generic import FormView
-from django.db.models import CharField, Count, Q, Prefetch, Sum
+from django.db.models import CharField, Count, Q, Sum
 from django.db.models.functions import Cast
 from django.contrib import messages
 from django.contrib.auth.mixins import UserPassesTestMixin
@@ -1045,13 +1045,13 @@ class PublicIndexView(ListView):
     def get_paginate_by(self, queryset):
         runtime_config = getattr(self, "runtime_config", None)
         if runtime_config is None:
-            self.runtime_config = runtime_config = _get_request_config(self.request, resolve_plugins=True)
+            self.runtime_config = runtime_config = _get_request_config(self.request, resolve_plugins=False)
         return runtime_config.SNAPSHOTS_PER_PAGE
 
     def get_context_data(self, **kwargs):
         runtime_config = getattr(self, "runtime_config", None)
         if runtime_config is None:
-            self.runtime_config = runtime_config = _get_request_config(self.request, resolve_plugins=True)
+            self.runtime_config = runtime_config = _get_request_config(self.request, resolve_plugins=False)
         search_mode = get_search_mode(self.request.GET.get("search_mode"), config=runtime_config)
         search_mode_backend = get_search_mode_backend(search_mode, config=runtime_config)
         context = {
@@ -1074,27 +1074,21 @@ class PublicIndexView(ListView):
         for snapshot in context.get("object_list") or ():
             snapshot._icons_compact = True
             snapshot._is_archived_cached = bool(snapshot.downloaded_at or snapshot.status == Snapshot.StatusChoices.SEALED)
-            results = getattr(snapshot, "_prefetched_objects_cache", {}).get("archiveresult_set")
-            if results is not None:
-                snapshot.num_outputs_cached = len(results)
         return context
 
     def get_queryset(self, **kwargs):
         qs = (
             public_snapshots_queryset(super().get_queryset(**kwargs))
             .select_related("crawl__created_by")
+            .annotate(
+                num_outputs_cached=Count(
+                    "archiveresult",
+                    filter=Q(archiveresult__status=ArchiveResult.StatusChoices.SUCCEEDED),
+                    distinct=True,
+                ),
+            )
             .prefetch_related(
                 "tags",
-                Prefetch(
-                    "archiveresult_set",
-                    queryset=ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.SUCCEEDED).only(
-                        "id",
-                        "snapshot_id",
-                        "plugin",
-                        "status",
-                        "output_size",
-                    ),
-                ),
             )
         )
         query = self.request.GET.get("q", default="").strip()
