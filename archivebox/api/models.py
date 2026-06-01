@@ -1,7 +1,7 @@
 __package__ = "archivebox.api"
 
 import secrets
-from archivebox.uuid_compat import uuid7
+from archivebox.uuid_compat import CompactUUIDField, uuid7
 
 from django.conf import settings
 from django.db import models
@@ -17,7 +17,7 @@ def generate_secret_token() -> str:
 
 
 class APIToken(models.Model):
-    id = models.UUIDField(primary_key=True, default=uuid7, editable=False, unique=True)
+    id = CompactUUIDField(primary_key=True, default=uuid7, editable=False, unique=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, default=get_or_create_system_user_pk, null=False)
     created_at = models.DateTimeField(default=timezone.now, db_index=True)
     modified_at = models.DateTimeField(auto_now=True)
@@ -41,7 +41,7 @@ class APIToken(models.Model):
 
 
 class OutboundWebhook(WebhookBase):
-    id = models.UUIDField(primary_key=True, default=uuid7, editable=False, unique=True)
+    id = CompactUUIDField(primary_key=True, default=uuid7, editable=False, unique=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, default=get_or_create_system_user_pk, null=False)
     created_at = models.DateTimeField(default=timezone.now, db_index=True)
     modified_at = models.DateTimeField(auto_now=True)

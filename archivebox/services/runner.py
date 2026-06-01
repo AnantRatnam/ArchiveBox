@@ -23,8 +23,8 @@ from django.utils import timezone
 from rich.console import Console
 from rich.text import Text
 
+from abxpkg.binary_service import BinaryCacheService, BinaryRequestEvent, BinaryService
 from abx_dl.events import (
-    BinaryRequestEvent,
     CrawlAbortEvent,
     CrawlCleanupEvent,
     CrawlCompletedEvent,
@@ -51,14 +51,14 @@ from abx_dl.orchestrator import (
     setup_services as setup_abx_services,
 )
 from abx_dl.services.process_service import ProcessService as HookProcessService
-from abx_dl.services.binary_service import BinaryService as HookBinaryService
+from abx_dl.services.binary_service import PluginBinariesService as HookPluginBinariesService
 from abx_dl.services.snapshot_service import SnapshotService as HookSnapshotService
 from abx_dl.cli import LiveBusUI
 from abxbus import BaseEvent
 from abxbus.event_bus import EventBus, get_current_event, in_handler_context
 from abxbus.event_handler import EventHandlerAbortedError, EventHandlerCancelledError
 
-from archivebox.config.configset import BaseConfigSet
+from archivebox.config.common import ArchiveBoxBaseConfig
 from archivebox.core.recovery_util import recover_orchestrator_state
 from archivebox.misc.db import run_db_analyze_batch
 from archivebox.core.shutdown_util import foreground_shutdown_signals
@@ -66,7 +66,7 @@ from archivebox.search.sonic_daemon import register_sonic_daemon_event_handler
 from archivebox.workers.models import ACTIVE_STATE_LEASE_SECONDS
 
 from .archive_result_service import ArchiveResultService
-from .binary_service import BinaryService
+from .binary_service import ArchiveBoxBinaryCacheBackend
 from .crawl_service import CrawlService
 from .machine_service import MachineService
 from .process_service import ProcessService as PersistedProcessService
@@ -122,16 +122,12 @@ def _count_selected_hooks(plugins: dict[str, Plugin], selected_plugins: list[str
     return sum(1 for plugin in selected.values() for hook in plugin.hooks if "CrawlSetup" in hook.name or "Snapshot" in hook.name)
 
 
-def _normalize_runtime_config(config: BaseConfigSet | Mapping[str, Any] | str | None) -> dict[str, Any]:
-    if config is None:
-        return {}
-    if isinstance(config, BaseConfigSet):
-        config = config.model_dump(mode="json")
-    elif isinstance(config, str):
-        config = json.loads(config)
-    else:
-        config = dict(config)
-    return {key: value for key, value in json.loads(json.dumps(config, default=str)).items() if value is not None}
+def _normalize_runtime_config(config: ArchiveBoxBaseConfig | Mapping[str, Any] | str | None) -> dict[str, Any]:
+    from archivebox.config.common import normalize_runtime_config
+
+    if isinstance(config, ArchiveBoxBaseConfig):
+        return config.for_crawl_execution()
+    return normalize_runtime_config(config)
 
 
 def _runner_task_context() -> contextvars.Context:
@@ -144,6 +140,11 @@ def _runner_task_context() -> contextvars.Context:
 
 def _is_external_task_cancelled(error: asyncio.CancelledError) -> bool:
     return not isinstance(error, (EventHandlerAbortedError, EventHandlerCancelledError))
+
+
+def _register_binary_services(bus) -> None:
+    BinaryCacheService(bus, backend=ArchiveBoxBinaryCacheBackend())
+    BinaryService(bus)
 
 
 async def _emit_machine_config(
@@ -160,18 +161,16 @@ async def _emit_machine_config(
         config_type="user",
     )
     if parent_event is not None:
-        await parent_event.emit(user_event).now()
-    else:
-        await bus.emit(user_event).now()
+        user_event.event_parent_id = parent_event.event_id
+    await bus.emit(user_event).now()
     if derived_machine_config:
         derived_event = MachineEvent(
             config=derived_machine_config,
             config_type="derived",
         )
         if parent_event is not None:
-            await parent_event.emit(derived_event).now()
-        else:
-            await bus.emit(derived_event).now()
+            derived_event.event_parent_id = parent_event.event_id
+        await bus.emit(derived_event).now()
 
 
 async def _run_event_now(event, timeout: float | None = None):
@@ -238,7 +237,7 @@ class CrawlRunner:
         HookProcessService(self.bus, emit_jsonl=False, interactive_tty=interactive_interrupts)
         register_sonic_daemon_event_handler(self.bus)
         PersistedProcessService(self.bus)
-        BinaryService(self.bus)
+        _register_binary_services(self.bus)
         TagService(self.bus)
         CrawlService(self.bus, crawl_id=str(crawl.id))
         MachineService(self.bus)
@@ -411,7 +410,7 @@ class CrawlRunner:
             return
         current_event = crawl_start_event or get_current_event()
         if isinstance(current_event, CrawlStartEvent):
-            task = asyncio.create_task(self.run_snapshot(snapshot_id, current_event))
+            task = asyncio.create_task(self.run_snapshot(snapshot_id, current_event), context=_runner_task_context())
         elif in_handler_context():
             return
         else:
@@ -553,7 +552,7 @@ class CrawlRunner:
             return
         pending_snapshot_ids = await sync_to_async(
             lambda: list(
-                self.crawl.snapshot_set.filter(status__in=[Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED])
+                self.crawl.snapshot_set.filter(status__in=Snapshot.RUNNABLE_STATES)
                 .exclude(id__in=active_snapshot_ids)
                 .filter(retry_at__lte=timezone.now())
                 .order_by("depth", "created_at")
@@ -568,7 +567,7 @@ class CrawlRunner:
     def load_run_state(self) -> list[str]:
         from archivebox.config.common import get_config
         from archivebox.core.models import Snapshot
-        from archivebox.hooks import discover_hooks
+        from archivebox.plugins.hooks import discover_hooks
         from archivebox.machine.models import Machine, NetworkInterface, Process, _sanitize_machine_config
 
         self.primary_url = self.crawl.get_urls_list()[0] if self.crawl.get_urls_list() else ""
@@ -608,7 +607,7 @@ class CrawlRunner:
         if self.crawl.is_paused:
             return []
         pending_snapshots = list(
-            self.crawl.snapshot_set.filter(status__in=[Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED])
+            self.crawl.snapshot_set.filter(status__in=Snapshot.RUNNABLE_STATES)
             .filter(retry_at__lte=timezone.now())
             .order_by("depth", "created_at"),
         )
@@ -742,7 +741,7 @@ class CrawlRunner:
     async def enqueue_discovered_snapshots_from_outputs(self, snapshot_payload: dict[str, Any]) -> None:
         from archivebox.core.models import Snapshot
         from archivebox.config.common import get_config
-        from archivebox.hooks import collect_urls_from_plugins
+        from archivebox.plugins.hooks import collect_urls_from_plugins
 
         await sync_to_async(self.crawl.refresh_from_db, thread_sensitive=True)()
         if self.crawl.is_paused and not self.allow_maintenance_on_inactive_crawl:
@@ -843,7 +842,9 @@ class CrawlRunner:
             emit_jsonl=False,
             abort_requested=self.crawl_is_cancelled,
             MachineService=None,
-            BinaryService=HookBinaryService,
+            PluginBinariesService=HookPluginBinariesService,
+            BinaryCacheService=None,
+            BinaryService=None,
             ProcessService=None,
             ArchiveResultService=None,
             TagService=None,
@@ -1055,7 +1056,8 @@ class CrawlRunner:
                     event_timeout=snapshot_phase_timeout,
                     event_handler_slow_timeout=slow_warning_timeout(snapshot_phase_timeout),
                 )
-                emitted_snapshot_event = crawl_start_event.emit(snapshot_event)
+                snapshot_event.event_parent_id = crawl_start_event.event_id
+                emitted_snapshot_event = self.bus.emit(snapshot_event)
                 await _run_event_now(emitted_snapshot_event, snapshot_phase_timeout)
                 completed_snapshot = await self.bus.find(
                     SnapshotCompletedEvent,
@@ -1081,11 +1083,7 @@ class CrawlRunner:
                         self.crawl.sm.seal()
                         if self.crawl.status == self.crawl.StatusChoices.STARTED
                         and not self.crawl.snapshot_set.filter(
-                            status__in=[
-                                self.crawl.snapshot_set.model.StatusChoices.QUEUED,
-                                self.crawl.snapshot_set.model.StatusChoices.STARTED,
-                                self.crawl.snapshot_set.model.StatusChoices.PAUSED,
-                            ],
+                            status__in=self.crawl.snapshot_set.model.OPEN_STATES,
                         ).exists()
                         else None
                     ),
@@ -1169,8 +1167,8 @@ async def _run_binary(binary_id: str) -> None:
     config["ABX_RUNTIME"] = "archivebox"
     config = _normalize_runtime_config(config)
     bus = create_bus(name=_bus_name("ArchiveBox_binary", str(binary.id)), total_timeout=1800.0)
-    PersistedProcessService(bus)
-    BinaryService(bus)
+    process_service = PersistedProcessService(bus)
+    _register_binary_services(bus)
     TagService(bus)
     ArchiveResultService(bus)
     MachineService(bus)
@@ -1185,6 +1183,8 @@ async def _run_binary(binary_id: str) -> None:
         persist_derived=False,
         auto_install=True,
         emit_jsonl=False,
+        BinaryCacheService=None,
+        BinaryService=None,
     )
     await _emit_machine_config(bus, config=config, derived_config=derived_config)
 
@@ -1192,17 +1192,20 @@ async def _run_binary(binary_id: str) -> None:
         await bus.emit(
             BinaryRequestEvent(
                 name=binary.name,
-                plugin_name="archivebox",
-                hook_name="on_BinaryRequest__archivebox_run",
-                output_dir=str(binary.output_dir),
-                binary_id=str(binary.id),
-                machine_id=str(binary.machine_id),
                 binproviders=binary.binproviders,
                 overrides=binary.overrides or None,
+                extra_context={
+                    "plugin_name": "archivebox",
+                    "hook_name": "on_BinaryRequest__archivebox_run",
+                    "output_dir": str(binary.output_dir),
+                    "binary_id": str(binary.id),
+                    "machine_id": str(binary.machine_id),
+                },
             ),
         ).now(first_result=True)
     finally:
         await bus.wait_until_idle()
+        await process_service.flush_completed()
 
 
 def run_binary(binary_id: str) -> None:
@@ -1291,7 +1294,7 @@ def run_due_crawl(crawl, *, lock_seconds: int, interactive_interrupts: bool = Fa
         now = timezone.now()
         snapshot_count = crawl.snapshot_set.count()
         due_active_snapshots = crawl.snapshot_set.filter(
-            status__in=[Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED],
+            status__in=Snapshot.RUNNABLE_STATES,
             retry_at__lte=now,
         ).exists()
         if snapshot_count and due_active_snapshots:
@@ -1334,11 +1337,7 @@ def run_due_crawl(crawl, *, lock_seconds: int, interactive_interrupts: bool = Fa
 
             next_snapshot_retry = (
                 crawl.snapshot_set.filter(
-                    status__in=[
-                        Snapshot.StatusChoices.QUEUED,
-                        Snapshot.StatusChoices.STARTED,
-                        Snapshot.StatusChoices.PAUSED,
-                    ],
+                    status__in=Snapshot.OPEN_STATES,
                     retry_at__gt=now,
                 )
                 .order_by("retry_at", "created_at")
@@ -1433,13 +1432,15 @@ def run_due_snapshot(snapshot, *, lock_seconds: int, interactive_interrupts: boo
             return False
         snapshot.refresh_from_db()
         snapshot.finalize_completed_upload_results()
+        maintenance_ran = False
         if snapshot.fs_migration_needed:
-            # Final snapshots can still need maintenance after an old data-dir
-            # migration. Run the filesystem/json save path before queued search
-            # backfill rows so both maintenance streams stay ordered without
-            # changing Snapshot.status away from SEALED.
-            _runner_console_line(crawl_id=snapshot.crawl_id, snapshot=snapshot)
-            return run_snapshot_maintenance(str(snapshot.id))
+            # Final snapshots can still need filesystem/json maintenance after
+            # a data-dir migration, but queued ArchiveResult rows are the actual
+            # runnable work. Do the metadata rewrite first, then continue into
+            # the targeted plugin path in the same tick so large migrations do
+            # not starve search/index backfills behind a full maintenance pass.
+            maintenance_ran = run_snapshot_maintenance(str(snapshot.id))
+            snapshot.refresh_from_db()
         selected_plugins = queued_plugins_for_snapshot(str(snapshot.id))
         if selected_plugins:
             _runner_console_line(crawl_id=snapshot.crawl_id, snapshot=snapshot)
@@ -1450,6 +1451,8 @@ def run_due_snapshot(snapshot, *, lock_seconds: int, interactive_interrupts: boo
                 process_discovered_snapshots_inline=True,
                 interactive_interrupts=interactive_interrupts,
             )
+            return True
+        if maintenance_ran:
             return True
         return run_snapshot_maintenance(str(snapshot.id))
 
@@ -1521,7 +1524,7 @@ async def _run_install(plugin_names: list[str] | None = None) -> None:
     config = _normalize_runtime_config(config)
     bus = create_bus(name="ArchiveBox_install", total_timeout=3600.0)
     PersistedProcessService(bus)
-    BinaryService(bus)
+    _register_binary_services(bus)
     TagService(bus)
     ArchiveResultService(bus)
     MachineService(bus)
@@ -1594,6 +1597,8 @@ async def _run_install(plugin_names: list[str] | None = None) -> None:
                         emit_jsonl=False,
                         bus=bus,
                         MachineService=None,
+                        BinaryCacheService=None,
+                        BinaryService=None,
                     )
                 finally:
                     try:
@@ -1730,7 +1735,7 @@ def run_pending_crawls(
     from archivebox.config.common import get_config
     from archivebox.crawls.models import Crawl, CrawlSchedule
     from archivebox.core.models import ArchiveResult, Snapshot
-    from archivebox.hooks import discover_plugin_configs
+    from archivebox.plugins.discovery import discover_plugin_configs
     from archivebox.machine.models import Process
 
     crawl_claim_lock_seconds = 10
@@ -1796,8 +1801,8 @@ def run_pending_crawls(
         if not maintenance_only:
             active_snapshots = Snapshot.objects.filter(
                 retry_at__lte=timezone.now(),
-                crawl__status__in=[Crawl.StatusChoices.QUEUED, Crawl.StatusChoices.STARTED],
-                status__in=[Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED],
+                crawl__status__in=Crawl.RUNNABLE_STATES,
+                status__in=Snapshot.RUNNABLE_STATES,
             )
             if crawl_id:
                 active_snapshots = active_snapshots.filter(crawl_id=crawl_id)
@@ -1850,10 +1855,7 @@ def run_pending_crawls(
             pausing_snapshots = Snapshot.objects.filter(
                 retry_at__lte=timezone.now(),
                 crawl__status=Crawl.StatusChoices.PAUSED,
-                status__in=[
-                    Snapshot.StatusChoices.QUEUED,
-                    Snapshot.StatusChoices.STARTED,
-                ],
+                status__in=Snapshot.RUNNABLE_STATES,
             )
             if crawl_id:
                 pausing_snapshots = pausing_snapshots.filter(crawl_id=crawl_id)

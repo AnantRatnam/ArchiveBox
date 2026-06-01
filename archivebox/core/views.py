@@ -8,32 +8,29 @@ from django.utils import timezone
 import inspect
 from typing import cast
 from collections.abc import Callable
-from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
 from django.shortcuts import render, redirect
-from django.http import JsonResponse, HttpRequest, HttpResponse, Http404, HttpResponseForbidden, QueryDict
+from django.http import HttpRequest, HttpResponse, Http404, HttpResponseForbidden, QueryDict
 from django.utils.html import format_html
 from django.utils.safestring import mark_safe
 from django.views import View
 from django.views.generic.list import ListView
 from django.views.generic import FormView
-from django.db.models import CharField, Count, Q, Sum
-from django.db.models.functions import Cast
+from django.db.models import Q
 from django.contrib import messages
 from django.contrib.auth.mixins import UserPassesTestMixin
 from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.gzip import gzip_page
 from django.utils.decorators import method_decorator
 
 from admin_data_views.typing import TableContext, ItemContext, SectionData
 from admin_data_views.utils import render_with_table_view, render_with_item_view, ItemLink
 
-from abx_dl.events import PROCESS_EXIT_SKIPPED
+from abx_plugins.plugins.archivewebpage import replay_preview as archivewebpage_replay
 
 from archivebox.config import CONSTANTS, CONSTANTS_CONFIG, VERSION
-from archivebox.config.common import get_config, get_all_configs
+from archivebox.config.common import SENSITIVE_CONFIG_VALUE_REDACTED, get_config, get_all_configs, redact_sensitive_config
 from archivebox.config.configset import BaseConfigSet
 from archivebox.misc.paginators import CountlessPaginator
 from archivebox.misc.util import (
@@ -46,15 +43,13 @@ from archivebox.misc.util import (
 )
 from archivebox.misc.serve_static import serve_static_with_byterange_support
 from archivebox.misc.logging_util import printable_filesize
-from archivebox.search import (
-    get_search_backend_display_name,
+from archivebox.search.config import (
     get_search_mode,
     get_search_mode_backend,
     get_search_mode_base,
     get_search_mode_options,
-    prioritize_metadata_matches,
-    query_search_index,
 )
+from archivebox.search.query import apply_snapshot_search
 
 from archivebox.core.models import ArchiveResult, Snapshot
 from archivebox.core.permissions import (
@@ -66,42 +61,23 @@ from archivebox.core.permissions import (
     is_admin_user,
     public_snapshots_queryset,
 )
-from archivebox.core.host_util import (
+from archivebox.core.routes_util import (
     build_admin_url,
     build_snapshot_url,
     build_web_url,
     get_admin_host,
-    get_api_base_url,
     get_snapshot_host,
     get_snapshot_lookup_key,
     get_web_host,
     host_matches,
 )
-from archivebox.core.forms import AddLinkForm, get_plugin_config_binary_urls
+from archivebox.core.forms import AddLinkForm
+from archivebox.plugins.forms import get_plugin_config_binary_urls
 from archivebox.crawls.models import Crawl
 from archivebox.workers.models import RETRY_AT_MAX
-from archivebox.hooks import (
-    BUILTIN_PLUGINS_DIR,
-    USER_PLUGINS_DIR,
-    discover_plugin_configs,
-    iter_plugin_dirs,
-)
-
-
-ABX_PLUGINS_GITHUB_BASE_URL = "https://github.com/ArchiveBox/abx-plugins/tree/main/abx_plugins/plugins/"
-LIVE_PLUGIN_BASE_URL = "/admin/environment/plugins/"
-
-
-@lru_cache(maxsize=1)
-def _live_progress_plugin_names() -> tuple[frozenset[str], frozenset[str]]:
-    plugin_configs = discover_plugin_configs()
-    download_plugin_names = frozenset(
-        plugin_name
-        for plugin_name, plugin_config in plugin_configs.items()
-        if plugin_config.get("output_mimetypes") and not plugin_name.startswith("search_backend_")
-    )
-    indexing_plugin_names = frozenset(plugin_name for plugin_name in plugin_configs if plugin_name.startswith("search_backend_"))
-    return download_plugin_names, indexing_plugin_names
+from archivebox.plugins.discovery import discover_plugin_configs
+from archivebox.plugins.views import get_config_definition_link
+from archivebox.progressmonitor.views import live_progress_view, progress_endpoint
 
 
 def _get_request_config(request: HttpRequest, *, resolve_plugins: bool = False):
@@ -269,8 +245,8 @@ class SnapshotView(View):
             SnapshotView.find_snapshots_for_url(snapshot.url)
             .select_related("crawl", "crawl__created_by")
             .annotate(
-                num_outputs_cached=Count("archiveresult", filter=Q(archiveresult__status="succeeded")),
-                num_failures_cached=Count("archiveresult", filter=Q(archiveresult__status="failed")),
+                num_outputs_cached=ArchiveResult.snapshot_count_expr(status=ArchiveResult.StatusChoices.SUCCEEDED),
+                num_failures_cached=ArchiveResult.snapshot_count_expr(status=ArchiveResult.StatusChoices.FAILED),
             )
         )
         related_snapshots = list(
@@ -332,15 +308,10 @@ class SnapshotView(View):
         else:
             status_label, status_color = status_label_by_state.get(snapshot_status, ("not yet archived", "danger"))
 
-        # One canonical progress endpoint, same-origin to whichever host the page is on.
-        # The id is always carried explicitly in the query string (derived from the page
-        # context, never the host) so this works in every routing/security mode.
-        progress_endpoint = f"/progress.json?snapshot_id={snapshot.id.hex}"
-
         context = {
             "id": str(snapshot.id),
             "snapshot_id": str(snapshot.id),
-            "progress_endpoint": progress_endpoint,
+            "progress_endpoint": progress_endpoint("snapshot", snapshot.id),
             "url": snapshot.url,
             "archive_path": snapshot.archive_path_from_db,
             "title": htmlencode(snapshot.resolved_title or (snapshot.base_url if is_archived else TITLE_LOADING_MSG)),
@@ -495,7 +466,7 @@ class SnapshotView(View):
                             f'- list all the <a href="/{snapshot.archive_path}/" target="_top">Snapshot files <code>.*</code></a><br/>'
                             f'- view the <a href="/{snapshot.archive_path}/index.html" target="_top">Snapshot <code>./index.html</code></a><br/>'
                             f'- go to the <a href="/admin/core/snapshot/{snapshot.pk}/change/" target="_top">Snapshot admin</a> to edit<br/>'
-                            f'- go to the <a href="/admin/core/snapshot/?id__exact={snapshot.id.hex}" target="_top">Snapshot actions</a> to re-archive<br/>'
+                            f'- go to the <a href="/admin/core/snapshot/?id__exact={snapshot.id}" target="_top">Snapshot actions</a> to re-archive<br/>'
                             '- or return to <a href="/" target="_top">the main index...</a></div>'
                             "</center>"
                             "</body></html>"
@@ -600,8 +571,9 @@ class SnapshotPathView(View):
         snapshot = None
         snapshots_qs = direct_snapshots_queryset(request, Snapshot.objects.select_related("crawl", "crawl__created_by"))
         if snapshot_id:
-            matches = list(filter_queryset_by_uuid_substring(snapshots_qs, snapshot_id)[:2])
-            snapshot = matches[0] if matches else None
+            snapshot = _find_snapshot_by_ref(snapshot_id)
+            if snapshot and not can_view_snapshot(request, snapshot):
+                return _admin_login_redirect_or_forbidden(request)
         else:
             # fuzzy lookup by date + domain/url (most recent)
             username_lookup = "system" if username == "web" else username
@@ -762,7 +734,7 @@ def _replay_path_visible(request: HttpRequest, path: Path) -> bool:
     snapshot = Snapshot.objects.filter(id=snapshot_id).select_related("crawl", "crawl__created_by").first()
     if not snapshot or not can_view_snapshot(request, snapshot):
         return False
-    request.archivebox_config = get_config(snapshot=snapshot, resolve_plugins=False)
+    request.archivebox_config = _get_request_config(request, resolve_plugins=False)
     return True
 
 
@@ -873,33 +845,16 @@ def _serve_responses_path(request, responses_root: Path, rel_path: str, show_ind
 
 
 def _serve_snapshot_replay(request: HttpRequest, snapshot: Snapshot, path: str = ""):
-    request_config = get_config(snapshot=snapshot, resolve_plugins=False)
+    request_config = _get_request_config(request, resolve_plugins=False)
     request.archivebox_config = request_config
     request.archivebox_snapshot_url = snapshot.url
     snapshot._runtime_config = request_config
     rel_path = path or ""
 
-    # POLICY EXCEPTION: archivebox normally does not depend on any specific
-    # plugin. The WACZ/WARC embedded-replay viewer needs ``/replay/sw.js`` and
-    # ``/replay/ui.js`` served same-origin on each snapshot host so its
-    # service worker can register. Until plugins can register their own URL
-    # routes generically, we conditionally import the archivewebpage plugin's
-    # ``replay_preview`` module here and let it handle these paths. If the
-    # plugin is not installed the import fails and the path falls through to
-    # the regular snapshot file lookup (which 404s, the expected behavior).
     if rel_path.startswith("replay/") or rel_path == "replay":
-        try:
-            from abx_plugins.plugins.archivewebpage import replay_preview as _awp_preview
-        except ImportError:
-            _awp_preview = None
-        if _awp_preview is not None:
-            replay_asset = _awp_preview.serve_replay_asset(rel_path, request_config)
-            if replay_asset is not None:
-                body, content_type, headers = replay_asset
-                response = HttpResponse(body, content_type=content_type)
-                for key, value in headers.items():
-                    response.headers[key] = value
-                return response
+        response = archivewebpage_replay.serve_replay_asset_response(rel_path, request_config, HttpResponse)
+        if response is not None:
+            return response
 
     if rel_path == "progress.json":
         # Host routing forwards every snap-* path to SnapshotHostView, so we forward
@@ -1063,7 +1018,6 @@ class PublicIndexView(ListView):
             "WEB_BASE_URL": build_web_url(request=self.request, config=runtime_config),
             "search_mode": search_mode,
             "search_mode_options": get_search_mode_options(config=runtime_config),
-            "search_backend_label": get_search_backend_display_name(search_mode_backend) if search_mode_backend else "",
         }
         context["show_search_index_hint"] = bool(
             self.request.GET.get("q")
@@ -1121,11 +1075,7 @@ class PublicIndexView(ListView):
             public_snapshots_queryset(super().get_queryset(**kwargs))
             .select_related("crawl__created_by")
             .annotate(
-                num_outputs_cached=Count(
-                    "archiveresult",
-                    filter=Q(archiveresult__status=ArchiveResult.StatusChoices.SUCCEEDED),
-                    distinct=True,
-                ),
+                num_outputs_cached=ArchiveResult.snapshot_count_expr(status=ArchiveResult.StatusChoices.SUCCEEDED),
             )
             .prefetch_related(
                 "tags",
@@ -1136,32 +1086,21 @@ class PublicIndexView(ListView):
         if not query:
             return qs
 
-        search_mode = get_search_mode(self.request.GET.get("search_mode"), config=getattr(self, "runtime_config", None))
-
-        metadata_qs = qs.filter(
-            Q(title__icontains=query) | Q(url__icontains=query) | Q(timestamp__icontains=query) | Q(tags__name__icontains=query),
-        )
-        search_mode_base = get_search_mode_base(search_mode, config=getattr(self, "runtime_config", None))
-        search_mode_backend = get_search_mode_backend(search_mode, config=getattr(self, "runtime_config", None))
-        if search_mode_base == "meta":
-            qs = metadata_qs
-        else:
-            try:
-                backend_qs = query_search_index(query, search_mode=search_mode)
-                if search_mode_backend:
-                    qs = qs.filter(pk__in=backend_qs.values("pk"))
-                else:
-                    qs = prioritize_metadata_matches(
-                        qs,
-                        metadata_qs,
-                        backend_qs,
-                        ordering=self.ordering,
-                    )
-            except Exception as err:
-                print(f"[!] Error while using search backend: {err.__class__.__name__} {err}")
-                qs = qs.none() if search_mode_backend else metadata_qs
-
-        return qs.distinct()
+        runtime_config = getattr(self, "runtime_config", None)
+        search_mode = get_search_mode(self.request.GET.get("search_mode"), config=runtime_config)
+        try:
+            return apply_snapshot_search(
+                qs,
+                query,
+                search_mode=search_mode,
+                config=runtime_config,
+                ordering=self.ordering,
+            )
+        except Exception as err:
+            print(f"[!] Error while using search backend: {err.__class__.__name__} {err}")
+            if get_search_mode_backend(search_mode, config=runtime_config):
+                return qs.none()
+            return apply_snapshot_search(qs, query, search_mode="meta", config=runtime_config)
 
     def get(self, *args, **kwargs):
         if self.request.user.is_authenticated:
@@ -1215,21 +1154,6 @@ class AddView(UserPassesTestMixin, FormView):
         required_search_plugin = f"search_backend_{request_config.SEARCH_BACKEND_ENGINE}".strip()
         can_override_crawl_config = self._can_override_crawl_config()
         plugin_configs = discover_plugin_configs() if can_override_crawl_config else {}
-        from archivebox.config.common import is_sensitive_config_key
-
-        sensitive_keys = {
-            str(config_key)
-            for schema in plugin_configs.values()
-            for config_key, prop_schema in (schema.get("properties") or {}).items()
-            if isinstance(prop_schema, dict) and prop_schema.get("x-sensitive")
-        }
-
-        def _drop_sensitive(items):
-            # Filter by both the schema-level ``x-sensitive`` marker (above) and
-            # the key-name heuristic so a persona/effective config can never
-            # ship credential values to the public ``/add`` UI.
-            return {str(key): value for key, value in items if str(key) not in sensitive_keys and not is_sensitive_config_key(str(key))}
-
         public_persona_config_keys = {
             "CRAWL_MAX_CONCURRENT_SNAPSHOTS",
             "DELETE_AFTER",
@@ -1243,13 +1167,14 @@ class AddView(UserPassesTestMixin, FormView):
         persona_config_map = {}
         for persona in persona_queryset.order_by("name"):
             effective_config = get_config(persona=persona)
+            effective_config_redacted = get_config(persona=persona, redact_sensitive=True).model_dump(mode="json")
             if can_override_crawl_config:
-                raw_config = _drop_sensitive((persona.config or {}).items())
-                effective_config_json = _drop_sensitive(effective_config.items())
+                raw_config = redact_sensitive_config(persona.config or {})
+                effective_config_json = effective_config_redacted
                 binary_urls = get_plugin_config_binary_urls(effective_config)
             else:
                 raw_config = {}
-                effective_config_json = {key: effective_config.get(key) for key in public_persona_config_keys}
+                effective_config_json = {key: effective_config_redacted.get(key) for key in public_persona_config_keys}
                 binary_urls = {}
             persona_config_map[persona.name] = {
                 "config": raw_config,
@@ -1337,12 +1262,13 @@ class AddView(UserPassesTestMixin, FormView):
         # 2. create a new Crawl with the URLs from the file
         timestamp = timezone.now().strftime("%Y-%m-%d__%H-%M-%S")
         urls_content = sources_file.read_text()
-        # Store only explicit crawl-scoped overrides. Persona/machine/plugin
-        # defaults are resolved at hook runtime via get_config(...).
+        # Store explicit crawl-scoped overrides; Crawl.save() freezes them
+        # over the resolved persona/user/machine defaults at creation time.
         config = {}
         if plugins:
             config["PLUGINS"] = plugins
-        effective_config = get_config(persona=persona, user=self.request.user) if persona else get_config(user=self.request.user)
+        request_user = self.request.user if self.request.user.is_authenticated else None
+        effective_config = get_config(persona=persona, user=request_user) if persona else get_config(user=request_user)
         if crawl_max_concurrent_snapshots != int(effective_config.CRAWL_MAX_CONCURRENT_SNAPSHOTS):
             config["CRAWL_MAX_CONCURRENT_SNAPSHOTS"] = crawl_max_concurrent_snapshots
         if delete_after != str(effective_config.DELETE_AFTER):
@@ -1369,7 +1295,7 @@ class AddView(UserPassesTestMixin, FormView):
         if url_filters.get("denylist"):
             config["URL_DENYLIST"] = url_filters["denylist"]
 
-        crawl = Crawl.objects.create(
+        crawl = Crawl.create_scheduler_row(
             urls=urls_content,
             max_depth=depth,
             tags_str=tag,
@@ -1390,6 +1316,7 @@ class AddView(UserPassesTestMixin, FormView):
                 template=crawl,
                 schedule=schedule,
                 is_enabled=True,
+                config=config,
                 label=crawl.label,
                 notes=f"Auto-created from add page. {notes}".strip(),
                 created_by_id=created_by_id,
@@ -1534,982 +1461,6 @@ class HealthCheckView(View):
         return HttpResponse("OK", content_type="text/plain", status=200)
 
 
-@gzip_page
-def live_progress_view(request):
-    """Simple JSON endpoint for live progress status - used by admin progress monitor."""
-    try:
-        from archivebox.crawls.models import Crawl
-        from archivebox.core.models import Snapshot, ArchiveResult
-        from archivebox.machine.models import Process, Machine
-
-        snapshot_id_filter = (request.GET.get("snapshot_id") or "").strip()
-        crawl_id_filter = (request.GET.get("crawl_id") or "").strip()
-        is_admin = is_admin_user(request)
-
-        scoped_snapshot = None
-        if snapshot_id_filter:
-            import uuid as _uuid
-
-            try:
-                _uuid.UUID(snapshot_id_filter)
-            except (TypeError, ValueError):
-                return JsonResponse({"error": "Invalid snapshot_id"}, status=400)
-            scoped_snapshot = Snapshot.objects.filter(id=snapshot_id_filter).select_related("crawl").first()
-            if scoped_snapshot is None or not can_view_snapshot(request, scoped_snapshot):
-                return JsonResponse({"error": "Permission denied"}, status=403)
-        elif crawl_id_filter:
-            # Crawl-only scope still requires staff: there's no per-crawl ACL helper,
-            # and a crawl can mix snapshot permissions levels.
-            if not is_admin:
-                return JsonResponse({"error": "Permission denied"}, status=403)
-        else:
-            if not is_admin:
-                return JsonResponse({"error": "Permission denied"}, status=403)
-
-        request_config = request.archivebox_config
-        now = timezone.now()
-        crawl_scope = Crawl.objects.all()
-        snapshot_scope = Snapshot.objects.all()
-        archiveresult_scope = ArchiveResult.objects.all()
-        if is_admin and not request.user.is_superuser:
-            crawl_scope = crawl_scope.filter(created_by=request.user)
-            snapshot_scope = snapshot_scope.filter(crawl__created_by=request.user)
-            archiveresult_scope = archiveresult_scope.filter(snapshot__crawl__created_by=request.user)
-        if scoped_snapshot is not None:
-            snapshot_scope = Snapshot.objects.filter(id=scoped_snapshot.id)
-            crawl_scope = Crawl.objects.filter(id=scoped_snapshot.crawl_id)
-            archiveresult_scope = ArchiveResult.objects.filter(snapshot_id=scoped_snapshot.id)
-        elif crawl_id_filter:
-            snapshot_scope = snapshot_scope.filter(crawl_id=crawl_id_filter)
-            crawl_scope = crawl_scope.filter(id=crawl_id_filter)
-            archiveresult_scope = archiveresult_scope.filter(snapshot__crawl_id=crawl_id_filter)
-
-        def is_current_run_timestamp(event_ts, run_started_at) -> bool:
-            if run_started_at is None:
-                return True
-            if event_ts is None:
-                return False
-            return event_ts >= run_started_at
-
-        def archiveresult_matches_current_run(ar, run_started_at) -> bool:
-            if run_started_at is None:
-                return True
-            if ar.status in (
-                ArchiveResult.StatusChoices.QUEUED,
-                ArchiveResult.StatusChoices.STARTED,
-                ArchiveResult.StatusChoices.BACKOFF,
-            ):
-                return True
-            event_ts = ar.end_ts or ar.start_ts or ar.modified_at or ar.created_at
-            return is_current_run_timestamp(event_ts, run_started_at)
-
-        def hook_details(hook_name: str, plugin: str = "setup") -> tuple[str, str, str, str]:
-            normalized_hook_name = Path(hook_name).name if hook_name else ""
-            if not normalized_hook_name:
-                return (plugin, plugin, "unknown", "")
-
-            phase = "unknown"
-            if normalized_hook_name == "InstallEvent":
-                phase = "install"
-            elif normalized_hook_name.startswith("on_CrawlSetup__"):
-                phase = "crawl"
-            elif normalized_hook_name.startswith("on_Snapshot__"):
-                phase = "snapshot"
-            elif normalized_hook_name.startswith("on_BinaryRequest__"):
-                phase = "binary"
-
-            label = normalized_hook_name
-            if "__" in normalized_hook_name:
-                label = normalized_hook_name.split("__", 1)[1]
-            label = label.rsplit(".", 1)[0]
-            if len(label) > 3 and label[:2].isdigit() and label[2] == "_":
-                label = label[3:]
-            label = label.replace("_", " ").strip() or plugin
-
-            return (plugin, label, phase, normalized_hook_name)
-
-        def process_label(cmd: list[str] | None) -> tuple[str, str, str, str]:
-            hook_path = ""
-            if isinstance(cmd, list) and cmd:
-                first = cmd[0]
-                if isinstance(first, str):
-                    hook_path = first
-
-            if not hook_path:
-                return ("", "setup", "unknown", "")
-
-            return hook_details(Path(hook_path).name, plugin=Path(hook_path).parent.name or "setup")
-
-        def archiveresult_output_path(ar) -> str | None:
-            output_file_map = ar.output_files if isinstance(ar.output_files, dict) else {}
-
-            def is_root_relative(path: str) -> bool:
-                metadata = output_file_map.get(path) or {}
-                return bool(isinstance(metadata, dict) and metadata.get("root_relative"))
-
-            if ar.output_str:
-                raw_output = str(ar.output_str).strip()
-                if ar._looks_like_output_path(raw_output, ar.plugin):
-                    output_path = Path(raw_output)
-                    if output_path.is_absolute():
-                        return None
-
-                    if raw_output.startswith(f"{ar.plugin}/"):
-                        candidates = [raw_output]
-                    elif len(output_path.parts) == 1:
-                        candidates = [f"{ar.plugin}/{raw_output}", raw_output]
-                    else:
-                        candidates = [raw_output]
-
-                    if raw_output in output_file_map and is_root_relative(raw_output):
-                        return raw_output
-
-                    for relative_path in candidates:
-                        plugin_relative = relative_path.removeprefix(f"{ar.plugin}/")
-                        if relative_path in output_file_map:
-                            return f"{ar.plugin}/{relative_path}" if not relative_path.startswith(f"{ar.plugin}/") else relative_path
-                        if plugin_relative in output_file_map:
-                            return f"{ar.plugin}/{plugin_relative}"
-
-            output_file_paths = list(output_file_map.keys())
-            if output_file_paths:
-                fallback_path = ArchiveResult._fallback_output_file_path(output_file_paths, ar.plugin, output_file_map)
-                if fallback_path:
-                    if is_root_relative(fallback_path):
-                        return fallback_path
-                    return f"{ar.plugin}/{fallback_path}"
-
-            return None
-
-        def snapshot_output_url(snapshot, output_path: str) -> str:
-            return build_snapshot_url(str(snapshot["id"]), output_path, request=request, config=request_config)
-
-        def snapshot_archive_path(snapshot) -> str:
-            if snapshot["fs_version"] in ("0.7.0", "0.8.0"):
-                return f"{CONSTANTS.ARCHIVE_DIR_NAME}/{snapshot['timestamp']}"
-            crawl = crawls_by_id.get(str(snapshot["crawl_id"]))
-            username = "web"
-            if crawl is not None and crawl["created_by_id"]:
-                username = crawl["created_by__username"]
-            if username == "system":
-                username = "web"
-            date_base = snapshot["bookmarked_at"] or snapshot["created_at"]
-            date_str = date_base.strftime("%Y%m%d") if date_base else "unknown"
-            domain = Snapshot.extract_domain_from_url(snapshot["url"])
-            return f"{username}/{date_str}/{domain}/{snapshot['id']}"
-
-        def snapshot_view_url(snapshot, output_path: str = "") -> str:
-            anchor = f"#{output_path}" if output_path else ""
-            return build_web_url(
-                f"/{snapshot_archive_path(snapshot)}/index.html{anchor}",
-                request=request,
-                config=request_config,
-            )
-
-        def snapshot_display_url(url: str) -> str:
-            url = str(url or "")
-            return url if len(url) <= 96 else f"{url[:93]}..."
-
-        api_base = get_api_base_url(request=request, config=request_config) if scoped_snapshot is not None else ""
-
-        def screencast_frame_url(crawl_id: str, crawl_dir: Path) -> str:
-            frame_path = crawl_dir / "chrome_screencast" / "latest.jpg"
-            try:
-                frame_stat = frame_path.stat()
-            except OSError:
-                return ""
-            if frame_stat.st_size <= 0:
-                return ""
-            if now.timestamp() - frame_stat.st_mtime > 15:
-                return ""
-            rel = f"/api/v1/crawls/crawl/{crawl_id}/files/chrome_screencast/latest.jpg?v={frame_stat.st_mtime_ns}"
-            return f"{api_base}{rel}" if api_base else rel
-
-        machine_id = Machine.current().id
-        orchestrator_proc = (
-            Process.objects.filter(
-                machine_id=machine_id,
-                process_type=Process.TypeChoices.ORCHESTRATOR,
-                status=Process.StatusChoices.RUNNING,
-            )
-            .only("id", "pid", "started_at", "machine_id", "process_type", "status")
-            .order_by("-started_at")
-            .first()
-            if machine_id is not None
-            else None
-        )
-        runner_worker = None
-        orchestrator_proc_running = bool(orchestrator_proc and orchestrator_proc.is_running)
-        if not orchestrator_proc_running:
-            try:
-                from archivebox.workers.supervisord_util import get_existing_supervisord_process, get_worker
-
-                supervisor = get_existing_supervisord_process(quiet=True)
-                runner_worker = get_worker(supervisor, "worker_runner") if supervisor else None
-            except Exception:
-                runner_worker = None
-
-        runner_worker_running = bool(runner_worker and runner_worker.get("statename") in ("STARTING", "RUNNING"))
-        runner_worker_pid = runner_worker.get("pid") if runner_worker else None
-        orchestrator_running = orchestrator_proc_running or runner_worker_running
-        orchestrator_pid = orchestrator_proc.pid if orchestrator_proc_running and orchestrator_proc else runner_worker_pid
-
-        def count_statuses(queryset, statuses) -> dict[str, int]:
-            # Keep these as individual indexed COUNTs instead of GROUP BY over
-            # every matching row. On large SQLite data dirs, GROUP BY can scan
-            # and sort far more of the status index than the live-progress
-            # header needs before the runner gets CPU again.
-            return {status: queryset.filter(status=status).count() for status in statuses}
-
-        # Get model counts by status
-        crawl_status_counts = count_statuses(
-            crawl_scope,
-            (Crawl.StatusChoices.QUEUED, Crawl.StatusChoices.STARTED, Crawl.StatusChoices.PAUSED),
-        )
-        crawls_pending = crawl_status_counts.get(Crawl.StatusChoices.QUEUED, 0)
-        crawls_started = crawl_status_counts.get(Crawl.StatusChoices.STARTED, 0)
-        crawls_paused = crawl_status_counts.get(Crawl.StatusChoices.PAUSED, 0)
-
-        # Get recent crawls (last 24 hours)
-        from datetime import timedelta
-
-        one_day_ago = now - timedelta(days=1)
-        paused_crawl_cutoff = now - timedelta(hours=12)
-        crawls_recent = crawl_scope.filter(created_at__gte=one_day_ago).count()
-
-        snapshot_status_counts = count_statuses(
-            snapshot_scope,
-            (Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED, Snapshot.StatusChoices.PAUSED),
-        )
-        snapshots_pending = snapshot_status_counts.get(Snapshot.StatusChoices.QUEUED, 0)
-        snapshots_started = snapshot_status_counts.get(Snapshot.StatusChoices.STARTED, 0)
-        snapshots_paused = snapshot_status_counts.get(Snapshot.StatusChoices.PAUSED, 0)
-
-        download_plugin_names, indexing_plugin_names = _live_progress_plugin_names()
-        result_statuses = (
-            ArchiveResult.StatusChoices.QUEUED,
-            ArchiveResult.StatusChoices.STARTED,
-            ArchiveResult.StatusChoices.PAUSED,
-        )
-        archiveresult_status_counts = count_statuses(archiveresult_scope, result_statuses)
-        download_scope = archiveresult_scope.filter(
-            plugin__in=download_plugin_names,
-            snapshot__status__in=(Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED),
-            snapshot__crawl__status__in=(Crawl.StatusChoices.QUEUED, Crawl.StatusChoices.STARTED),
-        )
-        indexing_scope = archiveresult_scope.filter(plugin__in=indexing_plugin_names)
-        download_status_counts = count_statuses(download_scope, result_statuses)
-        indexing_status_counts = count_statuses(indexing_scope, result_statuses)
-        archiveresults_pending = archiveresult_status_counts.get(ArchiveResult.StatusChoices.QUEUED, 0)
-        archiveresults_started = archiveresult_status_counts.get(ArchiveResult.StatusChoices.STARTED, 0)
-        archiveresults_paused = archiveresult_status_counts.get(ArchiveResult.StatusChoices.PAUSED, 0)
-        archiveresults_succeeded = 0
-        archiveresults_failed = 0
-
-        downloads_pending = download_status_counts.get(ArchiveResult.StatusChoices.QUEUED, 0)
-        downloads_started = download_status_counts.get(ArchiveResult.StatusChoices.STARTED, 0)
-        indexing_pending = indexing_status_counts.get(ArchiveResult.StatusChoices.QUEUED, 0)
-        indexing_started = indexing_status_counts.get(ArchiveResult.StatusChoices.STARTED, 0)
-
-        # Build hierarchical active crawls with nested snapshots and archive results
-        max_active_crawls = 10
-        max_queued_crawls = 10
-        max_started_snapshots_per_crawl = 50
-        max_queued_snapshots_per_crawl = 50
-
-        active_crawl_fields = (
-            "id",
-            "created_at",
-            "created_by_id",
-            "modified_at",
-            "urls",
-            "config",
-            "max_depth",
-            "tags_str",
-            "persona_id",
-            "status",
-            "retry_at",
-            "label",
-            "created_by__id",
-            "created_by__username",
-        )
-        started_crawls = list(
-            crawl_scope.filter(status=Crawl.StatusChoices.STARTED)
-            .values(*active_crawl_fields)
-            .order_by("-modified_at")[:max_active_crawls],
-        )
-        paused_crawls = list(
-            crawl_scope.filter(status=Crawl.StatusChoices.PAUSED, created_at__gte=paused_crawl_cutoff)
-            .values(*active_crawl_fields)
-            .order_by("-modified_at")[:max_active_crawls],
-        )
-        queued_crawls = list(
-            crawl_scope.filter(status=Crawl.StatusChoices.QUEUED).values(*active_crawl_fields).order_by("-modified_at")[:max_queued_crawls],
-        )
-        queued_crawls_hidden = max(crawls_pending - len(queued_crawls), 0)
-        active_crawls_list = started_crawls + paused_crawls + queued_crawls
-        for crawl in active_crawls_list:
-            crawl["id"] = str(crawl["id"])
-            if crawl["persona_id"]:
-                crawl["persona_id"] = str(crawl["persona_id"])
-        persona_details_by_id: dict[str, dict[str, str]] = {}
-        persona_details_by_name: dict[str, dict[str, str]] = {}
-        persona_objects_by_id = {}
-        persona_objects_by_name = {}
-        persona_ids = {crawl["persona_id"] for crawl in active_crawls_list if crawl["persona_id"]}
-        persona_names = {
-            str((crawl["config"] or {}).get("DEFAULT_PERSONA") or "Default") for crawl in active_crawls_list if not crawl["persona_id"]
-        }
-        if persona_ids or persona_names:
-            from archivebox.personas.models import Persona
-
-            for persona in Persona.objects.filter(Q(id__in=persona_ids) | Q(name__in=persona_names)).only("id", "name", "config"):
-                persona_details = {
-                    "name": persona.name,
-                    "admin_url": f"/admin/personas/persona/{persona.pk}/change/",
-                }
-                persona_details_by_id[str(persona.id)] = persona_details
-                persona_details_by_name[persona.name] = persona_details
-                persona_objects_by_id[str(persona.id)] = persona
-                persona_objects_by_name[persona.name] = persona
-        active_crawl_ids = [crawl["id"] for crawl in active_crawls_list]
-        active_crawl_objects = {}
-        if active_crawl_ids:
-            for crawl_obj in Crawl.objects.filter(id__in=active_crawl_ids).select_related("created_by", "persona"):
-                crawl_obj._runtime_config = request_config
-                active_crawl_objects[str(crawl_obj.id)] = crawl_obj
-        snapshot_counts_by_crawl: dict[str, dict[str, int]] = {str(crawl_id): {} for crawl_id in active_crawl_ids}
-        cancelled_snapshot_counts_by_crawl: dict[str, int] = {str(crawl_id): 0 for crawl_id in active_crawl_ids}
-        crawl_output_sizes_by_crawl: dict[str, int] = {str(crawl_id): 0 for crawl_id in active_crawl_ids}
-        queued_snapshot_overflow_by_crawl: dict[str, int] = {str(crawl_id): 0 for crawl_id in active_crawl_ids}
-        active_snapshot_scope = snapshot_scope.filter(crawl_id__in=active_crawl_ids)
-        if active_crawl_ids:
-            for row in active_snapshot_scope.values("crawl_id", "status").annotate(count=Count("id")):
-                snapshot_counts_by_crawl.setdefault(str(row["crawl_id"]), {})[row["status"]] = row["count"]
-
-            for row in (
-                active_snapshot_scope.filter(status=Snapshot.StatusChoices.SEALED, downloaded_at__isnull=True)
-                .values("crawl_id")
-                .annotate(count=Count("id"))
-            ):
-                cancelled_snapshot_counts_by_crawl[str(row["crawl_id"])] = row["count"]
-
-            for row in (
-                archiveresult_scope.filter(
-                    snapshot__crawl_id__in=active_crawl_ids,
-                    snapshot__status=Snapshot.StatusChoices.SEALED,
-                )
-                .values("snapshot__crawl_id")
-                .annotate(size=Sum("output_size"))
-            ):
-                crawl_output_sizes_by_crawl[str(row["snapshot__crawl_id"])] = int(row["size"] or 0)
-
-        crawl_process_pids: dict[str, int] = {}
-        snapshot_process_pids: dict[str, int] = {}
-        process_records_by_crawl: dict[str, list[tuple[dict[str, object], object | None]]] = {}
-        process_records_by_snapshot: dict[str, list[tuple[dict[str, object], object | None]]] = {}
-        seen_process_records: set[str] = set()
-        crawls_by_id = {str(crawl["id"]): crawl for crawl in active_crawls_list}
-        started_snapshot_fields = (
-            "id_str",
-            "created_at",
-            "modified_at",
-            "url",
-            "timestamp",
-            "bookmarked_at",
-            "crawl_id_str",
-            "title",
-            "downloaded_at",
-            "fs_version",
-            "status",
-        )
-        queued_snapshot_fields = (
-            "id_str",
-            "url",
-            "crawl_id_str",
-            "title",
-            "status",
-        )
-        snapshots = []
-        for crawl_id in active_crawl_ids:
-            crawl_snapshot_scope = active_snapshot_scope.filter(crawl_id=crawl_id)
-            snapshots.extend(
-                crawl_snapshot_scope.filter(status=Snapshot.StatusChoices.STARTED)
-                .annotate(id_str=Cast("id", CharField()), crawl_id_str=Cast("crawl_id", CharField()))
-                .values(*started_snapshot_fields)
-                .order_by("-modified_at")[:max_started_snapshots_per_crawl],
-            )
-            queued_snapshots = list(
-                crawl_snapshot_scope.filter(status=Snapshot.StatusChoices.QUEUED)
-                .annotate(id_str=Cast("id", CharField()), crawl_id_str=Cast("crawl_id", CharField()))
-                .values(
-                    *queued_snapshot_fields,
-                )
-                .order_by("modified_at")[:max_queued_snapshots_per_crawl],
-            )
-            queued_snapshot_overflow_by_crawl[str(crawl_id)] = max(
-                snapshot_counts_by_crawl.get(str(crawl_id), {}).get(Snapshot.StatusChoices.QUEUED, 0) - len(queued_snapshots),
-                0,
-            )
-            snapshots.extend(queued_snapshots)
-
-        def dashed_uuid(value: str) -> str:
-            value = str(value)
-            if len(value) == 32:
-                return f"{value[:8]}-{value[8:12]}-{value[12:16]}-{value[16:20]}-{value[20:]}"
-            return value
-
-        for snapshot in snapshots:
-            snapshot["id"] = (
-                snapshot.pop("id_str") if snapshot["status"] == Snapshot.StatusChoices.QUEUED else dashed_uuid(snapshot.pop("id_str"))
-            )
-            snapshot["crawl_id"] = dashed_uuid(snapshot.pop("crawl_id_str"))
-        snapshots_by_id = {str(snapshot["id"]): snapshot for snapshot in snapshots}
-        displayed_snapshots_by_crawl: dict[str, list[Snapshot]] = {str(crawl_id): [] for crawl_id in active_crawl_ids}
-        for snapshot in snapshots:
-            crawl_snapshots = displayed_snapshots_by_crawl.setdefault(str(snapshot["crawl_id"]), [])
-            crawl_snapshots.append(snapshot)
-        displayed_snapshot_ids = [
-            snapshot["id"] for crawl_snapshots in displayed_snapshots_by_crawl.values() for snapshot in crawl_snapshots
-        ]
-        detailed_snapshot_ids = [snapshot["id"] for snapshot in snapshots if snapshot["status"] != Snapshot.StatusChoices.QUEUED]
-        process_value_fields = ("id", "process_type", "status", "pwd", "cmd", "pid", "exit_code", "started_at", "modified_at")
-        if active_crawl_ids or displayed_snapshot_ids:
-            process_scope = Process.objects.filter(
-                machine_id=machine_id,
-                process_type__in=[
-                    Process.TypeChoices.HOOK,
-                    Process.TypeChoices.BINARY,
-                ],
-            )
-            running_processes = process_scope.filter(status=Process.StatusChoices.RUNNING).values(*process_value_fields)
-            recent_processes = (
-                process_scope.filter(modified_at__gte=now - timedelta(minutes=10)).values(*process_value_fields).order_by("-modified_at")
-            )
-        else:
-            running_processes = Process.objects.none()
-            recent_processes = Process.objects.none()
-
-        archiveresults_by_snapshot: dict[str, list[ArchiveResult]] = {str(snapshot_id): [] for snapshot_id in detailed_snapshot_ids}
-        if detailed_snapshot_ids:
-            displayed_archiveresults = (
-                archiveresult_scope.filter(snapshot_id__in=detailed_snapshot_ids)
-                .select_related("process")
-                .only(
-                    "id",
-                    "snapshot_id",
-                    "plugin",
-                    "hook_name",
-                    "status",
-                    "output_str",
-                    "output_files",
-                    "output_size",
-                    "start_ts",
-                    "end_ts",
-                    "created_at",
-                    "modified_at",
-                    "process_id",
-                    "process__id",
-                    "process__pid",
-                    "process__started_at",
-                    "process__timeout",
-                )
-                .order_by("snapshot_id", "start_ts", "created_at")
-            )
-            for archiveresult in displayed_archiveresults:
-                archiveresults_by_snapshot.setdefault(str(archiveresult.snapshot_id), []).append(archiveresult)
-                if archiveresult.status == ArchiveResult.StatusChoices.SUCCEEDED:
-                    archiveresults_succeeded += 1
-                elif archiveresult.status == ArchiveResult.StatusChoices.FAILED:
-                    archiveresults_failed += 1
-
-        def find_snapshot_for_process(proc_pwd: Path) -> Snapshot | None:
-            for path_part in reversed(proc_pwd.parts):
-                snapshot = snapshots_by_id.get(path_part)
-                if snapshot:
-                    return snapshot
-            return None
-
-        def find_crawl_for_process(proc_pwd: Path) -> Crawl | None:
-            for path_part in reversed(proc_pwd.parts):
-                crawl = crawls_by_id.get(path_part)
-                if crawl:
-                    return crawl
-            return None
-
-        running_worker_ids: set[str] = set()
-        for proc in running_processes:
-            if not proc["pwd"]:
-                continue
-            proc_pwd = Path(proc["pwd"])
-            matched_snapshot = find_snapshot_for_process(proc_pwd)
-            matched_crawl = (
-                crawls_by_id.get(str(matched_snapshot["crawl_id"])) if matched_snapshot is not None else find_crawl_for_process(proc_pwd)
-            )
-            if matched_snapshot is None:
-                if matched_crawl is None:
-                    continue
-                crawl_id = str(matched_crawl["id"])
-                snapshot_id = ""
-            else:
-                crawl_id = str(matched_snapshot["crawl_id"])
-                snapshot_id = str(matched_snapshot["id"])
-            running_worker_ids.add(str(proc["id"]))
-            _plugin, _label, phase, _hook_name = process_label(proc["cmd"])
-            if crawl_id and proc["pid"]:
-                crawl_process_pids.setdefault(crawl_id, proc["pid"])
-            if phase == "snapshot" and snapshot_id and proc["pid"]:
-                snapshot_process_pids.setdefault(snapshot_id, proc["pid"])
-
-        for proc in recent_processes:
-            if not proc["pwd"]:
-                continue
-            proc_pwd = Path(proc["pwd"])
-            matched_snapshot = find_snapshot_for_process(proc_pwd)
-            matched_crawl = (
-                crawls_by_id.get(str(matched_snapshot["crawl_id"])) if matched_snapshot is not None else find_crawl_for_process(proc_pwd)
-            )
-            if matched_snapshot is None and matched_crawl is None:
-                continue
-            crawl_id = str(matched_snapshot["crawl_id"] if matched_snapshot is not None else matched_crawl["id"])
-            snapshot_id = str(matched_snapshot["id"]) if matched_snapshot is not None else ""
-
-            plugin, label, phase, hook_name = process_label(proc["cmd"])
-
-            record_scope = str(snapshot_id) if phase == "snapshot" and snapshot_id else str(crawl_id)
-            proc_key = f"{record_scope}:{plugin}:{label}:{proc['status']}:{proc['exit_code']}"
-            if proc_key in seen_process_records:
-                continue
-            seen_process_records.add(proc_key)
-
-            status = (
-                "started"
-                if proc["status"] == Process.StatusChoices.RUNNING
-                else (
-                    "skipped"
-                    if proc["exit_code"] == PROCESS_EXIT_SKIPPED or (phase == "binary" and proc["exit_code"] not in (None, 0))
-                    else ("failed" if proc["exit_code"] not in (None, 0) else "succeeded")
-                )
-            )
-            payload: dict[str, object] = {
-                "id": str(proc["id"]),
-                "plugin": plugin,
-                "label": label,
-                "hook_name": hook_name,
-                "status": status,
-                "phase": phase,
-                "source": "process",
-                "process_id": str(proc["id"]),
-            }
-            if status == "started" and proc["pid"]:
-                payload["pid"] = proc["pid"]
-            proc_started_at = proc["started_at"] or proc["modified_at"]
-            if phase == "snapshot" and snapshot_id:
-                process_records_by_snapshot.setdefault(snapshot_id, []).append((payload, proc_started_at))
-            elif crawl_id:
-                process_records_by_crawl.setdefault(crawl_id, []).append((payload, proc_started_at))
-
-        active_crawls = []
-        total_workers = len(running_worker_ids)
-        for crawl in active_crawls_list:
-            crawl_id = str(crawl["id"])
-            crawl_snapshot_counts = snapshot_counts_by_crawl.get(crawl_id, {})
-            total_snapshots = sum(crawl_snapshot_counts.values())
-            completed_snapshots = crawl_snapshot_counts.get(Snapshot.StatusChoices.SEALED, 0)
-            started_snapshots = crawl_snapshot_counts.get(Snapshot.StatusChoices.STARTED, 0)
-            pending_snapshots = crawl_snapshot_counts.get(Snapshot.StatusChoices.QUEUED, 0)
-            cancelled_snapshots = cancelled_snapshot_counts_by_crawl.get(crawl_id, 0)
-
-            # Count URLs in the crawl (for when snapshots haven't been created yet)
-            urls_count = 0
-            if crawl["urls"]:
-                urls_count = len([u for u in crawl["urls"].split("\n") if u.strip() and not u.startswith("#")])
-
-            # Calculate crawl progress
-            crawl_progress = int((completed_snapshots / total_snapshots) * 100) if total_snapshots > 0 else 0
-            crawl_run_started_at = crawl["created_at"]
-            crawl_setup_plugins = [
-                payload
-                for payload, proc_started_at in process_records_by_crawl.get(crawl_id, [])
-                if is_current_run_timestamp(proc_started_at, crawl_run_started_at)
-            ]
-            crawl_setup_total = len(crawl_setup_plugins)
-            crawl_setup_completed = sum(1 for item in crawl_setup_plugins if item.get("status") == "succeeded")
-            crawl_setup_failed = sum(1 for item in crawl_setup_plugins if item.get("status") == "failed")
-            crawl_setup_pending = sum(1 for item in crawl_setup_plugins if item.get("status") == "queued")
-            crawl_screencast_url = screencast_frame_url(crawl_id, active_crawl_objects[crawl_id].output_dir)
-            crawl_screencast_link = f"/admin/crawls/crawl/{crawl_id.replace('-', '')}/change/" if crawl_screencast_url else ""
-
-            # Get active snapshots for this crawl (already prefetched)
-            active_snapshots_for_crawl = []
-            for snapshot in displayed_snapshots_by_crawl.get(crawl_id, []):
-                snapshot_run_started_at = snapshot.get("downloaded_at") or snapshot.get("created_at")
-                # Get archive results only for displayed active snapshots. Large crawls can
-                # contain thousands of sealed snapshots, and prefetching all their results
-                # makes the progress endpoint compete with the runner.
-                snapshot_results = [
-                    ar
-                    for ar in archiveresults_by_snapshot.get(str(snapshot["id"]), [])
-                    if archiveresult_matches_current_run(ar, snapshot_run_started_at)
-                ]
-                if snapshot["status"] == Snapshot.StatusChoices.QUEUED:
-                    snapshot_results = []
-
-                plugin_progress_values: list[int] = []
-                all_plugins: list[dict[str, object]] = []
-                seen_plugin_keys: set[str] = set()
-                snapshot_title = (
-                    str(snapshot["title"] or "")
-                    if snapshot["status"] == Snapshot.StatusChoices.QUEUED
-                    else Snapshot._normalize_title_candidate(snapshot["title"], snapshot_url=snapshot["url"])
-                )
-                snapshot_favicon_url = ""
-                snapshot_preview_url = ""
-                snapshot_preview_link = ""
-                snapshot_screencast_url = ""
-                snapshot_screencast_link = ""
-                snapshot_fallback_urls: list[str] = []
-                result_by_plugin = {result.plugin: result for result in snapshot_results}
-                title_result = result_by_plugin.get("title")
-                if not snapshot_title and title_result is not None and title_result.status == ArchiveResult.StatusChoices.SUCCEEDED:
-                    snapshot_title = Snapshot._normalize_title_candidate(title_result.output_str, snapshot_url=snapshot["url"])
-                favicon_result = result_by_plugin.get("favicon")
-                if favicon_result is not None and favicon_result.status == ArchiveResult.StatusChoices.SUCCEEDED:
-                    favicon_path = archiveresult_output_path(favicon_result) or "favicon/favicon.ico"
-                    snapshot_favicon_url = snapshot_output_url(snapshot, favicon_path)
-                screenshot_result = result_by_plugin.get("screenshot")
-                if screenshot_result is not None and screenshot_result.status == ArchiveResult.StatusChoices.SUCCEEDED:
-                    snapshot_preview_link = snapshot_view_url(snapshot)
-                    screenshot_path = archiveresult_output_path(screenshot_result) or "screenshot/screenshot.png"
-                    snapshot_preview_url = snapshot_output_url(snapshot, screenshot_path)
-                    snapshot_preview_link = snapshot_view_url(snapshot, screenshot_path)
-                    if snapshot_favicon_url:
-                        snapshot_fallback_urls.append(snapshot_favicon_url)
-                elif snapshot_favicon_url:
-                    snapshot_preview_url = snapshot_favicon_url
-
-                if snapshot["status"] == Snapshot.StatusChoices.STARTED:
-                    snapshot_screencast_url = screencast_frame_url(crawl_id, active_crawl_objects[crawl_id].output_dir)
-                    snapshot_screencast_link = snapshot_view_url(snapshot) if snapshot_screencast_url else ""
-
-                def plugin_sort_key(ar):
-                    status_order = {
-                        ArchiveResult.StatusChoices.STARTED: 0,
-                        ArchiveResult.StatusChoices.QUEUED: 1,
-                        ArchiveResult.StatusChoices.SUCCEEDED: 2,
-                        ArchiveResult.StatusChoices.NORESULTS: 3,
-                        ArchiveResult.StatusChoices.FAILED: 4,
-                    }
-                    return (status_order.get(ar.status, 5), ar.plugin, ar.hook_name or "")
-
-                for ar in sorted(snapshot_results, key=plugin_sort_key):
-                    status = ar.status
-                    process = ar.process_record
-                    progress_value = 0
-                    if status in (
-                        ArchiveResult.StatusChoices.SUCCEEDED,
-                        ArchiveResult.StatusChoices.FAILED,
-                        ArchiveResult.StatusChoices.SKIPPED,
-                        ArchiveResult.StatusChoices.NORESULTS,
-                    ):
-                        progress_value = 100
-                    elif status == ArchiveResult.StatusChoices.STARTED:
-                        started_at = ar.start_ts or (process.started_at if process else None)
-                        timeout = process.timeout if process else 120
-                        if started_at and timeout:
-                            elapsed = max(0.0, (now - started_at).total_seconds())
-                            progress_value = int(min(99, max(1, (elapsed / float(timeout)) * 100)))
-                        else:
-                            progress_value = 1
-                    else:
-                        progress_value = 0
-
-                    plugin_progress_values.append(progress_value)
-                    plugin, label, phase, hook_name = hook_details(ar.hook_name or ar.plugin, plugin=ar.plugin)
-
-                    plugin_payload = {
-                        "id": str(ar.id),
-                        "plugin": ar.plugin,
-                        "label": label,
-                        "hook_name": hook_name,
-                        "phase": phase,
-                        "status": status,
-                        "process_id": str(process.id) if process else None,
-                        "admin_url": f"/admin/core/archiveresult/{ar.id.hex}/change/",
-                    }
-                    output_path = archiveresult_output_path(ar)
-                    if output_path:
-                        plugin_payload["output_path"] = output_path
-                        plugin_payload["output_url"] = snapshot_view_url(snapshot, output_path)
-                    if status == ArchiveResult.StatusChoices.STARTED and process:
-                        plugin_payload["pid"] = process.pid
-                    if status == ArchiveResult.StatusChoices.STARTED:
-                        plugin_payload["progress"] = progress_value
-                        plugin_payload["timeout"] = process.timeout if process else 120
-                    plugin_payload["source"] = "archiveresult"
-                    all_plugins.append(plugin_payload)
-                    seen_plugin_keys.add(str(process.id) if process else f"{ar.plugin}:{hook_name}")
-
-                for proc_payload, proc_started_at in process_records_by_snapshot.get(str(snapshot["id"]), []):
-                    if not is_current_run_timestamp(proc_started_at, snapshot_run_started_at):
-                        continue
-                    proc_key = str(proc_payload.get("process_id") or f"{proc_payload.get('plugin')}:{proc_payload.get('hook_name')}")
-                    if proc_key in seen_plugin_keys:
-                        continue
-                    seen_plugin_keys.add(proc_key)
-                    all_plugins.append(proc_payload)
-
-                    proc_status = proc_payload.get("status")
-                    if proc_status in ("succeeded", "failed", "skipped"):
-                        plugin_progress_values.append(100)
-                    elif proc_status == "started":
-                        plugin_progress_values.append(1)
-                    else:
-                        plugin_progress_values.append(0)
-
-                total_plugins = len(all_plugins)
-                completed_plugins = sum(1 for item in all_plugins if item.get("status") == "succeeded")
-                failed_plugins = sum(1 for item in all_plugins if item.get("status") == "failed")
-                pending_plugins = sum(1 for item in all_plugins if item.get("status") == "queued")
-
-                snapshot_progress = int(sum(plugin_progress_values) / len(plugin_progress_values)) if plugin_progress_values else 0
-                worker_state = "running" if snapshot_process_pids.get(str(snapshot["id"])) else "waiting"
-                if (
-                    snapshot["status"] == Snapshot.StatusChoices.STARTED
-                    and worker_state == "waiting"
-                    and not all_plugins
-                    and snapshot["modified_at"]
-                    and (now - snapshot["modified_at"]).total_seconds() > 30
-                ):
-                    worker_state = "waiting" if orchestrator_running else "crashed"
-
-                if snapshot["status"] == Snapshot.StatusChoices.QUEUED and not snapshot_process_pids.get(str(snapshot["id"])):
-                    compact_snapshot = [
-                        str(snapshot["id"]),
-                        snapshot_display_url(snapshot["url"]),
-                    ]
-                    if snapshot_title:
-                        compact_snapshot.append(snapshot_title)
-                    active_snapshots_for_crawl.append(compact_snapshot)
-                    continue
-
-                snapshot_payload = {
-                    "id": str(snapshot["id"]),
-                    "url": snapshot_display_url(snapshot["url"]),
-                    "title": snapshot_title,
-                    "status": snapshot["status"],
-                    "worker_state": worker_state,
-                }
-                if snapshot["status"] != Snapshot.StatusChoices.QUEUED or all_plugins or snapshot_process_pids.get(str(snapshot["id"])):
-                    snapshot_payload.update(
-                        {
-                            "view_url": snapshot_view_url(snapshot),
-                            "started": (snapshot["downloaded_at"] or snapshot["created_at"]).isoformat()
-                            if (snapshot["downloaded_at"] or snapshot["created_at"])
-                            else None,
-                            "progress": snapshot_progress,
-                            "total_plugins": total_plugins,
-                            "completed_plugins": completed_plugins,
-                            "failed_plugins": failed_plugins,
-                            "pending_plugins": pending_plugins,
-                            "all_plugins": all_plugins,
-                        },
-                    )
-                    if snapshot_favicon_url:
-                        snapshot_payload["favicon_url"] = snapshot_favicon_url
-                    if snapshot_preview_url:
-                        snapshot_payload["preview_url"] = snapshot_preview_url
-                        snapshot_payload["preview_link"] = snapshot_preview_link
-                    if snapshot_screencast_url:
-                        snapshot_payload["screencast_url"] = snapshot_screencast_url
-                        snapshot_payload["screencast_link"] = snapshot_screencast_link
-                    if snapshot_fallback_urls:
-                        snapshot_payload["preview_fallbacks"] = snapshot_fallback_urls
-                    if snapshot_process_pids.get(str(snapshot["id"])):
-                        snapshot_payload["worker_pid"] = snapshot_process_pids[str(snapshot["id"])]
-
-                active_snapshots_for_crawl.append(snapshot_payload)
-
-            # Check if crawl can start (for debugging stuck crawls)
-            can_start = bool(crawl["urls"])
-            urls_preview = crawl["urls"][:60] if crawl["urls"] else None
-            crawl_tags = [tag.strip() for tag in (crawl["tags_str"] or "").replace("\n", ",").split(",") if tag.strip()]
-            persona_details = persona_details_by_id.get(str(crawl["persona_id"])) if crawl["persona_id"] else None
-            persona_name = persona_details["name"] if persona_details else str((crawl["config"] or {}).get("DEFAULT_PERSONA") or "Default")
-            persona_details = persona_details or persona_details_by_name.get(persona_name)
-            crawl_output_size = crawl_output_sizes_by_crawl.get(crawl_id, 0)
-            avg_snapshot_size = int(crawl_output_size / completed_snapshots) if completed_snapshots else 0
-            crawl_obj = active_crawl_objects[crawl_id]
-            persona_obj = (
-                persona_objects_by_id.get(str(crawl["persona_id"])) if crawl["persona_id"] else persona_objects_by_name.get(persona_name)
-            )
-            effective_crawl_config = get_config(
-                base_config=request_config,
-                user=crawl_obj.created_by,
-                persona=persona_obj,
-                crawl=crawl_obj,
-                resolve_plugins=False,
-            )
-            max_urls = int(effective_crawl_config.CRAWL_MAX_URLS or 0)
-            crawl_max_size = int(effective_crawl_config.CRAWL_MAX_SIZE or 0)
-            crawl_timeout = int(effective_crawl_config.CRAWL_TIMEOUT or 0)
-            snapshot_max_size = int(effective_crawl_config.SNAPSHOT_MAX_SIZE or 0)
-
-            # Check if retry_at is in the future (would prevent worker from claiming)
-            retry_at_future = crawl["retry_at"] > now if crawl["retry_at"] else False
-            is_paused = crawl_obj.is_paused
-            seconds_until_retry = (
-                0 if is_paused else int((crawl["retry_at"] - now).total_seconds()) if crawl["retry_at"] and retry_at_future else 0
-            )
-            crawl_worker_state = (
-                "running"
-                if crawl_process_pids.get(crawl_id)
-                or any(isinstance(snapshot, dict) and snapshot.get("worker_pid") for snapshot in active_snapshots_for_crawl)
-                else "waiting"
-            )
-            if is_paused:
-                crawl_worker_state = "paused"
-            elif (
-                crawl["status"] == Crawl.StatusChoices.STARTED
-                and crawl_worker_state == "waiting"
-                and (started_snapshots or pending_snapshots)
-            ):
-                crawl_worker_state = "waiting" if orchestrator_running else "crashed"
-
-            active_crawls.append(
-                {
-                    "id": crawl_id,
-                    "label": (next((line.strip() for line in (crawl["urls"] or "").splitlines() if line.strip()), "") or crawl_id)[:60],
-                    "status": crawl["status"],
-                    "is_paused": is_paused,
-                    "started": crawl["created_at"].isoformat() if crawl["created_at"] else None,
-                    "progress": crawl_progress,
-                    "created_by": crawl["created_by__username"],
-                    "persona": persona_name,
-                    "persona_admin_url": persona_details["admin_url"] if persona_details else None,
-                    "max_depth": crawl["max_depth"],
-                    "max_urls": max_urls,
-                    "max_crawl_size": crawl_max_size,
-                    "crawl_timeout": crawl_timeout,
-                    "max_snapshot_size": snapshot_max_size,
-                    "max_crawl_size_display": printable_filesize(crawl_max_size) if crawl_max_size else "unlimited",
-                    "crawl_timeout_display": f"{crawl_timeout}s" if crawl_timeout else "unlimited",
-                    "max_snapshot_size_display": printable_filesize(snapshot_max_size) if snapshot_max_size else "unlimited",
-                    "crawl_output_size": crawl_output_size,
-                    "avg_snapshot_size": avg_snapshot_size,
-                    "crawl_output_size_display": printable_filesize(crawl_output_size) if crawl_output_size else "0 B",
-                    "avg_snapshot_size_display": printable_filesize(avg_snapshot_size) if avg_snapshot_size else "0 B",
-                    "tags": crawl_tags,
-                    "urls_count": urls_count,
-                    "total_snapshots": total_snapshots,
-                    "completed_snapshots": completed_snapshots,
-                    "started_snapshots": started_snapshots,
-                    "failed_snapshots": 0,
-                    "pending_snapshots": pending_snapshots,
-                    "cancelled_snapshots": cancelled_snapshots,
-                    "setup_plugins": crawl_setup_plugins,
-                    "setup_total_plugins": crawl_setup_total,
-                    "setup_completed_plugins": crawl_setup_completed,
-                    "setup_failed_plugins": crawl_setup_failed,
-                    "setup_pending_plugins": crawl_setup_pending,
-                    "screencast_url": crawl_screencast_url,
-                    "screencast_link": crawl_screencast_link,
-                    "active_snapshots": active_snapshots_for_crawl,
-                    "queued_snapshots_hidden": queued_snapshot_overflow_by_crawl.get(crawl_id, 0),
-                    "can_start": can_start,
-                    "urls_preview": urls_preview,
-                    "retry_at_future": retry_at_future,
-                    "seconds_until_retry": seconds_until_retry,
-                    "worker_pid": crawl_process_pids.get(crawl_id),
-                    "worker_state": crawl_worker_state,
-                },
-            )
-
-        payload = {
-            "is_admin": is_admin,
-            "scope": {
-                "snapshot_id": str(scoped_snapshot.id) if scoped_snapshot is not None else "",
-                "crawl_id": crawl_id_filter,
-            },
-            "orchestrator_running": orchestrator_running,
-            "orchestrator_pid": orchestrator_pid,
-            "total_workers": total_workers,
-            "crawls_pending": crawls_pending,
-            "crawls_started": crawls_started,
-            "crawls_active": crawls_started,
-            "crawls_queued": crawls_pending,
-            "crawls_paused": crawls_paused,
-            "crawls_recent": crawls_recent,
-            "snapshots_pending": snapshots_pending,
-            "snapshots_started": snapshots_started,
-            "snapshots_active": snapshots_started,
-            "snapshots_queued": snapshots_pending,
-            "snapshots_paused": snapshots_paused,
-            "archiveresults_pending": archiveresults_pending,
-            "archiveresults_started": archiveresults_started,
-            "archiveresults_paused": archiveresults_paused,
-            "archiveresults_succeeded": archiveresults_succeeded,
-            "archiveresults_failed": archiveresults_failed,
-            "downloads_pending": downloads_pending,
-            "downloads_started": downloads_started,
-            "downloads_active": downloads_started,
-            "downloads_queued": downloads_pending,
-            "indexing_pending": indexing_pending,
-            "indexing_started": indexing_started,
-            "indexing_active": indexing_started,
-            "indexing_queued": indexing_pending,
-            "active_crawls": active_crawls,
-            "queued_crawls_hidden": queued_crawls_hidden,
-            "recent_thumbnails": [],
-            "server_time": timezone.now().isoformat(),
-        }
-        try:
-            import ujson
-
-            return HttpResponse(ujson.dumps(payload), content_type="application/json")
-        except ImportError:
-            return JsonResponse(payload)
-    except Exception as e:
-        import traceback
-
-        return JsonResponse(
-            {
-                "error": str(e),
-                "traceback": traceback.format_exc(),
-                "orchestrator_running": False,
-                "total_workers": 0,
-                "crawls_pending": 0,
-                "crawls_started": 0,
-                "crawls_active": 0,
-                "crawls_queued": 0,
-                "crawls_paused": 0,
-                "crawls_recent": 0,
-                "snapshots_pending": 0,
-                "snapshots_started": 0,
-                "snapshots_active": 0,
-                "snapshots_queued": 0,
-                "snapshots_paused": 0,
-                "archiveresults_pending": 0,
-                "archiveresults_started": 0,
-                "archiveresults_paused": 0,
-                "archiveresults_succeeded": 0,
-                "archiveresults_failed": 0,
-                "downloads_pending": 0,
-                "downloads_started": 0,
-                "downloads_active": 0,
-                "downloads_queued": 0,
-                "indexing_pending": 0,
-                "indexing_started": 0,
-                "indexing_active": 0,
-                "indexing_queued": 0,
-                "active_crawls": [],
-                "recent_thumbnails": [],
-                "server_time": timezone.now().isoformat(),
-            },
-            status=500,
-        )
-
-
 def find_config_section(key: str) -> str:
     CONFIGS = get_all_configs()
 
@@ -2553,13 +1504,6 @@ def find_config_type(key: str) -> str:
     return "str"
 
 
-def key_is_safe(key: str) -> bool:
-    for term in ("key", "password", "secret", "token"):
-        if term in key.lower():
-            return False
-    return True
-
-
 def find_config_source(key: str, merged_config: dict) -> str:
     """Determine where a config value comes from."""
     from archivebox.machine.models import Machine
@@ -2585,50 +1529,13 @@ def find_config_source(key: str, merged_config: dict) -> str:
     return "Default"
 
 
-def find_plugin_for_config_key(key: str) -> str | None:
-    for plugin_name, schema in discover_plugin_configs().items():
-        if key in (schema.get("properties") or {}):
-            return plugin_name
-    return None
-
-
-def get_config_definition_link(key: str) -> tuple[str, str]:
-    plugin_name = find_plugin_for_config_key(key)
-    if not plugin_name:
-        return (
-            f"https://github.com/search?q=repo%3AArchiveBox%2FArchiveBox+path%3Aconfig+{quote(key)}&type=code",
-            "archivebox/config",
-        )
-
-    plugin_dir = next((path.resolve() for path in iter_plugin_dirs() if path.name == plugin_name), None)
-    if plugin_dir:
-        builtin_root = BUILTIN_PLUGINS_DIR.resolve()
-        if plugin_dir.is_relative_to(builtin_root):
-            return (
-                f"{ABX_PLUGINS_GITHUB_BASE_URL}{quote(plugin_name)}/config.json",
-                f"abx_plugins/plugins/{plugin_name}/config.json",
-            )
-
-        user_root = USER_PLUGINS_DIR.resolve()
-        if plugin_dir.is_relative_to(user_root):
-            return (
-                f"{LIVE_PLUGIN_BASE_URL}user.{quote(plugin_name)}/",
-                f"data/custom_plugins/{plugin_name}/config.json",
-            )
-
-    return (
-        f"{LIVE_PLUGIN_BASE_URL}builtin.{quote(plugin_name)}/",
-        f"abx_plugins/plugins/{plugin_name}/config.json",
-    )
-
-
 @render_with_table_view
 def live_config_list_view(request: HttpRequest, **kwargs) -> TableContext:
     CONFIGS = get_all_configs()
 
     assert getattr(request.user, "is_superuser", False), "Must be a superuser to view configuration settings."
 
-    merged_config = get_config()
+    merged_config = get_config(redact_sensitive=True)
 
     rows = {
         "Section": [],
@@ -2649,7 +1556,7 @@ def live_config_list_view(request: HttpRequest, **kwargs) -> TableContext:
 
             # Use merged config value (includes machine overrides)
             actual_value = merged_config.get(key, getattr(section, key, None))
-            rows["Value"].append(mark_safe(f"<code>{actual_value}</code>") if key_is_safe(key) else "******** (redacted)")
+            rows["Value"].append(mark_safe(f"<code>{actual_value}</code>"))
 
             # Show where the value comes from
             source = find_config_source(key, merged_config)
@@ -2669,7 +1576,7 @@ def live_config_list_view(request: HttpRequest, **kwargs) -> TableContext:
         rows["Section"].append(section)  # section.replace('_', ' ').title().replace(' Config', '')
         rows["Key"].append(ItemLink(key, key=key))
         rows["Type"].append(format_html("<code>{}</code>", getattr(type(CONSTANTS_CONFIG[key]), "__name__", str(CONSTANTS_CONFIG[key]))))
-        rows["Value"].append(format_html("<code>{}</code>", CONSTANTS_CONFIG[key]) if key_is_safe(key) else "******** (redacted)")
+        rows["Value"].append(format_html("<code>{}</code>", redact_sensitive_config(CONSTANTS_CONFIG).get(key)))
         rows["Source"].append(mark_safe('<code style="color: gray">Constant</code>'))
         rows["Default"].append(
             mark_safe(
@@ -2693,23 +1600,23 @@ def live_config_value_view(request: HttpRequest, key: str, **kwargs) -> ItemCont
 
     assert getattr(request.user, "is_superuser", False), "Must be a superuser to view configuration settings."
 
-    merged_config = get_config()
+    merged_config = get_config(redact_sensitive=True)
 
     # Determine all sources for this config value
     sources_info = []
 
     # Environment variable
     if key in os.environ:
-        sources_info.append(("Environment", os.environ[key] if key_is_safe(key) else "********", "blue"))
+        sources_info.append(("Environment", redact_sensitive_config(os.environ).get(key), "blue"))
 
     # Machine config
     machine = None
     machine_admin_url = None
     try:
         machine = Machine.current()
-        machine_admin_url = f"/admin/machine/machine/{machine.id.hex}/change/"
+        machine_admin_url = f"/admin/machine/machine/{machine.id}/change/"
         if machine.config and key in machine.config:
-            sources_info.append(("Machine", machine.config[key] if key_is_safe(key) else "********", "purple"))
+            sources_info.append(("Machine", redact_sensitive_config(machine.config).get(key), "purple"))
     except Exception:
         pass
 
@@ -2717,7 +1624,7 @@ def live_config_value_view(request: HttpRequest, key: str, **kwargs) -> ItemCont
     if CONSTANTS.CONFIG_FILE.exists():
         file_config = BaseConfigSet.load_from_file(CONSTANTS.CONFIG_FILE)
         if key in file_config:
-            sources_info.append(("Config File", file_config[key], "green"))
+            sources_info.append(("Config File", redact_sensitive_config(file_config).get(key), "green"))
 
     # Default value
     default_val = find_config_default(key)
@@ -2725,9 +1632,11 @@ def live_config_value_view(request: HttpRequest, key: str, **kwargs) -> ItemCont
         sources_info.append(("Default", default_val, "gray"))
 
     # Final computed value
+    config_source = find_config_source(key, merged_config)
     final_value = merged_config.get(key, CONFIGS.get(key, None))
-    if not key_is_safe(key):
-        final_value = "********"
+    if config_source == "Environment":
+        final_value = get_config(include_machine=False, redact_sensitive=True).model_dump(mode="json").get(key, CONFIGS.get(key, None))
+    is_redacted = final_value == SENSITIVE_CONFIG_VALUE_REDACTED
 
     # Build sources display
     sources_html = "<br/>".join([f'<b style="color: {color}">{source}:</b> <code>{value}</code>' for source, value, color in sources_info])
@@ -2759,7 +1668,7 @@ def live_config_value_view(request: HttpRequest, key: str, **kwargs) -> ItemCont
                 "Key": key,
                 "Type": find_config_type(key),
                 "Value": final_value,
-                "Currently read from": find_config_source(key, merged_config),
+                "Currently read from": config_source,
             },
             "help_texts": {
                 "Key": mark_safe(f"""
@@ -2776,7 +1685,7 @@ def live_config_value_view(request: HttpRequest, key: str, **kwargs) -> ItemCont
                 "Value": mark_safe(f'''
                 {
                     '<b style="color: red">Value is redacted for your security. (Passwords, secrets, API tokens, etc. cannot be viewed in the Web UI)</b><br/><br/>'
-                    if not key_is_safe(key)
+                    if is_redacted
                     else ""
                 }
                 <br/><hr/><br/>
@@ -2787,14 +1696,12 @@ def live_config_value_view(request: HttpRequest, key: str, **kwargs) -> ItemCont
                     <i>To change this value, edit <code>data/ArchiveBox.conf</code> or run:</i>
                     <br/><br/>
                     <code>archivebox config --set {key}="{
-                    val.strip("'")
-                    if (val := find_config_default(key))
-                    else (str(final_value if key_is_safe(key) else "********")).strip("'")
+                    val.strip("'") if (val := find_config_default(key)) else str(final_value).strip("'")
                 }"</code>
                 </p>
             '''),
                 "Currently read from": mark_safe(f"""
-                The value shown in the "Value" field comes from the <b>{find_config_source(key, merged_config)}</b> source.
+                The value shown in the "Value" field comes from the <b>{config_source}</b> source.
                 <br/><br/>
                 Priority order (highest to lowest):
                 <ol>

@@ -2,7 +2,7 @@
 
 {% if cl.model_admin.show_search_mode_selector %}
   {% with current_search_mode=cl.params.search_mode|default:cl.model_admin.get_default_search_mode %}
-    <div class="module{% if cl.has_filters %} filtered{% endif %}{% if current_search_mode == 'contents' %} search-mode-contents{% elif current_search_mode == 'deep' %} search-mode-deep{% endif %}" id="changelist">
+    <div class="module{% if cl.has_filters %} filtered{% endif %}{% if current_search_mode == 'contents' %} search-mode-contents{% elif current_search_mode|slice:':4' == 'deep' %} search-mode-deep{% endif %}" id="changelist">
   {% endwith %}
 {% else %}
     <div class="module{% if cl.has_filters %} filtered{% endif %}" id="changelist">

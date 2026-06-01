@@ -267,6 +267,6 @@ document.addEventListener('DOMContentLoaded', function () {
 <section id="plugin-config" class="module aligned persona-plugin-config">
     <h2>Plugin Config</h2>
     <p>These typed controls update the same Persona config JSON shown above. Shared config keys stay synced across plugin sections.</p>
-    {% include "core/plugin_config_grid.html" with plugin_groups=adminform.form.plugin_groups %}
+    {% include "plugins/plugin_config_grid.html" with plugin_groups=adminform.form.plugin_groups %}
 </section>
 {% endblock %}

@@ -1,8 +1,11 @@
 __package__ = "archivebox.misc"
 
 import os
+import signal
 import sys
 import time
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 from rich import print
@@ -18,6 +21,42 @@ from rich.panel import Panel
 # the imports should be done inside the check function
 # and you should make sure if you need to import any django stuff
 # that the check is called after django.setup() has been called
+
+
+def _migration_interrupt_message(*, before_apply: bool = False) -> str:
+    status = "Migration cancelled before any changes were applied." if before_apply else "Migration interrupted."
+    return (
+        f"\n[X] {status}\n"
+        "    Database migrations are atomic; interrupted migration work is rolled back or left unapplied,\n"
+        "    so no partially-applied migration is recorded and no data loss has occurred.\n\n"
+        "    To continue the upgrade, run:\n"
+        "        archivebox init\n"
+    )
+
+
+@contextmanager
+def _exit_on_migration_interrupt():
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    handled_signals = (signal.SIGINT, signal.SIGTERM)
+    previous_handlers = {sig: signal.getsignal(sig) for sig in handled_signals}
+
+    def handle_shutdown(_signum, _frame):
+        try:
+            os.write(sys.stderr.fileno(), _migration_interrupt_message().encode())
+        except Exception:
+            pass
+        os._exit(130)
+
+    try:
+        for sig in handled_signals:
+            signal.signal(sig, handle_shutdown)
+        yield
+    finally:
+        for sig, previous_handler in previous_handlers.items():
+            signal.signal(sig, previous_handler)
 
 
 def check_data_folder(config=None, **config_kwargs) -> None:
@@ -109,14 +148,19 @@ def check_migrations(*, blocking: bool = True, auto_apply: bool = False, cancel_
             try:
                 time.sleep(cancel_delay)
             except KeyboardInterrupt:
-                print("[red][X] Migration cancelled before any changes were applied.[/red]", file=sys.stderr)
+                print(_migration_interrupt_message(before_apply=True), file=sys.stderr)
                 raise SystemExit(130) from None
 
             # Always delegate to Django's migration executor. It records each
             # migration only after it succeeds, so power loss or SIGKILL leaves
             # unapplied work visible here and the next startup resumes normally.
             print("[yellow][*] Applying database migrations...[/yellow]", file=sys.stderr)
-            apply_migrations(stdout=sys.stderr, stderr=sys.stderr, verbosity=1)
+            try:
+                with _exit_on_migration_interrupt():
+                    apply_migrations(stdout=sys.stderr, stderr=sys.stderr, verbosity=1)
+            except KeyboardInterrupt:
+                print(_migration_interrupt_message(), file=sys.stderr)
+                raise SystemExit(130) from None
             return pending_migrations()
         if blocking:
             raise SystemExit(3)
@@ -159,10 +203,7 @@ def check_not_root():
 
     if IS_ROOT and not (is_getting_help or is_getting_version):
         print("[yellow][!] Running ArchiveBox as root is not recommended.[/yellow]", file=sys.stderr)
-        print(
-            "    Chrome and other plugins run as non-root for security, if DATA_DIR is owned by root it can prevent archiving from succeeding.",
-            file=sys.stderr,
-        )
+        print("    Root-owned DATA_DIR files may be inaccessible to non-root users later.", file=sys.stderr)
         print("        https://github.com/ArchiveBox/ArchiveBox/wiki/Security-Overview#do-not-run-as-root", file=sys.stderr)
 
 
@@ -208,6 +249,7 @@ def check_data_dir_permissions(config=None, **config_kwargs):
             f"[violet]Hint:[/violet] Change the current ownership [red]{data_dir_uid}[/red]:{data_dir_gid} (PUID:PGID) to the user & group that will run ArchiveBox, e.g.:",
         )
         STDERR.print(f"    [grey53]sudo[/grey53] chown -R [blue]{DEFAULT_PUID}:{DEFAULT_PGID}[/blue] {DATA_DIR.resolve()}")
+        STDERR.print("    Avoid recursive chown on very large archives unless you know the full tree needs repair.")
         STDERR.print()
         STDERR.print("[blue]More info:[/blue]")
         STDERR.print(

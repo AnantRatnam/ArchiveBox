@@ -1048,7 +1048,7 @@
         <div id="main-frame-wrapper" class="full-page-wrapper" data-has-outputs="{{ has_outputs|yesno:'1,0' }}" data-snapshot-state="{{ snapshot_state }}">
             {% if snapshot_state == 'queued' or snapshot_state == 'started' or snapshot_state == 'paused' %}
             <div id="snapshot-progress-wrapper">
-                {% include "admin/progress_monitor.html" with progress_endpoint=progress_endpoint progress_scope="snapshot" %}
+                {% include "progressmonitor/progress_monitor.html" with progress_endpoint=progress_endpoint progress_scope="snapshot" %}
             </div>
             {% endif %}
             {% if has_outputs %}

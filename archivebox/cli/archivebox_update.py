@@ -33,7 +33,7 @@ def _get_snapshot_crawl(snapshot: Snapshot) -> Crawl | None:
 
 def _get_search_indexing_plugins() -> list[str]:
     from abx_dl.models import discover_plugins
-    from archivebox.hooks import get_search_backends
+    from archivebox.plugins.discovery import get_search_backends
 
     available_backends = set(get_search_backends())
     plugins = discover_plugins()
@@ -629,6 +629,7 @@ def process_all_db_snapshots(batch_size: int = 500, resume: str | None = None, w
     """
     from archivebox.core.models import Snapshot
     from archivebox.crawls.models import Crawl
+    from django.db.models import Q
     from django.utils import timezone
 
     stats = {
@@ -694,7 +695,7 @@ def process_all_db_snapshots(batch_size: int = 500, resume: str | None = None, w
     stats["sealed"] += updated_rows
     stats["updated_db"] += updated_rows
 
-    fs_version_rows = queryset.exclude(fs_version=current_fs_version)
+    fs_version_rows = queryset.exclude(fs_version=current_fs_version).filter(Q(retry_at__isnull=True) | Q(retry_at__gt=now))
     stale_batch = []
 
     def queue_stale_fs_batch() -> None:
@@ -746,14 +747,10 @@ def process_all_db_snapshots(batch_size: int = 500, resume: str | None = None, w
     now = timezone.now()
     stats["crawls_queued"] = (
         Crawl.objects.filter(
-            status__in=[Crawl.StatusChoices.QUEUED, Crawl.StatusChoices.STARTED],
+            status__in=Crawl.RUNNABLE_STATES,
         )
         .exclude(
-            snapshot_set__status__in=[
-                Snapshot.StatusChoices.QUEUED,
-                Snapshot.StatusChoices.STARTED,
-                Snapshot.StatusChoices.PAUSED,
-            ],
+            snapshot_set__status__in=Snapshot.OPEN_STATES,
         )
         .update(
             retry_at=now,
@@ -921,7 +918,7 @@ def print_index_stats(stats: dict[str, Any]) -> None:
 @click.option("--crawl-id", help="Filter by crawl ID")
 @click.option("--limit", "-n", type=int, help="Limit number of snapshots to update")
 @click.option("--sort", "-o", type=str, help="Field to sort by, e.g. url, created_at, bookmarked_at, downloaded_at")
-@click.option("--search", type=click.Choice(["meta", "content", "contents", "deep"]), help="Search mode to use for positional query")
+@click.option("--search", help="Search mode to use for positional query")
 @click.option("--before", type=float, help="Only snapshots before timestamp")
 @click.option("--after", type=float, help="Only snapshots after timestamp")
 @click.option("--filter-type", type=click.Choice(["exact", "substring", "regex", "domain", "tag", "timestamp"]), default="exact")

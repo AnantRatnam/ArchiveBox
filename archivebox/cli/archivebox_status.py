@@ -61,7 +61,7 @@ def status(out_dir: Path = DATA_DIR) -> None:
             num_dirs += root_dirs
             num_files += root_files
     else:
-        num_bytes = ArchiveResult.objects.aggregate(total=Coalesce(Sum("output_size"), 0))["total"] or 0
+        num_bytes = snapshots_qs.aggregate(total=Coalesce(Sum("output_size"), 0))["total"] or 0
         num_dirs = 0
         num_files = ArchiveResult.objects.exclude(output_files__in=["", "{}"]).count()
     size = printable_filesize(num_bytes)

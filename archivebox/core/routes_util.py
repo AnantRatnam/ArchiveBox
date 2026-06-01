@@ -257,6 +257,8 @@ def get_snapshot_lookup_key(snapshot_ref: str) -> str:
     match = _SNAPSHOT_SUBDOMAIN_RE.match(value)
     if match:
         return match.group("suffix")
+    if _SNAPSHOT_ID_RE.match(value):
+        return re.sub(r"[^0-9a-fA-F]", "", value).lower()
     return value
 
 

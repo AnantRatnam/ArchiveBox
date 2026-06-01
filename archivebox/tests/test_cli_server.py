@@ -15,6 +15,73 @@ from datetime import datetime
 from types import SimpleNamespace
 
 
+def test_server_auth_secret_and_cookie_settings_are_restart_stable(tmp_path, monkeypatch):
+    """Admin sessions must survive `archivebox server` restarts for a collection."""
+    from archivebox.config.collection import write_config_file
+
+    os.chdir(tmp_path)
+    (tmp_path / ".archivebox_id").write_text("testcoll")
+    monkeypatch.setenv("BASE_URL", "http://archivebox.localhost:9292")
+
+    first = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import os;"
+                "os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'archivebox.core.settings');"
+                "import django;"
+                "django.setup();"
+                "from django.conf import settings;"
+                "print(settings.SECRET_KEY);"
+                "print(settings.SESSION_ENGINE);"
+                "print(settings.SESSION_COOKIE_NAME);"
+                "print(settings.SESSION_COOKIE_DOMAIN);"
+                "print(settings.SESSION_COOKIE_SECURE);"
+                "print(settings.SESSION_EXPIRE_AT_BROWSER_CLOSE)"
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    first_lines = first.stdout.strip().splitlines()
+    assert first_lines[0], first.stderr
+
+    # Simulate the next `archivebox server` process, reading only persisted
+    # collection config. If SECRET_KEY falls back to the random default_factory
+    # here, Django will reject existing signed session cookies after restart.
+    monkeypatch.delenv("BASE_URL", raising=False)
+    write_config_file({"BASE_URL": "http://archivebox.localhost:9292"})
+    second = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import os;"
+                "os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'archivebox.core.settings');"
+                "import django;"
+                "django.setup();"
+                "from django.conf import settings;"
+                "print(settings.SECRET_KEY);"
+                "print(settings.SESSION_ENGINE);"
+                "print(settings.SESSION_COOKIE_NAME);"
+                "print(settings.SESSION_COOKIE_DOMAIN);"
+                "print(settings.SESSION_COOKIE_SECURE);"
+                "print(settings.SESSION_EXPIRE_AT_BROWSER_CLOSE)"
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert second.stdout.strip().splitlines() == first_lines
+    assert first_lines[1] == "django.contrib.sessions.backends.db"
+    assert first_lines[2].startswith("archivebox_sessionid_")
+    assert first_lines[3:] == ["None", "False", "False"]
+
+
 def test_sqlite_connections_use_explicit_busy_timeout():
     from archivebox.core.settings import SQLITE_CONNECTION_OPTIONS
 

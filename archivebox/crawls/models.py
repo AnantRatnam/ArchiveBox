@@ -8,7 +8,7 @@ import json
 import re
 from itertools import islice
 from datetime import timedelta
-from archivebox.uuid_compat import uuid7
+from archivebox.uuid_compat import CompactUUIDField, uuid7
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 
 
 class CrawlSchedule(ModelWithUUID, ModelWithNotes):
-    id = models.UUIDField(primary_key=True, default=uuid7, editable=False, unique=True)
+    id = CompactUUIDField(primary_key=True, default=uuid7, editable=False, unique=True)
     created_at = models.DateTimeField(default=timezone.now, db_index=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, default=get_or_create_system_user_pk, null=False)
     modified_at = models.DateTimeField(auto_now=True)
@@ -50,6 +50,7 @@ class CrawlSchedule(ModelWithUUID, ModelWithNotes):
     template: "Crawl" = models.ForeignKey("Crawl", on_delete=models.CASCADE, null=False, blank=False)  # type: ignore
     schedule = models.CharField(max_length=64, blank=False, null=False)
     is_enabled = models.BooleanField(default=True)
+    config = models.JSONField(default=dict, null=True, blank=True)
     label = models.CharField(max_length=64, blank=True, null=False, default="")
     notes = models.TextField(blank=True, null=False, default="")
 
@@ -102,13 +103,17 @@ class CrawlSchedule(ModelWithUUID, ModelWithNotes):
         return self.is_enabled and self.next_run_at <= now
 
     def enqueue(self, queued_at=None) -> "Crawl":
+        from archivebox.config.common import build_crawl_config_snapshot
+
         queued_at = queued_at or timezone.now()
         template = self.template
         label = template.label or self.label
+        persona = template.persona if template.persona_id else None
+        user = template.created_by if template.created_by_id else None
 
         return Crawl.objects.create(
             urls=template.urls,
-            config=template.config or {},
+            config=build_crawl_config_snapshot(user=user, persona=persona, overrides=self.config or {}),
             max_depth=template.max_depth,
             tags_str=template.tags_str,
             persona_id=template.persona_id,
@@ -122,7 +127,7 @@ class CrawlSchedule(ModelWithUUID, ModelWithNotes):
 
 
 class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWithHealthStats, ModelWithStateMachine):
-    id = models.UUIDField(primary_key=True, default=uuid7, editable=False, unique=True)
+    id = CompactUUIDField(primary_key=True, default=uuid7, editable=False, unique=True)
     created_at = models.DateTimeField(default=timezone.now, db_index=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, default=get_or_create_system_user_pk, null=False)
     modified_at = models.DateTimeField(auto_now=True)
@@ -162,6 +167,8 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
     StatusChoices = ModelWithStateMachine.StatusChoices
     active_state = StatusChoices.STARTED
     delete_after_final_statuses = (StatusChoices.SEALED,)
+    RUNNABLE_STATES = (StatusChoices.QUEUED, StatusChoices.STARTED)
+    INACTIVE_STATES = (StatusChoices.PAUSED, StatusChoices.SEALED)
 
     schedule_id: uuid.UUID | None
     sm: "CrawlMachine"
@@ -238,11 +245,7 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
         # child Snapshot through its own state machine. Active children that
         # are already due need no write; the runner will claim them as-is.
         active_children = self.snapshot_set.filter(
-            status__in=[
-                Snapshot.StatusChoices.QUEUED,
-                Snapshot.StatusChoices.STARTED,
-                Snapshot.StatusChoices.PAUSED,
-            ],
+            status__in=Snapshot.OPEN_STATES,
         )
         return active_children.filter(
             Q(retry_at__isnull=True) | Q(retry_at__gt=now),
@@ -259,10 +262,7 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
         # Snapshot runner claim performs the real pause transition and cascades
         # its own ArchiveResults, keeping request/admin transactions tiny.
         active_children = self.snapshot_set.filter(
-            status__in=[
-                Snapshot.StatusChoices.QUEUED,
-                Snapshot.StatusChoices.STARTED,
-            ],
+            status__in=Snapshot.RUNNABLE_STATES,
         )
         return active_children.filter(
             Q(retry_at__isnull=True) | Q(retry_at__gt=now),
@@ -273,10 +273,7 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
 
     @classmethod
     def missing_delete_at_candidates(cls):
-        from archivebox.personas.models import Persona
-
-        persona_ids = Persona.objects.filter(config__has_key="DELETE_AFTER").values_list("id", flat=True)
-        return cls.objects.filter(delete_at__isnull=True).filter(Q(config__has_key="DELETE_AFTER") | Q(persona_id__in=persona_ids))
+        return cls.objects.filter(delete_at__isnull=True, config__has_key="DELETE_AFTER")
 
     def save(self, *args, **kwargs):
         update_fields = kwargs.get("update_fields")
@@ -287,11 +284,16 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
             previous_tag_names = set(self.parse_tag_names(old_crawl.tags_str or ""))
 
         config = dict(self.config or {})
+        is_new = self._state.adding or old_crawl is None
+        persona = self.persona if self.persona_id else None
+        user = self.created_by if self.created_by_id else None
+        if is_new:
+            from archivebox.config.common import build_crawl_config_snapshot
+
+            config = build_crawl_config_snapshot(user=user, persona=persona, overrides=config)
         if str(config.get("PERMISSIONS") or "").strip().lower() not in PERMISSIONS_VALUES:
             from archivebox.config.common import get_config
 
-            persona = self.persona if self.persona_id else None
-            user = self.created_by if self.created_by_id else None
             config["PERMISSIONS"] = normalize_permissions(get_config(persona=persona, user=user, include_machine=True).PERMISSIONS)
         if "CRAWL_MAX_CONCURRENT_SNAPSHOTS" in config:
             raw_concurrency = config["CRAWL_MAX_CONCURRENT_SNAPSHOTS"]
@@ -338,7 +340,7 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
 
     @property
     def api_url(self) -> str:
-        return str(reverse_lazy("api-1:get_crawl", args=[self.id.hex]))
+        return str(reverse_lazy("api-1:get_crawl", args=[self.id]))
 
     @staticmethod
     def parse_tag_names(tags: Iterable[str] | str, *, pattern: str = r",") -> list[str]:
@@ -491,7 +493,9 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
     def output_dir(self) -> Path:
         from archivebox.config.common import get_config
 
-        return self.output_dir_for_config(get_config(resolve_plugins=False))
+        output_dir = self.output_dir_for_config(get_config(resolve_plugins=False))
+        hyphen_dir = output_dir.with_name(str(uuid.UUID(hex=self.id.hex)))
+        return output_dir if output_dir.exists() or not hyphen_dir.exists() else hyphen_dir
 
     def get_urls_list(self) -> list[str]:
         """Get list of URLs from urls field, filtering out comments and empty lines."""
@@ -771,34 +775,107 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
         from archivebox.personas.models import Persona
 
         if self.persona_id:
-            persona = Persona.objects.filter(id=self.persona_id).first()
-            if persona is not None:
-                return persona
-
-        default_persona_name = str((self.config or {}).get("DEFAULT_PERSONA") or "").strip()
-        if default_persona_name:
-            persona, _ = Persona.objects.get_or_create(name=default_persona_name or "Default")
-            persona.ensure_dirs()
-            return persona
+            return Persona.objects.filter(id=self.persona_id).first()
 
         return None
 
-    def limit_stop_reason(self) -> str:
-        from abx_dl.limits import CrawlLimitState
-        from archivebox.config.common import get_config
+    @staticmethod
+    def _config_value(config: Mapping[str, Any] | Any, key: str, default: Any = None) -> Any:
+        if isinstance(config, Mapping):
+            return config.get(key, default)
+        return getattr(config, key, default)
 
-        config = get_config(crawl=self, include_machine=False)
-        if (self.output_dir / ".abx-dl" / "limits.json").exists():
-            config["CRAWL_DIR"] = str(self.output_dir)
-            stop_reason = CrawlLimitState.from_config(config).get_stop_reason()
+    @classmethod
+    def create_scheduler_row(cls, **kwargs) -> "Crawl":
+        from archivebox.base_models.models import normalize_config_json_values
+        from archivebox.config.common import build_crawl_config_snapshot
+
+        now = timezone.now()
+        kwargs.setdefault("created_at", now)
+        kwargs.setdefault("modified_at", now)
+        config = normalize_config_json_values(kwargs.get("config") or {})
+        user = kwargs.get("created_by")
+        persona = kwargs.get("persona")
+        if user is None and kwargs.get("created_by_id"):
+            from django.contrib.auth import get_user_model
+
+            user = get_user_model().objects.filter(pk=kwargs["created_by_id"]).first()
+        if persona is None and kwargs.get("persona_id"):
+            from archivebox.personas.models import Persona
+
+            persona = Persona.objects.filter(pk=kwargs["persona_id"]).first()
+        kwargs["config"] = build_crawl_config_snapshot(user=user, persona=persona, overrides=config)
+        crawl = cls(**kwargs)
+        if crawl.delete_at is None:
+            crawl.set_delete_at_from_config()
+        cls.objects.bulk_create([crawl])
+        return crawl
+
+    def limit_stop_reason(
+        self,
+        *,
+        config: Mapping[str, Any] | Any | None = None,
+        output_dir: Path | None = None,
+        num_snapshots: int | None = None,
+    ) -> str:
+        from abx_dl.limits import CrawlLimitState
+
+        if config is None:
+            from archivebox.config.common import get_config
+
+            config = get_config(crawl=self, include_machine=False)
+        if output_dir is None:
+            output_dir = self.output_dir
+
+        limits_path = output_dir / ".abx-dl" / "limits.json"
+        if limits_path.exists():
+            config_with_crawl_dir = {**dict(config.items())} if isinstance(config, Mapping) else config
+            config_with_crawl_dir["CRAWL_DIR"] = str(output_dir)
+            stop_reason = CrawlLimitState.from_config(config_with_crawl_dir).get_stop_reason()
             if stop_reason:
                 return stop_reason
 
-        max_urls = int(config.CRAWL_MAX_URLS or 0)
-        if max_urls > 0 and self.snapshot_set.count() >= max_urls and self.count_urls_for_limit() >= max_urls:
+        max_urls = int(self._config_value(config, "CRAWL_MAX_URLS", 0) or 0)
+        if num_snapshots is None:
+            num_snapshots = self.snapshot_set.count()
+        if max_urls > 0 and num_snapshots >= max_urls and self.count_urls_for_limit() >= max_urls:
             return "crawl_max_urls"
 
         return ""
+
+    def lifecycle_stop_reason(self, *, num_snapshots: int | None = None, num_sealed_snapshots: int | None = None) -> str:
+        if self.is_paused:
+            return "paused"
+
+        if self.status != self.StatusChoices.SEALED:
+            return ""
+
+        if num_snapshots is None:
+            num_snapshots = self.snapshot_set.count()
+        if num_snapshots == 0:
+            return "no_viable_urls"
+
+        if num_sealed_snapshots is None:
+            from archivebox.core.models import Snapshot
+
+            num_sealed_snapshots = self.snapshot_set.filter(status=Snapshot.StatusChoices.SEALED).count()
+        if num_sealed_snapshots >= num_snapshots:
+            return "done"
+
+        return ""
+
+    def stop_reason(
+        self,
+        *,
+        config: Mapping[str, Any] | Any | None = None,
+        output_dir: Path | None = None,
+        num_snapshots: int | None = None,
+        num_sealed_snapshots: int | None = None,
+    ) -> str:
+        return self.limit_stop_reason(config=config, output_dir=output_dir, num_snapshots=num_snapshots) or self.lifecycle_stop_reason(
+            num_snapshots=num_snapshots,
+            num_sealed_snapshots=num_sealed_snapshots,
+        )
 
     def add_url(self, entry: dict) -> bool:
         """
@@ -1220,7 +1297,7 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
             The root Snapshot for this crawl, or None for system crawls that don't create snapshots
         """
         import time
-        from archivebox.hooks import run_hook, discover_hooks, process_hook_records, is_finite_background_hook
+        from archivebox.plugins.hooks import run_hook, discover_hooks, process_hook_records, is_finite_background_hook
         from archivebox.config.common import get_config
         from archivebox.machine.models import Binary, Machine
 
@@ -1284,7 +1361,7 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
                 except Exception:
                     return set()
 
-            from archivebox.hooks import extract_records_from_process
+            from archivebox.plugins.hooks import extract_records_from_process
 
             records = []
             # Finite background hooks can exit before their completed Process
@@ -1409,7 +1486,7 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
 
     def cleanup(self):
         """Clean up background hooks and run on_CrawlEnd hooks."""
-        from archivebox.hooks import run_hook, discover_hooks
+        from archivebox.plugins.hooks import run_hook, discover_hooks
 
         # Clean up .pid files from output directory
         if self.output_dir.exists():

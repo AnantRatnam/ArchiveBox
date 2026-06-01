@@ -20,7 +20,7 @@ from archivebox.cli.archivebox_snapshot import list_snapshots
 @click.option("--sort", "-o", type=str, help="Field to sort by, e.g. url, created_at, bookmarked_at, downloaded_at")
 @click.option("--csv", "-C", type=str, help="Print output as CSV with the provided fields, e.g.: timestamp,url,title")
 @click.option("--with-headers", is_flag=True, help="Include column headers in structured output")
-@click.option("--search", type=click.Choice(["meta", "content", "contents", "deep"]), help="Search mode to use for the query")
+@click.option("--search", help="Search mode to use for the query")
 @click.argument("query", nargs=-1)
 def main(
     status: str | None,

@@ -6,7 +6,7 @@ import json
 import shutil
 from typing import Any
 
-from archivebox.uuid_compat import uuid7
+from archivebox.uuid_compat import CompactUUIDField, uuid7
 from pathlib import Path
 
 from django.db import models
@@ -65,7 +65,7 @@ class AutoDateTimeField(models.DateTimeField):
 
 
 class ModelWithUUID(models.Model):
-    id = models.UUIDField(primary_key=True, default=uuid7, editable=False, unique=True)
+    id = CompactUUIDField(primary_key=True, default=uuid7, editable=False, unique=True)
     created_at = models.DateTimeField(default=timezone.now, db_index=True)
     modified_at = models.DateTimeField(auto_now=True)
     created_by = models.ForeignKey(

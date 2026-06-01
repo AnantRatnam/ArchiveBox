@@ -24,8 +24,8 @@ from archivebox.core.views import (
     AddView,
     WebAddView,
     HealthCheckView,
-    live_progress_view,
 )
+from archivebox.progressmonitor.views import live_progress_view
 
 
 # GLOBAL_CONTEXT doesn't work as-is, disabled for now: https://github.com/ArchiveBox/ArchiveBox/discussions/1306

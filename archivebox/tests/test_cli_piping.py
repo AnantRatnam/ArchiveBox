@@ -138,7 +138,7 @@ def test_read_args_or_stdin_handles_args_stdin_and_mixed_jsonl():
 
 def test_collect_urls_from_plugins_reads_only_parser_outputs(tmp_path):
     """Parser extractor `urls.jsonl` outputs should be discoverable for recursive piping."""
-    from archivebox.hooks import collect_urls_from_plugins
+    from archivebox.plugins.hooks import collect_urls_from_plugins
 
     (tmp_path / "wget").mkdir()
     (tmp_path / "wget" / "urls.jsonl").write_text(
@@ -163,7 +163,7 @@ def test_collect_urls_from_plugins_reads_only_parser_outputs(tmp_path):
 
 
 def test_collect_urls_from_plugins_trims_markdown_suffixes(tmp_path):
-    from archivebox.hooks import collect_urls_from_plugins
+    from archivebox.plugins.hooks import collect_urls_from_plugins
 
     (tmp_path / "parse_html_urls").mkdir()
     (tmp_path / "parse_html_urls" / "urls.jsonl").write_text(
@@ -177,7 +177,7 @@ def test_collect_urls_from_plugins_trims_markdown_suffixes(tmp_path):
 
 
 def test_collect_urls_from_plugins_trims_trailing_punctuation(tmp_path):
-    from archivebox.hooks import collect_urls_from_plugins
+    from archivebox.plugins.hooks import collect_urls_from_plugins
 
     (tmp_path / "parse_html_urls").mkdir()
     (tmp_path / "parse_html_urls" / "urls.jsonl").write_text(

@@ -1,7 +1,8 @@
 __package__ = "archivebox.crawls"
 
 from copy import copy
-from urllib.parse import urlencode
+import json
+from urllib.parse import urlencode, urlparse
 
 from django import forms
 from django.core.paginator import Paginator
@@ -13,15 +14,14 @@ from django.utils.html import escape, format_html, format_html_join
 from django.utils import timezone
 from django.utils.safestring import mark_safe
 from django.contrib import admin, messages
-from django.db.models import Case, CharField, Count, IntegerField, OuterRef, Q, Subquery, Value, When
-from django.db.models.functions import Coalesce
+from django.db.models import Case, CharField, Count, Q, Value, When
 
 
 from django_object_actions import action
 
 from archivebox.base_models.admin import BaseModelAdmin, ConfigEditorMixin
 
-from archivebox.core.models import Snapshot
+from archivebox.core.models import ArchiveResult, Snapshot
 from archivebox.core.permissions import (
     PERMISSIONS_CHOICES,
     PERMISSIONS_META,
@@ -34,6 +34,7 @@ from archivebox.core.permissions import (
 from archivebox.core.widgets import TagEditorWidget, URLFiltersWidget
 from archivebox.crawls.models import Crawl, CrawlSchedule
 from archivebox.misc.paginators import AcceleratedPaginator
+from archivebox.progressmonitor.views import progress_endpoint
 from archivebox.workers.models import RETRY_AT_MAX
 
 
@@ -70,12 +71,14 @@ def render_snapshots_list(snapshots_qs, request=None, crawl=None, page_size=50, 
     if status_filter in valid_statuses:
         filtered_qs = filtered_qs.filter(status=status_filter)
 
+    # Keep ArchiveResult counters as scalar subqueries so the paginated
+    # Snapshot queryset does not become a join+GROUP BY over every result row.
     snapshots_qs = filtered_qs.order_by("-created_at").annotate(
-        total_results=Count("archiveresult"),
-        succeeded_results=Count("archiveresult", filter=Q(archiveresult__status="succeeded")),
-        failed_results=Count("archiveresult", filter=Q(archiveresult__status="failed")),
-        started_results=Count("archiveresult", filter=Q(archiveresult__status="started")),
-        skipped_results=Count("archiveresult", filter=Q(archiveresult__status="skipped")),
+        total_results=ArchiveResult.snapshot_count_expr(),
+        succeeded_results=ArchiveResult.snapshot_count_expr(status=ArchiveResult.StatusChoices.SUCCEEDED),
+        failed_results=ArchiveResult.snapshot_count_expr(status=ArchiveResult.StatusChoices.FAILED),
+        started_results=ArchiveResult.snapshot_count_expr(status=ArchiveResult.StatusChoices.STARTED),
+        skipped_results=ArchiveResult.snapshot_count_expr(status=ArchiveResult.StatusChoices.SKIPPED),
         snapshot_permissions=Case(
             When(permissions=PERMISSIONS_PUBLIC, then=Value(PERMISSIONS_PUBLIC)),
             When(permissions=PERMISSIONS_UNLISTED, then=Value(PERMISSIONS_UNLISTED)),
@@ -260,7 +263,7 @@ def render_snapshots_list(snapshots_qs, request=None, crawl=None, page_size=50, 
                                         background: {progress_color};
                                         transition: width 0.3s;"></div>
                         </div>
-                        <a href="/admin/core/archiveresult/?snapshot__id__exact={snapshot.id.hex}"
+                        <a href="/admin/core/archiveresult/?snapshot__id__exact={snapshot.id}"
                            style="font-size: 11px; color: #417690; min-width: 35px; text-decoration: none;"
                            title="View archive results">{progress_text}</a>
                     </div>
@@ -381,7 +384,7 @@ class URLFiltersField(forms.Field):
     def to_python(self, value):
         if isinstance(value, dict):
             return value
-        return {"allowlist": "", "denylist": "", "same_domain_only": False, "subpaths_only": False}
+        return {"allowlist": "", "denylist": "", "same_domain_only": False, "subpaths_only": False, "only_new": False}
 
 
 class CrawlAdminForm(forms.ModelForm):
@@ -423,12 +426,139 @@ class CrawlAdminForm(forms.ModelForm):
         config = dict(self.instance.config or {}) if self.instance and self.instance.pk else {}
         if self.instance and self.instance.pk:
             self.initial["tags_editor"] = self.instance.tags_str
+        effective_only_new = self.effective_only_new(self.instance if self.instance and self.instance.pk else None)
+        derived_filter_toggles = self.derive_filter_toggles(
+            self.instance.urls if self.instance and self.instance.pk else "",
+            config.get("URL_ALLOWLIST", ""),
+        )
         self.initial["url_filters"] = {
             "allowlist": config.get("URL_ALLOWLIST", ""),
             "denylist": config.get("URL_DENYLIST", ""),
-            "same_domain_only": False,
-            "subpaths_only": False,
+            "same_domain_only": derived_filter_toggles["same_domain_only"],
+            "subpaths_only": derived_filter_toggles["subpaths_only"],
+            "only_new": effective_only_new,
         }
+
+    @staticmethod
+    def extract_url_line(line):
+        line = str(line or "").strip()
+        if not line or line.startswith("#"):
+            return ""
+        if line.startswith("{"):
+            try:
+                return str(json.loads(line).get("url", "")).strip()
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return ""
+        return line
+
+    @staticmethod
+    def regex_escape(text):
+        escaped = ""
+        for char in str(text or ""):
+            escaped += f"\\{char}" if char in r".*+?^${}()|[]\\" else char
+        return escaped
+
+    @classmethod
+    def generated_host_allowlist(cls, urls):
+        seen = set()
+        domains = []
+        for raw_line in str(urls or "").splitlines():
+            url = cls.extract_url_line(raw_line)
+            if not url:
+                continue
+            parsed = urlparse(url)
+            domain = (parsed.hostname or "").lower()
+            if not domain or domain in seen:
+                continue
+            seen.add(domain)
+            domains.append(domain)
+        if not domains:
+            return ""
+        return "^https?://(" + "|".join(cls.regex_escape(domain) for domain in domains) + ")([:/]|$)"
+
+    @staticmethod
+    def subpath_prefix(pathname):
+        path = str(pathname or "/")
+        while "//" in path:
+            path = path.replace("//", "/")
+        if not path or path == "/":
+            return "/"
+        if path.endswith("/"):
+            return path
+        last_slash = path.rfind("/")
+        last_part = path[last_slash + 1 :]
+        if "." in last_part:
+            return path[: last_slash + 1] or "/"
+        return path
+
+    @staticmethod
+    def parsed_host_and_port(parsed):
+        host = (parsed.hostname or "").lower()
+        if not host:
+            return ""
+        try:
+            port = parsed.port
+        except ValueError:
+            port = None
+        return f"{host}:{port}" if port is not None else host
+
+    @classmethod
+    def generated_subpath_allowlist(cls, urls):
+        seen = set()
+        paths = []
+        for raw_line in str(urls or "").splitlines():
+            url = cls.extract_url_line(raw_line)
+            if not url:
+                continue
+            parsed = urlparse(url)
+            domain = (parsed.hostname or "").lower()
+            if domain:
+                seen.add(domain)
+            host = cls.parsed_host_and_port(parsed)
+            path = cls.subpath_prefix(parsed.path)
+            path_key = f"{host}{path}"
+            if not host or path_key in seen:
+                continue
+            seen.add(path_key)
+            paths.append((host, path))
+        if not paths:
+            return ""
+        patterns = []
+        for host, path in paths:
+            if path == "/":
+                patterns.append(f"^https?://{cls.regex_escape(host)}([/?#]|$)")
+            elif path.endswith("/"):
+                patterns.append(f"^https?://{cls.regex_escape(host)}{cls.regex_escape(path)}")
+            else:
+                patterns.append(f"^https?://{cls.regex_escape(host)}{cls.regex_escape(path)}([/?#]|$)")
+        return "\n".join(patterns)
+
+    @classmethod
+    def derive_filter_toggles(cls, urls, allowlist):
+        normalized_allowlist = "\n".join(Crawl.split_filter_patterns(allowlist))
+        if not normalized_allowlist:
+            return {"same_domain_only": False, "subpaths_only": False}
+        if normalized_allowlist == cls.generated_subpath_allowlist(urls):
+            return {"same_domain_only": True, "subpaths_only": True}
+        if normalized_allowlist == cls.generated_host_allowlist(urls):
+            return {"same_domain_only": True, "subpaths_only": False}
+        return {"same_domain_only": False, "subpaths_only": False}
+
+    @staticmethod
+    def effective_only_new(crawl=None):
+        from archivebox.config.common import get_config
+
+        if crawl is not None:
+            return bool(get_config(crawl=crawl, resolve_plugins=False).ONLY_NEW)
+        return bool(get_config(resolve_plugins=False).ONLY_NEW)
+
+    @staticmethod
+    def inherited_only_new(crawl):
+        crawl_without_only_new = copy(crawl)
+        config = dict(crawl.config or {})
+        config.pop("ONLY_NEW", None)
+        crawl_without_only_new.config = config
+        return CrawlAdminForm.effective_only_new(crawl_without_only_new)
 
     def clean_tags_editor(self):
         tags_str = self.cleaned_data.get("tags_editor", "")
@@ -452,6 +582,7 @@ class CrawlAdminForm(forms.ModelForm):
             "denylist": "\n".join(Crawl.split_filter_patterns(value.get("denylist", ""))),
             "same_domain_only": bool(value.get("same_domain_only")),
             "subpaths_only": bool(value.get("subpaths_only")),
+            "only_new": bool(value.get("only_new")),
         }
 
     def save(self, commit=True):
@@ -463,6 +594,14 @@ class CrawlAdminForm(forms.ModelForm):
                 url_filters.get("allowlist", ""),
                 url_filters.get("denylist", ""),
             )
+            config = dict(instance.config or {})
+            only_new = bool(url_filters.get("only_new"))
+            inherited_only_new = self.inherited_only_new(instance)
+            if only_new != inherited_only_new:
+                config["ONLY_NEW"] = only_new
+            else:
+                config.pop("ONLY_NEW", None)
+            instance.config = config
         if commit:
             instance.save()
             instance.apply_crawl_config_filters()
@@ -623,19 +762,11 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
         crawl_ids = [crawl.pk for crawl in crawl_list]
         if not crawl_ids:
             return
-        counts = {
-            str(row["crawl_id"]): row
-            for row in Snapshot.objects.filter(crawl_id__in=crawl_ids)
-            .values("crawl_id")
-            .annotate(
-                num_snapshots_cached=Count("pk"),
-                num_archived_snapshots_cached=Count("pk", filter=Q(status=Snapshot.StatusChoices.SEALED)),
-            )
-        }
+        counts = Snapshot.crawl_total_and_status_counts(crawl_ids, status=Snapshot.StatusChoices.SEALED)
         for crawl in crawl_list:
             row = counts.get(str(crawl.pk), {})
-            crawl.num_snapshots_cached = row.get("num_snapshots_cached", 0)
-            crawl.num_archived_snapshots_cached = row.get("num_archived_snapshots_cached", 0)
+            crawl.num_snapshots_cached = row.get("total", 0)
+            crawl.num_archived_snapshots_cached = row.get("status", 0)
 
     def get_queryset(self, request):
         """Keep joins page-local while computing per-row snapshot counts in the page query."""
@@ -649,25 +780,9 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
             )
         )
         if self.should_annotate_snapshot_counts(request):
-            snapshot_count = (
-                Snapshot.objects.filter(crawl_id=OuterRef("pk")).order_by().values("crawl_id").annotate(count=Count("pk")).values("count")
-            )
-            archived_snapshot_count = (
-                Snapshot.objects.filter(crawl_id=OuterRef("pk"), status=Snapshot.StatusChoices.SEALED)
-                .order_by()
-                .values("crawl_id")
-                .annotate(count=Count("pk"))
-                .values("count")
-            )
             queryset = queryset.annotate(
-                num_snapshots_cached=Coalesce(
-                    Subquery(snapshot_count, output_field=IntegerField()),
-                    Value(0),
-                ),
-                num_archived_snapshots_cached=Coalesce(
-                    Subquery(archived_snapshot_count, output_field=IntegerField()),
-                    Value(0),
-                ),
+                num_snapshots_cached=Snapshot.crawl_count_expr(),
+                num_archived_snapshots_cached=Snapshot.crawl_count_expr(status=Snapshot.StatusChoices.SEALED),
             )
         return queryset
 
@@ -684,6 +799,13 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
             "crawl_stop_reason": self.stop_reason_for_crawl(crawl) if crawl else "",
             "crawl_snapshots_changelist": self.snapshots_changelist(crawl) if crawl else "",
         }
+        if crawl and crawl.status in {
+            Crawl.StatusChoices.QUEUED,
+            Crawl.StatusChoices.STARTED,
+            Crawl.StatusChoices.PAUSED,
+        }:
+            extra_context["progress_auto_expand"] = True
+            extra_context["progress_endpoint"] = progress_endpoint("crawl", crawl.id)
         return super().change_view(request, object_id, form_url, extra_context)
 
     def add_view(self, request, form_url="", extra_context=None):
@@ -742,7 +864,7 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
         # hold SQLite behind the request for minutes on large archives. The
         # Crawl row is the scheduler signal; the runner observes PAUSED and
         # owns child-row lifecycle work.
-        paused = queryset.exclude(status__in=[Crawl.StatusChoices.SEALED, Crawl.StatusChoices.PAUSED]).update(
+        paused = queryset.exclude(status__in=Crawl.INACTIVE_STATES).update(
             status=Crawl.StatusChoices.PAUSED,
             retry_at=RETRY_AT_MAX,
             modified_at=timezone.now(),
@@ -757,7 +879,7 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
         # Keep resume symmetrical with pause: one tight scheduler UPDATE, no
         # save() hooks and no child fanout in the request path. Paused child
         # rows become runnable through their own resume/maintenance paths.
-        resumed = queryset.filter(status__in=[Crawl.StatusChoices.PAUSED, Crawl.StatusChoices.SEALED]).update(
+        resumed = queryset.filter(status__in=Crawl.INACTIVE_STATES).update(
             status=Crawl.StatusChoices.QUEUED,
             retry_at=timezone.now(),
             modified_at=timezone.now(),
@@ -777,11 +899,7 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
 
         Snapshot.objects.filter(
             crawl_id__in=crawl_ids,
-            status__in=[
-                Snapshot.StatusChoices.QUEUED,
-                Snapshot.StatusChoices.STARTED,
-                Snapshot.StatusChoices.PAUSED,
-            ],
+            status__in=Snapshot.OPEN_STATES,
         ).filter(
             Q(retry_at__isnull=True) | Q(retry_at__gt=now),
         ).update(
@@ -799,7 +917,7 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
         )
         messages.success(request, f"Sealed {sealed} crawl(s). The runner will finish cleanup on the next sweep.")
 
-    @admin.action(description="Set Permissions ▾")
+    @admin.action(description="Permissions ▾")
     def set_crawl_permissions(self, request, queryset):
         permissions = (request.POST.get("permissions") or "").strip().lower()
         if permissions not in PERMISSIONS_VALUES:
@@ -836,7 +954,7 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
             messages.error(request, "Cannot recrawl: original crawl has no URLs.")
             return redirect("admin:crawls_crawl_change", obj.id)
 
-        new_crawl = Crawl.objects.create(
+        new_crawl = Crawl.create_scheduler_row(
             urls=obj.urls,
             max_depth=obj.max_depth,
             tags_str=obj.tags_str,
@@ -861,22 +979,17 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
         return format_html('<span class="crawl-stop-reason">{}</span>', reason)
 
     def stop_reason_for_crawl(self, obj):
-        from abx_dl.limits import CrawlLimitState
-
         if obj.pk in self.stop_reason_cache:
             return self.stop_reason_cache[obj.pk]
 
         output_dir = obj.output_dir_for_config(self.crawl_admin_base_config)
         config = self.limit_config_for_crawl(obj, output_dir)
-        reason = ""
-        if (output_dir / ".abx-dl" / "limits.json").exists():
-            config["CRAWL_DIR"] = str(output_dir)
-            reason = CrawlLimitState.from_config(config).get_stop_reason() or ""
-
-        max_urls = int(config["CRAWL_MAX_URLS"] or 0)
-        if not reason and max_urls > 0 and obj.num_snapshots_cached >= max_urls and obj.count_urls_for_limit() >= max_urls:
-            reason = "crawl_max_urls"
-
+        reason = obj.stop_reason(
+            config=config,
+            output_dir=output_dir,
+            num_snapshots=obj.num_snapshots_cached,
+            num_sealed_snapshots=obj.num_archived_snapshots_cached,
+        )
         self.stop_reason_cache[obj.pk] = reason
         return reason
 
@@ -901,7 +1014,7 @@ class CrawlAdmin(ConfigEditorMixin, BaseModelAdmin):
     @admin.display(description="Status", ordering="status")
     def status_with_stop_reason(self, obj):
         status = "PAUSED" if obj.is_paused else str(obj.status or "").upper()
-        reason = self.stop_reason_for_crawl(obj) if obj.status == Crawl.StatusChoices.SEALED else ""
+        reason = self.stop_reason_for_crawl(obj) if obj.is_paused or obj.status == Crawl.StatusChoices.SEALED else ""
         if reason:
             reason_label = reason.removeprefix("crawl_").replace("_", " ")
             return format_html(

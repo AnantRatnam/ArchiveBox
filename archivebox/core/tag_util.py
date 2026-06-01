@@ -12,7 +12,7 @@ from django.http import HttpRequest
 from django.urls import reverse
 
 from archivebox.config.common import get_config
-from archivebox.core.host_util import build_snapshot_url, build_web_url
+from archivebox.core.routes_util import build_snapshot_url, build_web_url
 from archivebox.core.models import Snapshot, SnapshotTag, Tag
 
 
@@ -61,7 +61,6 @@ def get_matching_tags(
     created_by: str = "",
     year: str = "",
     has_snapshots: str = "all",
-    with_snapshot_counts: bool = True,
 ) -> QuerySet[Tag]:
     sort = normalize_tag_sort(sort)
     has_snapshots = normalize_has_snapshots_filter(has_snapshots)
@@ -284,7 +283,6 @@ def build_tag_cards(
         created_by=created_by,
         year=year,
         has_snapshots=has_snapshots,
-        with_snapshot_counts=needs_snapshot_count_annotation,
     )
     if limit is not None:
         queryset = queryset[:limit]

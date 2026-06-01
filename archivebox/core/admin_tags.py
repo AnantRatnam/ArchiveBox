@@ -24,7 +24,7 @@ from archivebox.core.tag_util import (
     normalize_has_snapshots_filter,
     normalize_tag_sort,
 )
-from archivebox.core.host_util import build_snapshot_url
+from archivebox.core.routes_util import build_snapshot_url
 
 
 class TagInline(admin.TabularInline):

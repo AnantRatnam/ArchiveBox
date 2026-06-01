@@ -23,10 +23,10 @@ from archivebox.config import DATA_DIR
 from archivebox.config.common import get_config
 from archivebox.misc.paginators import AcceleratedPaginator
 from archivebox.base_models.admin import BaseModelAdmin
-from archivebox.hooks import get_plugin_icon
-from archivebox.core.host_util import build_snapshot_url
+from archivebox.plugins.discovery import get_plugin_icon
+from archivebox.plugins.views import LIVE_PLUGIN_BASE_URL
+from archivebox.core.routes_util import build_snapshot_url
 from archivebox.core.widgets import InlineTagEditorWidget
-from archivebox.core.views import LIVE_PLUGIN_BASE_URL
 from archivebox.machine.env_util import env_to_shell_exports
 
 
@@ -62,7 +62,7 @@ def build_abx_dl_replay_command(result: ArchiveResult, config=None) -> str:
 
 
 def get_plugin_admin_url(plugin_name: str) -> str:
-    from archivebox.hooks import BUILTIN_PLUGINS_DIR, USER_PLUGINS_DIR, iter_plugin_dirs
+    from archivebox.plugins.discovery import BUILTIN_PLUGINS_DIR, USER_PLUGINS_DIR, iter_plugin_dirs
 
     plugin_dir = next((path.resolve() for path in iter_plugin_dirs() if path.name == plugin_name), None)
     if plugin_dir:

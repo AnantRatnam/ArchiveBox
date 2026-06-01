@@ -7,7 +7,7 @@ import sys
 import uuid
 import socket
 from pathlib import Path
-from archivebox.uuid_compat import uuid7
+from archivebox.uuid_compat import CompactUUIDField, uuid7
 from datetime import timedelta, datetime
 from typing import TYPE_CHECKING, Any, cast
 
@@ -98,7 +98,7 @@ def _get_process_binary_env_keys(plugin_name: str, hook_path: str, env: dict[str
         add(f"{plugin_key}_BINARY")
 
     try:
-        from archivebox.hooks import discover_plugin_configs
+        from archivebox.plugins.discovery import discover_plugin_configs
 
         plugin_schema = discover_plugin_configs().get(plugin_name, {})
         schema_keys = [key for key in (plugin_schema.get("properties") or {}) if key.endswith("_BINARY")]
@@ -173,7 +173,7 @@ class MachineManager(models.Manager):
 
 
 class Machine(ModelWithHealthStats):
-    id = models.UUIDField(primary_key=True, default=uuid7, editable=False, unique=True)
+    id = CompactUUIDField(primary_key=True, default=uuid7, editable=False, unique=True)
     created_at = models.DateTimeField(default=timezone.now, db_index=True)
     modified_at = models.DateTimeField(auto_now=True)
     guid = models.CharField(max_length=64, default=None, null=False, unique=True, editable=False)
@@ -377,7 +377,7 @@ class NetworkInterfaceManager(models.Manager):
 
 
 class NetworkInterface(ModelWithHealthStats):
-    id = models.UUIDField(primary_key=True, default=uuid7, editable=False, unique=True)
+    id = CompactUUIDField(primary_key=True, default=uuid7, editable=False, unique=True)
     created_at = models.DateTimeField(default=timezone.now, db_index=True)
     modified_at = models.DateTimeField(auto_now=True)
     machine = models.ForeignKey(Machine, on_delete=models.CASCADE, default=None, null=False)
@@ -492,15 +492,15 @@ class Binary(ModelWithHealthStats, ModelWithStateMachine):
     Installation is synchronous during queued→installed transition.
     If installation fails, Binary stays in queued with retry_at set for later retry.
 
-    State machine calls run() which executes on_BinaryRequest__* hooks
-    to install the binary using the specified providers.
+    State machine calls run(), which emits an abxpkg BinaryRequestEvent through
+    the ArchiveBox runner and installs the binary using the specified providers.
     """
 
     class StatusChoices(models.TextChoices):
         QUEUED = "queued", "Queued"
         INSTALLED = "installed", "Installed"
 
-    id = models.UUIDField(primary_key=True, default=uuid7, editable=False, unique=True)
+    id = CompactUUIDField(primary_key=True, default=uuid7, editable=False, unique=True)
     created_at = models.DateTimeField(default=timezone.now, db_index=True)
     modified_at = models.DateTimeField(auto_now=True)
     machine = models.ForeignKey(Machine, on_delete=models.CASCADE, null=False)
@@ -583,7 +583,8 @@ class Binary(ModelWithHealthStats, ModelWithStateMachine):
         """
         from archivebox.config.common import get_config
 
-        return get_config().DATA_DIR / "machines" / str(self.machine_id) / "binaries" / self.name / str(self.id)
+        data_dir = get_config().DATA_DIR
+        return data_dir / "machines" / str(self.machine_id) / "binaries" / self.name / str(self.id)
 
     def to_json(self) -> dict:
         """
@@ -720,101 +721,11 @@ class Binary(ModelWithHealthStats, ModelWithStateMachine):
 
     def run(self):
         """
-        Execute binary installation by running on_BinaryRequest__* hooks.
-
-        Called by BinaryMachine when entering 'started' state.
-        Runs ALL on_BinaryRequest__* hooks - each hook checks binproviders
-        and decides if it can handle this binary. First hook to succeed wins.
-        Updates status to SUCCEEDED or FAILED based on hook output.
+        Execute binary installation through the ArchiveBox binary runner.
         """
-        import json
-        from archivebox.hooks import discover_hooks, run_hook
-        from archivebox.config.common import get_config
+        from archivebox.services.runner import run_binary
 
-        # Get merged config (Binary doesn't have crawl/snapshot context).
-        config = get_config()
-
-        # ArchiveBox installs the puppeteer package and Chromium in separate
-        # hook phases. Suppress puppeteer's bundled browser download during the
-        # package install step so the dedicated chromium hook owns that work.
-        if self.name == "puppeteer":
-            config.setdefault("PUPPETEER_SKIP_DOWNLOAD", "true")
-            config.setdefault("PUPPETEER_SKIP_CHROMIUM_DOWNLOAD", "true")
-
-        # Create output directory
-        output_dir = self.output_dir
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        # Discover ALL on_BinaryRequest__* hooks
-        hooks = discover_hooks("BinaryRequest", config=config)
-        if not hooks:
-            # No hooks available - stay queued, will retry later
-            return
-
-        allowed_binproviders = self._allowed_binproviders()
-
-        # Run each hook - they decide if they can handle this binary
-        for hook in hooks:
-            plugin_name = hook.parent.name
-            if allowed_binproviders is not None and plugin_name not in allowed_binproviders:
-                continue
-
-            plugin_output_dir = output_dir / plugin_name
-            plugin_output_dir.mkdir(parents=True, exist_ok=True)
-
-            overrides_json = None
-            if self.overrides:
-                overrides_json = json.dumps(self.overrides)
-
-            # Run the hook
-            process = run_hook(
-                hook,
-                output_dir=plugin_output_dir,
-                config=config,
-                timeout=600,  # 10 min timeout for binary installation
-                binary_id=str(self.id),
-                machine_id=str(self.machine_id),
-                name=self.name,
-                binproviders=self.binproviders,
-                overrides=overrides_json,
-            )
-
-            # Background hook (unlikely for binary installation, but handle it)
-            if process is None:
-                continue
-
-            # Failed or skipped hook - try next one
-            if process.exit_code != 0:
-                continue
-
-            # Parse JSONL output to check for successful installation
-            from archivebox.hooks import extract_records_from_process, process_hook_records
-
-            records = extract_records_from_process(process)
-            if records:
-                process_hook_records(records, overrides={})
-            binary_records = [record for record in records if record.get("type") == "Binary" and record.get("abspath")]
-            if binary_records:
-                record = binary_records[0]
-                # Update self from successful installation
-                self.abspath = record["abspath"]
-                self.version = record.get("version", "")
-                self.sha256 = record.get("sha256", "")
-                self.binprovider = record.get("binprovider", "env")
-                self.status = self.StatusChoices.INSTALLED
-                self.save()
-
-                # Maintain the optional human-facing LIB_BIN_DIR convenience symlink.
-                from archivebox.config.common import get_config
-
-                lib_bin_dir = get_config().LIB_BIN_DIR
-                if lib_bin_dir:
-                    self.symlink_to_lib_bin_after_commit(lib_bin_dir)
-
-                return
-
-        # No hook succeeded - leave status as QUEUED (will retry later)
-        # Don't set to FAILED since we don't have that status anymore
+        run_binary(str(self.id))
 
     def cleanup(self):
         """
@@ -1044,7 +955,7 @@ class Process(ModelWithDeleteAfter, models.Model):
         BINARY = "binary", "Binary"
 
     # Primary fields
-    id = models.UUIDField(primary_key=True, default=uuid7, editable=False, unique=True)
+    id = CompactUUIDField(primary_key=True, default=uuid7, editable=False, unique=True)
     created_at = models.DateTimeField(default=timezone.now, db_index=True)
     modified_at = models.DateTimeField(auto_now=True)
 

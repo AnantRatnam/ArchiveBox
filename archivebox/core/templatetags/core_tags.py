@@ -7,12 +7,14 @@ from django.utils.html import escape
 
 from pathlib import Path
 
-from archivebox.hooks import (
+from abx_plugins.plugins.archivewebpage.replay_preview import is_replay_target as is_archivewebpage_replay_target
+
+from archivebox.plugins.discovery import (
     get_plugin_icon,
     get_plugin_template,
     get_plugin_name,
 )
-from archivebox.core.host_util import (
+from archivebox.core.routes_util import (
     canonical_base_host_for_request,
     get_admin_base_url,
     get_public_base_url,
@@ -27,7 +29,6 @@ register = template.Library()
 _TEXT_PREVIEW_EXTS = (".json", ".jsonl", ".txt", ".csv", ".tsv", ".xml", ".yml", ".yaml", ".md", ".log")
 _IMAGE_PREVIEW_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".avif")
 _MHTML_PREVIEW_EXTS = (".mhtml", ".mht")
-_WACZ_PREVIEW_EXTS = (".wacz", ".warc", ".warc.gz")
 
 _MEDIA_FILE_EXTS = {
     ".mp4",
@@ -210,7 +211,7 @@ def _build_snapshot_preview_url(snapshot_id: str, path: str = "", request=None, 
         _is_text_preview_path(path)
         or _is_image_preview_path(path)
         or (path or "").lower().endswith(_MHTML_PREVIEW_EXTS)
-        or (path or "").lower().endswith(_WACZ_PREVIEW_EXTS)
+        or is_archivewebpage_replay_target(path or "")
     ):
         return url
     separator = "&" if "?" in url else "?"
@@ -450,7 +451,7 @@ def _unconfigured_banner_context(request) -> dict:
             from archivebox.machine.models import Machine
 
             machine = Machine.current()
-            machine_admin_url = f"/admin/machine/machine/{machine.id.hex}/change/"
+            machine_admin_url = f"/admin/machine/machine/{machine.id}/change/"
         except Exception:
             machine_admin_url = ""
     return {

@@ -45,26 +45,14 @@ def _format_sql(query: str, params=None) -> str:
 def _log_locked_database(query: str, params=None, *, attempt: int, elapsed: float, retry_interval: float) -> None:
     from rich.console import Console
 
-    from archivebox.misc.db import sqlite_lock_holders
+    from archivebox.misc.db import log_sqlite_lock_holders
 
     console = Console(stderr=True)
     console.print(
         f"[yellow][*] SQLite database is locked for {elapsed:.0f}s; retrying in {retry_interval:g}s... attempt={attempt}[/yellow]",
     )
     console.print(f"[yellow]    Query: {_format_sql(query, params)}[/yellow]")
-    holders = sqlite_lock_holders()
-    if holders:
-        console.print("[yellow]    DB holders:[/yellow]")
-        for holder in holders[:8]:
-            console.print(f"[yellow]    - {holder}[/yellow]")
-        if len(holders) > 8:
-            console.print(f"[yellow]    ... {len(holders) - 8} more[/yellow]")
-    else:
-        console.print("[yellow]    No local process with index.sqlite3 open was visible to this user.[/yellow]")
-    if attempt == 1:
-        console.print(
-            "[dim]    SQLite does not expose the active SQL statement from another process; only local PIDs with the DB open can be shown.[/dim]",
-        )
+    log_sqlite_lock_holders(console)
 
 
 def _connection_in_transaction(connection) -> bool:

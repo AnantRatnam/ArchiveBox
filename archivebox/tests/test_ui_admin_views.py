@@ -1,10 +1,9 @@
 """
-Tests for admin snapshot views and search functionality.
+Tests for admin snapshot views.
 
 Tests cover:
 - Admin snapshot list view
 - Admin grid view
-- Search functionality (both admin and public)
 - Snapshot progress statistics
 """
 
@@ -16,10 +15,8 @@ from datetime import datetime, timezone as dt_timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
-from urllib.parse import urlencode
-from asgiref.sync import async_to_sync
+from django.contrib.admin.helpers import ACTION_CHECKBOX_NAME
 from django.test import override_settings
-from django.test.client import RequestFactory
 from django.urls import reverse
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import UserManager
@@ -33,28 +30,6 @@ User = get_user_model()
 ADMIN_HOST = "admin.archivebox.localhost:8000"
 PUBLIC_HOST = "public.archivebox.localhost:8000"
 WEB_HOST = "web.archivebox.localhost:8000"
-
-
-def consume_streaming_response(response):
-    if response.is_async:
-
-        async def consume():
-            return b"".join([chunk async for chunk in response.streaming_content])
-
-        return async_to_sync(consume)()
-    return b"".join(response.streaming_content)
-
-
-def populate_admin_search_cache(client, path, params):
-    search_url = f"{path}?{urlencode(params)}"
-    response = client.get(
-        reverse("admin:core_snapshot_search_stream"),
-        {**params, "search_url": search_url},
-        HTTP_HOST=ADMIN_HOST,
-    )
-    assert response.status_code == 200
-    assert consume_streaming_response(response)
-    return client.get(path, params, HTTP_HOST=ADMIN_HOST)
 
 
 @pytest.fixture
@@ -88,6 +63,33 @@ def snapshot(crawl, db):
         crawl=crawl,
         status=Snapshot.StatusChoices.STARTED,
     )
+
+
+def test_snapshot_changelist_bulk_permissions_action_updates_selected_snapshots(client, admin_user, crawl, snapshot):
+    client.login(username="testadmin", password="testpassword")
+    url = reverse("admin:core_snapshot_changelist")
+
+    response = client.get(url, HTTP_HOST=ADMIN_HOST)
+
+    assert response.status_code == 200
+    assert b'value="set_snapshot_permissions"' in response.content
+    assert "Permissions ▾".encode() in response.content
+    assert b"Set Permissions" not in response.content
+
+    response = client.post(
+        url,
+        {
+            "action": "set_snapshot_permissions",
+            "permissions": "private",
+            ACTION_CHECKBOX_NAME: [str(snapshot.pk)],
+            "index": "0",
+        },
+        HTTP_HOST=ADMIN_HOST,
+    )
+
+    assert response.status_code == 302
+    snapshot.refresh_from_db()
+    assert snapshot.config["PERMISSIONS"] == "private"
 
 
 class TestSnapshotProgressStats:
@@ -1327,6 +1329,39 @@ class TestLiveProgressView:
         payload = response.json()
         assert payload["active_crawls"] == []
         assert payload["downloads_queued"] == 0
+        assert payload["crawls_active"] == 0
+        assert payload["archiveresults_queued"] == 1
+        assert "crawls_started" not in payload
+        assert "crawls_pending" not in payload
+        assert "downloads_started" not in payload
+        assert "downloads_pending" not in payload
+
+    def test_live_progress_scope_accepts_compact_and_dashed_snapshot_ids(self, client, admin_user, snapshot):
+        from archivebox.core.models import Snapshot
+
+        Snapshot.objects.filter(pk=snapshot.pk).update(status=Snapshot.StatusChoices.STARTED)
+        compact_id = str(snapshot.id).replace("-", "")
+        dashed_id = str(uuid.UUID(hex=compact_id))
+
+        client.login(username="testadmin", password="testpassword")
+        for snapshot_id in (compact_id, dashed_id):
+            response = client.get(reverse("live_progress"), {"snapshot_id": snapshot_id}, HTTP_HOST=ADMIN_HOST)
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["scope"]["snapshot_id"] == compact_id
+            assert payload["active_crawls"]
+
+    def test_live_progress_scope_accepts_compact_and_dashed_crawl_ids(self, client, admin_user, crawl):
+        compact_id = str(crawl.id).replace("-", "")
+        dashed_id = str(uuid.UUID(hex=compact_id))
+
+        client.login(username="testadmin", password="testpassword")
+        for crawl_id in (compact_id, dashed_id):
+            response = client.get(reverse("live_progress"), {"crawl_id": crawl_id}, HTTP_HOST=ADMIN_HOST)
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["scope"]["crawl_id"] == compact_id
+            assert payload["active_crawls"]
 
     def test_live_progress_reports_real_orchestrator_process_running(self, client, admin_user, db):
         import archivebox.machine.models as machine_models
@@ -1546,251 +1581,8 @@ class TestLiveProgressView:
         assert "pid" not in process_entry
 
 
-class TestAdminSnapshotSearch:
-    """Tests for admin snapshot search functionality."""
-
-    pytestmark = pytest.mark.django_db(transaction=True)
-
-    def test_admin_search_mode_selector_defaults_to_configured_deep_backend_for_ripgrep(self, client, admin_user, monkeypatch):
-        monkeypatch.setenv("SEARCH_BACKEND_ENGINE", "ripgrep")
-
-        client.login(username="testadmin", password="testpassword")
-        response = client.get(reverse("admin:core_snapshot_changelist"), HTTP_HOST=ADMIN_HOST)
-
-        assert response.status_code == 200
-        assert response.context["cl"].search_mode == "deep:ripgrep"
-        assert b'name="search_mode"' in response.content
-        assert b'value="contents"' in response.content
-        assert b'value="deep:ripgrep"' in response.content
-
-    def test_admin_search_mode_selector_defaults_to_configured_deep_backend_for_sqlite(self, client, admin_user, monkeypatch):
-        monkeypatch.setenv("SEARCH_BACKEND_ENGINE", "sqlite")
-
-        client.login(username="testadmin", password="testpassword")
-        response = client.get(reverse("admin:core_snapshot_changelist"), HTTP_HOST=ADMIN_HOST)
-
-        assert response.status_code == 200
-        assert response.context["cl"].search_mode == "deep:sqlite"
-
-    def test_admin_search_mode_selector_stays_checked_after_search(self, client, admin_user, crawl):
-        from archivebox.core.models import Snapshot
-
-        Snapshot.objects.create(
-            url="https://example.com/fulltext-only",
-            title="Unrelated Title",
-            crawl=crawl,
-        )
-
-        client.login(username="testadmin", password="testpassword")
-        response = client.get(
-            reverse("admin:core_snapshot_changelist"),
-            {"q": "google", "search_mode": "contents"},
-            HTTP_HOST=ADMIN_HOST,
-        )
-
-        assert response.status_code == 200
-        assert response.context["cl"].search_mode == "contents"
-        assert b'id="changelist"' in response.content
-        assert b"search-mode-contents" in response.content
-
-    def test_admin_search_stream_uses_real_ripgrep_backend_for_deep_results(self, client, admin_user, crawl, monkeypatch):
-        from archivebox.core.models import Snapshot
-
-        monkeypatch.setenv("SEARCH_BACKEND_ENGINE", "ripgrep")
-        fulltext_snapshot = Snapshot.objects.create(
-            url="https://example.com/fulltext-only",
-            title="Unrelated Title",
-            crawl=crawl,
-        )
-        output_file = fulltext_snapshot.output_dir / "dom" / "output.html"
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        output_file.write_text("<html><body>needle-deep-result</body></html>", encoding="utf-8")
-
-        client.login(username="testadmin", password="testpassword")
-        response = populate_admin_search_cache(
-            client,
-            reverse("admin:core_snapshot_changelist"),
-            {"q": "needle-deep-result", "search_mode": "deep"},
-        )
-
-        assert response.status_code == 200
-        assert response.context["cl"].search_mode.startswith("deep")
-        assert b"search-mode-deep" in response.content
-        assert str(fulltext_snapshot.id).encode() in response.content
-
-    def test_admin_meta_search_streams_results_in_metadata_wave_order(self, client, admin_user, crawl):
-        from archivebox.core.models import Snapshot
-
-        prefix_snapshot = Snapshot.objects.create(
-            url="https://google.example.com/prefix",
-            title="Later Title",
-            timestamp="2000000000",
-            crawl=crawl,
-        )
-        contains_snapshot = Snapshot.objects.create(
-            url="https://example.com/path/google-contained",
-            title="Later Title",
-            timestamp="3000000000",
-            crawl=crawl,
-        )
-        title_snapshot = Snapshot.objects.create(
-            url="https://example.com/title-only",
-            title="Google Title Match",
-            timestamp="1000000000",
-            crawl=crawl,
-        )
-
-        client.login(username="testadmin", password="testpassword")
-        path = reverse("admin:core_snapshot_changelist")
-        params = {"q": "google", "search_mode": "meta"}
-        response = populate_admin_search_cache(
-            client,
-            path,
-            params,
-        )
-
-        assert response.status_code == 200
-        from django.core.cache import cache
-        from archivebox.search.admin import get_admin_search_cache_key
-
-        cached = cache.get(get_admin_search_cache_key(SimpleNamespace(user=admin_user), f"{path}?{urlencode(params)}"))
-        assert cached["ids"][:3] == [str(title_snapshot.pk), str(contains_snapshot.pk), str(prefix_snapshot.pk)]
-        result_ids = list(response.context["cl"].queryset.values_list("pk", flat=True))
-        assert {title_snapshot.pk, contains_snapshot.pk, prefix_snapshot.pk}.issubset(result_ids)
-
-    def test_admin_contents_search_stream_uses_real_backend_results(self, client, admin_user, crawl, monkeypatch):
-        from archivebox.core.models import Snapshot
-
-        monkeypatch.setenv("SEARCH_BACKEND_ENGINE", "ripgrep")
-        metadata_snapshot = Snapshot.objects.create(
-            url="https://example.com/google-meta",
-            title="Google Metadata Match",
-            crawl=crawl,
-        )
-        fulltext_snapshot = Snapshot.objects.create(
-            url="https://example.com/fulltext-only",
-            title="Unrelated Title",
-            crawl=crawl,
-        )
-        output_file = fulltext_snapshot.output_dir / "dom" / "output.html"
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        output_file.write_text("<html><body>google fulltext match</body></html>", encoding="utf-8")
-
-        client.login(username="testadmin", password="testpassword")
-        response = populate_admin_search_cache(
-            client,
-            reverse("admin:core_snapshot_changelist"),
-            {"q": "google", "search_mode": "contents"},
-        )
-
-        assert response.status_code == 200
-        result_ids = list(response.context["cl"].queryset.values_list("pk", flat=True))
-        assert metadata_snapshot.pk not in result_ids
-        assert result_ids[:1] == [fulltext_snapshot.pk]
-
-    def test_manual_admin_sort_applies_to_cached_search_results(self, client, admin_user, crawl):
-        from archivebox.core.models import Snapshot
-
-        older_snapshot = Snapshot.objects.create(
-            url="https://example.com/google-older",
-            title="A Google Older",
-            timestamp="1000000000",
-            crawl=crawl,
-        )
-        newer_snapshot = Snapshot.objects.create(
-            url="https://example.com/google-newer",
-            title="Z Google Newer",
-            timestamp="2000000000",
-            crawl=crawl,
-        )
-
-        client.login(username="testadmin", password="testpassword")
-        response = populate_admin_search_cache(
-            client,
-            reverse("admin:core_snapshot_changelist"),
-            {"q": "google", "search_mode": "meta", "o": "4"},
-        )
-
-        assert response.status_code == 200
-        result_ids = list(response.context["cl"].queryset.values_list("pk", flat=True))
-        assert result_ids[:2] == [older_snapshot.pk, newer_snapshot.pk]
-
-    def test_search_by_url(self, client, admin_user, snapshot):
-        """Test searching snapshots by URL."""
-        client.login(username="testadmin", password="testpassword")
-        url = reverse("admin:core_snapshot_changelist")
-        response = client.get(url, {"q": "example.com"}, HTTP_HOST=ADMIN_HOST)
-
-        assert response.status_code == 200
-        # The search should find the example.com snapshot
-        assert b"example.com" in response.content
-
-    def test_search_by_title(self, client, admin_user, crawl, db):
-        """Test searching snapshots by title."""
-        from archivebox.core.models import Snapshot
-
-        Snapshot.objects.create(
-            url="https://example.com/titled",
-            title="Unique Title For Testing",
-            crawl=crawl,
-        )
-
-        client.login(username="testadmin", password="testpassword")
-        url = reverse("admin:core_snapshot_changelist")
-        response = client.get(url, {"q": "Unique Title"}, HTTP_HOST=ADMIN_HOST)
-
-        assert response.status_code == 200
-
-    def test_search_by_tag(self, client, admin_user, snapshot, db):
-        """Test searching snapshots by tag."""
-        from archivebox.core.models import Tag
-
-        tag = Tag.objects.create(name="test-search-tag")
-        snapshot.tags.add(tag)
-
-        client.login(username="testadmin", password="testpassword")
-        url = reverse("admin:core_snapshot_changelist")
-        response = client.get(url, {"q": "test-search-tag"}, HTTP_HOST=ADMIN_HOST)
-
-        assert response.status_code == 200
-
-    def test_empty_search(self, client, admin_user):
-        """Test empty search returns all snapshots."""
-        client.login(username="testadmin", password="testpassword")
-        url = reverse("admin:core_snapshot_changelist")
-        response = client.get(url, {"q": ""}, HTTP_HOST=ADMIN_HOST)
-
-        assert response.status_code == 200
-
-    def test_no_results_search(self, client, admin_user):
-        """Test search with no results."""
-        client.login(username="testadmin", password="testpassword")
-        url = reverse("admin:core_snapshot_changelist")
-        response = client.get(url, {"q": "nonexistent-url-xyz789"}, HTTP_HOST=ADMIN_HOST)
-
-        assert response.status_code == 200
-
-
-class TestPublicIndexSearch:
-    """Tests for public index search functionality."""
-
-    @pytest.fixture
-    def public_snapshot(self, crawl, db):
-        """Create sealed snapshot for public index."""
-        from archivebox.core.models import Snapshot
-
-        return Snapshot.objects.create(
-            url="https://public-example.com",
-            title="Public Example Website",
-            crawl=crawl,
-            status=Snapshot.StatusChoices.SEALED,
-        )
-
-    @override_settings(PUBLIC_INDEX=True)
-    def test_public_search_by_url(self, client, public_snapshot):
-        """Test public search by URL."""
-        response = client.get("/public/", {"q": "public-example.com"}, HTTP_HOST=PUBLIC_HOST)
-        assert response.status_code == 200
+class TestPublicIndex:
+    """Tests for public index visibility and redirects."""
 
     @override_settings(PUBLIC_INDEX=True)
     def test_public_index_lists_only_public_snapshots(self, client, admin_user):
@@ -1847,45 +1639,6 @@ class TestPublicIndexSearch:
         assert private_response["Location"].startswith("/admin/login/")
 
     @override_settings(PUBLIC_INDEX=True)
-    def test_public_search_mode_selector_defaults_to_configured_deep_backend_for_ripgrep(self, client, monkeypatch):
-        monkeypatch.setenv("SEARCH_BACKEND_ENGINE", "ripgrep")
-
-        response = client.get("/public/", HTTP_HOST=PUBLIC_HOST)
-
-        assert response.status_code == 200
-        assert response.context["search_mode"] == "deep:ripgrep"
-        assert b'name="search_mode"' in response.content
-        assert b'value="deep:ripgrep"' in response.content
-
-    def test_public_search_ranks_metadata_matches_before_fulltext(self, crawl, monkeypatch):
-        from archivebox.core.models import Snapshot
-        from archivebox.core.views import PublicIndexView
-
-        monkeypatch.setenv("SEARCH_BACKEND_ENGINE", "ripgrep")
-        metadata_snapshot = Snapshot.objects.create(
-            url="https://public-example.com/google-meta",
-            title="Google Metadata Match",
-            crawl=crawl,
-            status=Snapshot.StatusChoices.SEALED,
-        )
-        fulltext_snapshot = Snapshot.objects.create(
-            url="https://public-example.com/fulltext-only",
-            title="Unrelated Title",
-            crawl=crawl,
-            status=Snapshot.StatusChoices.SEALED,
-        )
-        output_file = fulltext_snapshot.output_dir / "dom" / "output.html"
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        output_file.write_text("<html><body>google public fulltext match</body></html>", encoding="utf-8")
-
-        request = RequestFactory().get("/public/", {"q": "google", "search_mode": "contents"})
-        view = PublicIndexView()
-        view.request = request
-
-        result_ids = list(view.get_queryset().values_list("pk", flat=True))
-        assert result_ids[:2] == [metadata_snapshot.pk, fulltext_snapshot.pk]
-
-    @override_settings(PUBLIC_INDEX=True)
     def test_public_index_redirects_logged_in_users_to_admin_snapshot_list(self, client, admin_user):
         client.force_login(admin_user)
 
@@ -1893,27 +1646,3 @@ class TestPublicIndexSearch:
 
         assert response.status_code == 302
         assert response["Location"] == "/admin/core/snapshot/"
-
-    @override_settings(PUBLIC_INDEX=True)
-    def test_public_search_by_title(self, client, public_snapshot):
-        """Test public search by title."""
-        response = client.get("/public/", {"q": "Public Example"}, HTTP_HOST=PUBLIC_HOST)
-        assert response.status_code == 200
-
-    @override_settings(PUBLIC_INDEX=True)
-    def test_public_search_query_type_meta(self, client, public_snapshot):
-        """Test public search with query_type=meta."""
-        response = client.get("/public/", {"q": "example", "query_type": "meta"}, HTTP_HOST=PUBLIC_HOST)
-        assert response.status_code == 200
-
-    @override_settings(PUBLIC_INDEX=True)
-    def test_public_search_query_type_url(self, client, public_snapshot):
-        """Test public search with query_type=url."""
-        response = client.get("/public/", {"q": "public-example.com", "query_type": "url"}, HTTP_HOST=PUBLIC_HOST)
-        assert response.status_code == 200
-
-    @override_settings(PUBLIC_INDEX=True)
-    def test_public_search_query_type_title(self, client, public_snapshot):
-        """Test public search with query_type=title."""
-        response = client.get("/public/", {"q": "Website", "query_type": "title"}, HTTP_HOST=PUBLIC_HOST)
-        assert response.status_code == 200

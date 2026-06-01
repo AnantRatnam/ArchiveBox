@@ -2,7 +2,8 @@ from pathlib import Path
 import pytest
 
 
-from abx_dl.events import ArchiveResultEvent, BinaryRequestEvent, ProcessEvent, ProcessStartedEvent
+from abxpkg.binary_service import BinaryRequestEvent
+from abx_dl.events import ArchiveResultEvent, ProcessEvent, ProcessStartedEvent
 from abx_dl.orchestrator import create_bus
 from abx_dl.output_files import OutputFile
 

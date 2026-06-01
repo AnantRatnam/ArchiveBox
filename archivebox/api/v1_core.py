@@ -31,7 +31,7 @@ from archivebox.core.models import Snapshot, ArchiveResult, Tag
 from archivebox.core.permissions import public_snapshots_queryset
 from archivebox.api.auth import auth_using_token
 from archivebox.config.common import get_config
-from archivebox.core.host_util import build_web_url
+from archivebox.core.routes_util import build_web_url
 from archivebox.misc.util import filter_queryset_by_uuid_substring, validate_url_length
 from archivebox.core.tag_util import (
     add_snapshot_counts,
@@ -50,6 +50,8 @@ from archivebox.core.tag_util import (
 )
 from archivebox.crawls.models import Crawl
 from archivebox.api.v1_crawls import CrawlSchema
+from archivebox.search.config import get_search_mode, get_search_mode_backend
+from archivebox.search.query import apply_snapshot_search
 
 
 router = Router(tags=["Core Models"])
@@ -855,12 +857,8 @@ class SnapshotFilterSchema(FilterSchema):
     modified_at: Annotated[datetime | None, FilterLookup("modified_at")] = None
     modified_at__gte: Annotated[datetime | None, FilterLookup("modified_at__gte")] = None
     modified_at__lt: Annotated[datetime | None, FilterLookup("modified_at__lt")] = None
-    search: Annotated[
-        str | None,
-        FilterLookup(
-            ["url__icontains", "title__icontains", "tags__name__icontains", "id__istartswith", "id__iendswith", "timestamp__startswith"],
-        ),
-    ] = None
+    search: str | None = None
+    search_mode: str | None = None
     url: Annotated[str | None, FilterLookup("url")] = None
     tag: Annotated[str | None, FilterLookup("tags__name")] = None
     title: Annotated[str | None, FilterLookup("title__icontains")] = None
@@ -868,14 +866,37 @@ class SnapshotFilterSchema(FilterSchema):
     bookmarked_at__gte: Annotated[datetime | None, FilterLookup("bookmarked_at__gte")] = None
     bookmarked_at__lt: Annotated[datetime | None, FilterLookup("bookmarked_at__lt")] = None
 
+    def filter_search(self, value: str | None) -> Q:
+        return Q()
+
+    def filter_search_mode(self, value: str | None) -> Q:
+        return Q()
+
 
 @router.get("/snapshots", response=list[SnapshotSchema], url_name="get_snapshots")
 @paginate(CustomPagination)
 def get_snapshots(request: HttpRequest, filters: Query[SnapshotFilterSchema], with_archiveresults: bool = False):
     """List all Snapshot entries matching these filters."""
     setattr(request, "with_archiveresults", with_archiveresults)
-    queryset = Snapshot.objects.all()
-    return filters.filter(queryset).distinct()
+    queryset = filters.filter(Snapshot.objects.all()).distinct()
+    query = (filters.search or "").strip()
+    if not query:
+        return queryset
+
+    runtime_config = getattr(request, "archivebox_config", None)
+    search_mode = get_search_mode(filters.search_mode, config=runtime_config)
+    try:
+        return apply_snapshot_search(
+            queryset,
+            query,
+            search_mode=search_mode,
+            config=runtime_config,
+            include_id_matches=True,
+        )
+    except Exception:
+        if get_search_mode_backend(search_mode, config=runtime_config):
+            return queryset.none()
+        return apply_snapshot_search(queryset, query, search_mode="meta", config=runtime_config, include_id_matches=True)
 
 
 @router.get("/snapshots.rss", url_name="get_snapshots_rss")
@@ -1212,7 +1233,7 @@ def _get_snapshot_for_tag_edit(snapshot_ref: str) -> Snapshot:
     is_full_uuid = len(snapshot_ref.replace("-", "")) == 32 and all(char in "0123456789abcdef-" for char in snapshot_ref)
     if is_full_uuid:
         try:
-            return snapshot_qs.get(pk=snapshot_ref)
+            return snapshot_qs.get(pk=snapshot_ref.replace("-", ""))
         except (Snapshot.DoesNotExist, ValueError):
             pass
 
@@ -1295,7 +1316,7 @@ def tags_autocomplete(request: HttpRequest, q: str = ""):
         raise HttpError(401, "Authentication required")
 
     public_only = not getattr(request.user, "is_authenticated", False) and not getattr(request, "_api_token", None)
-    queryset = get_matching_tags(q, with_snapshot_counts=False)
+    queryset = get_matching_tags(q)
     public_snapshots = public_snapshots_queryset(Snapshot.objects.all())
     if public_only:
         queryset = queryset.filter(snapshot_set__id__in=public_snapshots.values("id")).distinct()

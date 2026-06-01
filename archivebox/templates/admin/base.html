@@ -1180,6 +1180,10 @@
                 margin-left: auto;
                 flex: 0 0 auto;
             }
+            body.change-list #changelist .actions .action-buttons[hidden],
+            body.change-list #changelist .actions .actions-tags-with-buttons[hidden] {
+                display: none !important;
+            }
 
             .actions label {
                 display: inline-flex;
@@ -1247,7 +1251,8 @@
                 display: inline-block;
             }
 
-            .action-rearchive-select {
+            .action-rearchive-select,
+            .action-permissions-select {
                 position: absolute;
                 left: 0;
                 bottom: 0;
@@ -1701,7 +1706,7 @@
                 </div>
 
                 {% if has_permission %}
-                    {% include 'admin/progress_monitor.html' %}
+                    {% include 'progressmonitor/progress_monitor.html' %}
                 {% endif %}
 
                 {% block breadcrumbs %}
@@ -1920,10 +1925,14 @@
                         })
                         return
                     }
-                    if (action_type === 'set_crawl_permissions') {
+                    if (action_type === 'set_crawl_permissions' || action_type === 'set_snapshot_permissions') {
                         const wrapper = $('<span></span>')
                             .addClass('action-permissions-wrapper')
                             .appendTo(buttons)
+                        const select = $('<select></select>')
+                            .addClass('action-permissions-select')
+                            .attr('aria-label', 'Permissions')
+                            .appendTo(wrapper)
                         $('<button>')
                             .attr('type', 'button')
                             .attr('name', action_type)
@@ -1932,41 +1941,40 @@
                             .click(function (e) {
                                 e.preventDefault()
                                 e.stopPropagation()
-                                wrapper.toggleClass('is-open')
-                                wrapper.find('.action-permissions-menu').prop('hidden', !wrapper.hasClass('is-open'))
+                                const el = select[0]
+                                if (typeof el.showPicker === 'function') {
+                                    try { el.showPicker() } catch (err) { el.focus(); el.click() }
+                                } else {
+                                    el.focus()
+                                    el.click()
+                                }
                                 return false
                             })
                             .appendTo(wrapper)
-                        const menu = $('<span></span>')
-                            .addClass('action-permissions-menu')
-                            .attr('hidden', true)
-                            .appendTo(wrapper)
+                        $('<option></option>').attr('value', '').attr('hidden', true).appendTo(select)
                         ;[
                             ['public', '👥', 'Public'],
                             ['unlisted', '🔗', 'Unlisted'],
                             ['private', '🔒', 'Private'],
                         ].forEach(function (choice) {
-                            $('<button>')
-                                .attr('type', 'button')
-                                .addClass('action-permissions-menu-item')
-                                .attr('data-permissions', choice[0])
-                                .html('<span aria-hidden="true">' + choice[1] + '</span><span>' + choice[2] + '</span>')
-                                .click(function (e) {
-                                    e.preventDefault()
-                                    e.stopPropagation()
-                                    let permissionsInput = container.find('input[name=permissions]')
-                                    if (!permissionsInput.length) {
-                                        permissionsInput = $('<input type="hidden" name="permissions">').appendTo(container)
-                                    }
-                                    permissionsInput.val(choice[0])
-                                    container.find('select[name=action]')
-                                        .val(action_type)
-                                        .trigger('change')
-                                    $('#changelist-form button[name="index"]').click()
-                                    document.querySelector('#logo').outerHTML = '<div class="loader"></div>'
-                                    return false
-                                })
-                                .appendTo(menu)
+                            $('<option></option>')
+                                .attr('value', choice[0])
+                                .text(choice[1] + ' ' + choice[2])
+                                .appendTo(select)
+                        })
+                        select.change(function () {
+                            const permissions = this.value
+                            if (!permissions) return
+                            let permissionsInput = container.find('input[name=permissions]')
+                            if (!permissionsInput.length) {
+                                permissionsInput = $('<input type="hidden" name="permissions">').appendTo(container)
+                            }
+                            permissionsInput.val(permissions)
+                            container.find('select[name=action]')
+                                .val(action_type)
+                                .trigger('change')
+                            $('#changelist-form button[name="index"]').click()
+                            document.querySelector('#logo').outerHTML = '<div class="loader"></div>'
                         })
                         return
                     }
@@ -2016,15 +2024,18 @@
                         .appendTo(buttons)
                 })
                 console.log('Converted', buttons.children().length, 'admin actions from dropdown to buttons')
-                const crawlAddLink = document.querySelector('.model-crawl.change-list .object-tools a.addlink')
-                const crawlActionButtons = document.querySelector('.model-crawl.change-list .actions-top .action-buttons')
-                if (crawlAddLink && crawlActionButtons && !crawlActionButtons.querySelector('.crawl-add-action')) {
-                    const addButton = crawlAddLink.cloneNode(true)
-                    addButton.classList.add('button', 'crawl-add-action')
-                    addButton.classList.remove('addlink')
-                    addButton.textContent = 'Add Crawl'
-                    crawlActionButtons.appendChild(addButton)
-                }
+                ;['.model-crawl.change-list', '.model-snapshot.change-list'].forEach(function(selector) {
+                    const scope = document.querySelector(selector)
+                    const addLink = scope?.querySelector('.object-tools a.addlink')
+                    const actionButtons = scope?.querySelector('.actions-top .action-buttons')
+                    if (addLink && actionButtons && !actionButtons.querySelector('.admin-add-action')) {
+                        const addButton = addLink.cloneNode(true)
+                        addButton.classList.add('button', 'admin-add-action')
+                        addButton.classList.remove('addlink')
+                        addButton.textContent = '➕ Add'
+                        actionButtons.appendChild(addButton)
+                    }
+                })
                 const tagContainer = document.querySelector('.actions-tags')
                 if (tagContainer) {
                     const tagButtons = buttons.find('button[name="add_tags"], button[name="remove_tags"]')
@@ -2033,32 +2044,103 @@
                         tagButtons.appendTo(tagContainer)
                     }
                 }
-                document.addEventListener('click', function(event) {
-                    document.querySelectorAll('.action-permissions-wrapper.is-open').forEach(function(wrapper) {
-                        if (!wrapper.contains(event.target)) {
-                            wrapper.classList.remove('is-open')
-                            const menu = wrapper.querySelector('.action-permissions-menu')
-                            if (menu) menu.hidden = true
-                        }
-                    })
-                })
                 if (window.jQuery && window.jQuery.fn.select2) {
                     window.jQuery('select[multiple]').select2();
                 }
+                updateActionControlVisibility()
             }
-            function updateTagWidgetVisibility() {
-                const tagContainer = document.querySelector('.actions-tags');
-                if (!tagContainer) return;
-                const checked = document.querySelectorAll('#changelist-form input.action-select:checked').length;
-                tagContainer.style.display = tagContainer.classList.contains('actions-tags-with-buttons') || checked > 0 ? 'inline-flex' : 'none';
+            function updateActionControlVisibility() {
+                const selectAcross = document.querySelector('div.actions input.select-across')?.value === '1'
+                const checked = selectAcross
+                    ? Number(document.querySelector('.action-summary')?.dataset.resultCount || 0)
+                    : document.querySelectorAll('#changelist-form input.action-select:checked').length
+                document.querySelectorAll('.action-buttons, .actions-tags-with-buttons').forEach(function(el) {
+                    el.hidden = checked === 0
+                })
             }
             function setupActionSummary() {
                 const summary = document.querySelector('.action-summary')
                 if (!summary || summary.dataset.summaryReady) return
                 summary.dataset.summaryReady = '1'
                 const selectedCount = summary.querySelector('.action-selected-count')
+                const selectedCurrent = summary.querySelector('.action-selected-current')
+                const pageSelect = summary.querySelector('.action-page-select')
                 const counter = summary.querySelector('.action-counter')
                 const formatter = new Intl.NumberFormat()
+                const selectAllParam = '_archivebox_select_all'
+                const getSelectedCount = function() {
+                    const selectAcross = document.querySelector('div.actions input.select-across')?.value === '1'
+                    if (selectAcross) {
+                        return Number(summary.dataset.resultCount || 0)
+                    }
+                    const match = counter?.textContent.match(/(\d+)\s+of\s+(\d+)\s+selected/)
+                    return match ? Number(match[1]) : document.querySelectorAll('#changelist-form input.action-select:checked').length
+                }
+                const selectCurrentResultsWithDjango = function() {
+                    const allToggle = document.getElementById('action-toggle')
+                    const questionLink = summary.querySelector('.question a')
+                    const selectAcross = document.querySelector('div.actions input.select-across')
+                    const pageCount = Number(summary.dataset.pageCount || 0)
+                    const resultCount = Number(summary.dataset.resultCount || pageCount)
+
+                    if (allToggle) {
+                        if (!allToggle.checked) {
+                            allToggle.click()
+                        }
+                        if (questionLink && resultCount > pageCount) {
+                            questionLink.click()
+                        }
+                        return true
+                    }
+
+                    document.querySelectorAll('#changelist-form input.action-select').forEach(function(checkbox) {
+                        if (!checkbox.checked) {
+                            checkbox.checked = true
+                            checkbox.dispatchEvent(new Event('change', { bubbles: true }))
+                        }
+                        const card = checkbox.closest('.card')
+                        if (card) {
+                            card.classList.add('selected-card')
+                        }
+                    })
+                    if (selectAcross && resultCount > pageCount) {
+                        selectAcross.value = '1'
+                    }
+                    return false
+                }
+                const selectCurrentPageWithDjango = function() {
+                    const allToggle = document.getElementById('action-toggle')
+
+                    if (allToggle) {
+                        if (!allToggle.checked) {
+                            allToggle.click()
+                        }
+                        return true
+                    }
+
+                    document.querySelectorAll('#changelist-form input.action-select').forEach(function(checkbox) {
+                        if (!checkbox.checked) {
+                            checkbox.checked = true
+                            checkbox.dispatchEvent(new Event('change', { bubbles: true }))
+                        }
+                        const card = checkbox.closest('.card')
+                        if (card) {
+                            card.classList.add('selected-card')
+                        }
+                    })
+                    return false
+                }
+                const selectAllRowsWithDjango = function() {
+                    const resultCount = Number(summary.dataset.resultCount || 0)
+                    const fullResultCount = Number(summary.dataset.fullResultCount || resultCount)
+                    if (fullResultCount > resultCount) {
+                        const url = new URL(window.location.href)
+                        url.search = '?' + selectAllParam + '=1'
+                        window.location.href = url.toString()
+                        return
+                    }
+                    selectCurrentResultsWithDjango()
+                }
                 const update = function() {
                     if (!selectedCount || !counter) return
                     const match = counter.textContent.match(/(\d+)\s+of\s+(\d+)\s+selected/)
@@ -2068,36 +2150,49 @@
                         : (match ? Number(match[1]) : document.querySelectorAll('#changelist-form input.action-select:checked').length)
                     const pageCount = match ? Number(match[2]) : Number(summary.dataset.pageCount || 0)
                     const selectedLimit = selectAcross ? Number(summary.dataset.resultCount || pageCount) : pageCount
-                    selectedCount.textContent = formatter.format(selected) + ' / ' + formatter.format(selectedLimit) + ' selected'
+                    if (selectedCurrent && pageSelect) {
+                        selectedCurrent.textContent = formatter.format(selected)
+                        pageSelect.textContent = formatter.format(selectedLimit)
+                    } else {
+                        selectedCount.textContent = formatter.format(selected) + ' / ' + formatter.format(selectedLimit) + ' selected'
+                    }
                     summary.classList.toggle('action-summary-has-selection', selected > 0)
                     summary.classList.toggle('action-summary-select-across', selectAcross)
                     const totalCount = summary.querySelector('.action-total-count')
                     if (totalCount) {
-                        totalCount.hidden = selectAcross
+                        totalCount.hidden = false
                     }
+                    updateActionControlVisibility()
                 }
                 new MutationObserver(update).observe(counter, { childList: true, characterData: true, subtree: true })
                 document.querySelector('#changelist-form')?.addEventListener('change', function() {
                     window.setTimeout(update, 0)
                 })
                 summary.addEventListener('click', function(event) {
+                    const pageSelect = event.target.closest('.action-page-select')
                     const explicitSelectAll = event.target.closest('.action-total-select, .action-total-count .question a')
-                    const selectedTotalClick = event.target.closest('.action-total-reset') && summary.classList.contains('action-summary-has-selection')
-                    if (explicitSelectAll || selectedTotalClick) {
-                        const questionLink = summary.querySelector('.action-total-count .question a')
-                        const allToggle = document.getElementById('action-toggle')
-                        const pageCount = Number(summary.dataset.pageCount || 0)
-                        const resultCount = Number(summary.dataset.resultCount || pageCount)
+                    const totalReset = event.target.closest('.action-total-reset')
+                    if (pageSelect || explicitSelectAll || (totalReset && getSelectedCount() === 0)) {
                         event.preventDefault()
-                        if (allToggle && !allToggle.checked) {
-                            allToggle.click()
-                        }
-                        if (questionLink && resultCount > pageCount) {
-                            questionLink.click()
+                        if (pageSelect) {
+                            selectCurrentPageWithDjango()
+                        } else if (totalReset) {
+                            selectAllRowsWithDjango()
+                        } else {
+                            selectCurrentResultsWithDjango()
                         }
                     }
                     window.setTimeout(update, 0)
                 })
+                if (new URLSearchParams(window.location.search).get(selectAllParam) === '1') {
+                    const cleanUrl = new URL(window.location.href)
+                    cleanUrl.searchParams.delete(selectAllParam)
+                    window.history.replaceState(null, '', cleanUrl.toString())
+                    window.setTimeout(function() {
+                        selectAllRowsWithDjango()
+                        update()
+                    }, 0)
+                }
                 update()
             }
             function setupSearchModeSelect() {
@@ -2230,7 +2325,7 @@
                 const form = document.querySelector('#changelist-form')
                 if (form && !form.dataset.archiveboxActionsReady) {
                     form.dataset.archiveboxActionsReady = '1'
-                    form.addEventListener('change', updateTagWidgetVisibility)
+                    form.addEventListener('change', updateActionControlVisibility)
                 }
             }
             function fixInlineAddRow() {
@@ -2358,7 +2453,7 @@
                     fixInlineAddRow()
                     setupSnapshotGridListToggle()
                 }
-                updateTagWidgetVisibility()
+                updateActionControlVisibility()
                 setupActionSummary()
                 setupSearchModeSelect()
                 setupEmbeddedChangelistSearch()

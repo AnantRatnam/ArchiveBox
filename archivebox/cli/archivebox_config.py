@@ -31,7 +31,7 @@ def config(
     from abx_plugins.plugins.base.utils import resolve_alias
     from archivebox.config.collection import write_config_file
     from archivebox.config.common import ArchiveBoxConfig, get_config, get_all_configs
-    from archivebox.hooks import discover_plugin_configs
+    from archivebox.plugins.discovery import discover_plugin_configs
 
     check_data_folder()
 

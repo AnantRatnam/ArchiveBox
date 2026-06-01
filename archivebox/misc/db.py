@@ -146,6 +146,18 @@ def sqlite_lock_holders(db_path: Path = DATA_DIR / "index.sqlite3") -> list[str]
     return holders
 
 
+def log_sqlite_lock_holders(console: Any, *, db_path: Path = DATA_DIR / "index.sqlite3", limit: int = 8) -> None:
+    holders = sqlite_lock_holders(db_path)
+    if holders:
+        console.print("[yellow]    DB holders:[/yellow]")
+        for holder in holders[:limit]:
+            console.print(f"[yellow]    - {holder}[/yellow]")
+        if len(holders) > limit:
+            console.print(f"[yellow]    ... {len(holders) - limit} more[/yellow]")
+    else:
+        console.print("[yellow]    No local process with index.sqlite3 open was visible to this user.[/yellow]")
+
+
 def sqlite_lock_error(error: BaseException) -> bool:
     from django.db import OperationalError as DjangoOperationalError
 
@@ -157,7 +169,6 @@ def retry_sqlite_locks(action: Callable[[], Any], *, label: str, stderr: TextIO 
     from rich.console import Console
 
     console = Console(file=stderr or None, stderr=stderr is None)
-    attempts = 0
     while True:
         try:
             return action()
@@ -168,22 +179,9 @@ def retry_sqlite_locks(action: Callable[[], Any], *, label: str, stderr: TextIO 
             if not sqlite_lock_error(err):
                 raise
 
-        attempts += 1
         connections.close_all()
-        holders = sqlite_lock_holders()
         console.print(f"[yellow][*] SQLite database is locked while {label}; retrying in 5s...[/yellow]")
-        if holders:
-            console.print("[yellow]    DB holders:[/yellow]")
-            for holder in holders[:8]:
-                console.print(f"[yellow]    - {holder}[/yellow]")
-            if len(holders) > 8:
-                console.print(f"[yellow]    ... {len(holders) - 8} more[/yellow]")
-        else:
-            console.print("[yellow]    No local process with index.sqlite3 open was visible to this user.[/yellow]")
-        if attempts == 1:
-            console.print(
-                "[dim]    SQLite does not expose the active SQL statement from another process; only the owning local PIDs can be shown.[/dim]",
-            )
+        log_sqlite_lock_holders(console)
         with console.status("[yellow]Waiting for SQLite database lock to clear...[/yellow]", spinner="dots"):
             time.sleep(5.0)
 

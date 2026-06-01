@@ -34,7 +34,7 @@ def recover_orchestrator_state(*, include_chrome: bool = False) -> dict[str, int
     )
     active_child_snapshots = Snapshot.objects.filter(
         crawl_id=OuterRef("pk"),
-        status__in=[Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED, Snapshot.StatusChoices.PAUSED],
+        status__in=Snapshot.OPEN_STATES,
     )
     due_child_snapshots = active_child_snapshots.exclude(status=Snapshot.StatusChoices.PAUSED).filter(
         Q(retry_at__isnull=True) | Q(retry_at__lte=now),
@@ -52,7 +52,7 @@ def recover_orchestrator_state(*, include_chrome: bool = False) -> dict[str, int
     cleaned["snapshots_queued_without_retry_at"] = Snapshot.objects.filter(
         status=Snapshot.StatusChoices.QUEUED,
         retry_at__isnull=True,
-        crawl__status__in=[Crawl.StatusChoices.QUEUED, Crawl.StatusChoices.STARTED],
+        crawl__status__in=Crawl.RUNNABLE_STATES,
     ).update(retry_at=now, modified_at=now)
     backoff_results = ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.BACKOFF)
     orphaned_results = ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.STARTED).exclude(

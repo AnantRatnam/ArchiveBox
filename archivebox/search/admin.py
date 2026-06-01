@@ -1,55 +1,31 @@
 __package__ = "archivebox.search"
 
-import hashlib
-import json
-
 from django.contrib import admin
 from django.contrib.admin.views.main import ChangeList
-from django.core.cache import cache
 
-from archivebox.search import (
-    get_search_backend_display_name,
+from archivebox.search.config import (
     get_default_search_mode,
     get_search_mode,
     get_search_mode_backend,
     get_search_mode_base,
     get_search_mode_options,
-    query_search_index,
 )
-
-
-SEARCH_RESULT_CACHE_TTL = 60
-
-
-def get_admin_search_cache_key(request, url: str | None = None) -> str:
-    # Search streams publish IDs for one exact changelist URL. Keeping the URL
-    # whole makes sidebar filters, ordering, and user scope part of the key.
-    payload = json.dumps(
-        {
-            "user": str(request.user.pk or "anon"),
-            "url": url or request.get_full_path(),
-        },
-        sort_keys=True,
-    )
-    return f"abx:admin-search:{hashlib.sha256(payload.encode()).hexdigest()}"
-
-
-def get_cached_admin_search_ids(request) -> list[str] | None:
-    cached = cache.get(get_admin_search_cache_key(request))
-    if isinstance(cached, dict):
-        return cached.get("ids") or []
-    return None
+from archivebox.search.query import query_search_index
+from archivebox.search.views import get_cached_admin_search_ids
 
 
 class SearchResultsChangeList(ChangeList):
+    """Django admin ChangeList with ArchiveBox search mode state."""
+
     def __init__(self, request, *args, **kwargs):
+        """Capture normalized search mode before Django builds results."""
         self.search_mode = get_search_mode(request.GET.get("search_mode"), config=getattr(request, "archivebox_config", None))
         self.search_mode_backend = get_search_mode_backend(self.search_mode, config=getattr(request, "archivebox_config", None))
-        self.search_backend_label = get_search_backend_display_name(self.search_mode_backend) if self.search_mode_backend else ""
         super().__init__(request, *args, **kwargs)
         self.embedded_changelist = request.GET.get("_embedded") == "crawl"
 
     def get_results(self, request):
+        """Populate normal admin results plus search-index hint state."""
         super().get_results(request)
         self.show_search_index_hint = bool(
             self.opts.model_name == "snapshot"
@@ -60,6 +36,7 @@ class SearchResultsChangeList(ChangeList):
         )
 
     def get_filters_params(self, params=None):
+        """Remove UI-only search params before admin filter processing."""
         lookup_params = super().get_filters_params(params)
         lookup_params.pop("search_mode", None)
         lookup_params.pop("_embedded", None)
@@ -68,21 +45,26 @@ class SearchResultsChangeList(ChangeList):
 
 
 class SearchResultsAdminMixin(admin.ModelAdmin):
+    """Mixin that routes admin searches through ArchiveBox search modes."""
+
     show_search_mode_selector = True
 
     def get_changelist(self, request, **kwargs):
+        """Return the ArchiveBox search-aware ChangeList class."""
         return SearchResultsChangeList
 
     def get_default_search_mode(self):
+        """Return the default search mode for the current request config."""
         request = getattr(self, "request", None)
         return get_default_search_mode(config=getattr(request, "archivebox_config", None))
 
     def get_search_mode_options(self):
+        """Return selector options for the current request config."""
         request = getattr(self, "request", None)
         return get_search_mode_options(config=getattr(request, "archivebox_config", None))
 
     def get_search_results(self, request, queryset, search_term: str):
-        """Enhances the search queryset with results from the search backend"""
+        """Apply admin search semantics to a changelist queryset."""
 
         search_term = search_term.strip()
         if not search_term:

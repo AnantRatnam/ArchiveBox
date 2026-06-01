@@ -199,21 +199,6 @@ class TestSnapshotList:
         records = parse_jsonl_output(stdout)
         assert len(records) == 2
 
-    def test_list_search_meta(self, initialized_archive):
-        """snapshot list should support metadata search mode."""
-        url = create_test_url(domain="meta-search-example.com")
-        run_archivebox_cmd(["snapshot", "create", url], data_dir=initialized_archive)
-
-        stdout, stderr, code = run_archivebox_cmd(
-            ["snapshot", "list", "--search=meta", "meta-search-example.com"],
-            data_dir=initialized_archive,
-        )
-
-        assert code == 0, f"Command failed: {stderr}"
-        records = parse_jsonl_output(stdout)
-        assert len(records) == 1
-        assert "meta-search-example.com" in records[0]["url"]
-
 
 class TestSnapshotUpdate:
     """Tests for `archivebox snapshot update`."""

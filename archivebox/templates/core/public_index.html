@@ -481,7 +481,7 @@
                         <tr>
                             <td colspan="7" class="public-search-empty">
                                 {% if show_search_index_hint %}
-                                    0 results from deep: {{ search_backend_label }}. If this looks wrong, the search index may need to be updated:
+                                    0 results from {{ search_mode }}. If this looks wrong, the search index may need to be updated:
                                     <code>archivebox update --index-only</code>
                                 {% else %}
                                     No snapshots found.

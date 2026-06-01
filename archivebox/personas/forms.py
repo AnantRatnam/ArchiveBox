@@ -6,8 +6,8 @@ from django import forms
 from django.utils.safestring import mark_safe
 
 from archivebox.config.common import get_config
-from archivebox.core.forms import PluginConfigFormMixin
 from archivebox.core.permissions import PERMISSIONS_CHOICES
+from archivebox.plugins.forms import PluginConfigFormMixin
 from archivebox.personas.importers import (
     PersonaImportResult,
     PersonaImportSource,

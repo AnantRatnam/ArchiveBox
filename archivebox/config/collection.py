@@ -98,7 +98,7 @@ def _resolve_section_for_key(key: str, config_sections, plugin_configs) -> str:
 def _render_config_file_content(config: dict[str, str]) -> str:
     """Render a flat config dict to INI text, grouped by inferred section."""
     from archivebox.config.common import get_all_configs
-    from archivebox.hooks import discover_plugin_configs
+    from archivebox.plugins.discovery import discover_plugin_configs
 
     config_sections = get_all_configs()
     plugin_configs = discover_plugin_configs()
@@ -284,7 +284,7 @@ def write_config_file(config: dict[str, str]) -> AttrDict:
     """
 
     from archivebox.config.common import get_all_configs
-    from archivebox.hooks import discover_plugin_configs
+    from archivebox.plugins.discovery import discover_plugin_configs
     from archivebox.misc.system import atomic_write
 
     config_path = CONSTANTS.CONFIG_FILE

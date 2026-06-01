@@ -11,7 +11,7 @@ import subprocess
 import pytest
 
 from archivebox.core.models import Snapshot
-from archivebox.tests.conftest import run_queued_crawls
+from archivebox.tests.conftest import create_test_url, parse_jsonl_output, run_archivebox_cmd, run_queued_crawls
 from archivebox.tests.test_orm_helpers import use_archivebox_db
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -171,25 +171,122 @@ def test_list_allows_sort_with_limit(tmp_path, process, disable_extractors_dict)
     assert len(rows) == 2
 
 
-def test_list_search_meta_matches_metadata(tmp_path, process, disable_extractors_dict):
-    """Test that list --search=meta applies metadata search to the queryset."""
-    os.chdir(tmp_path)
-    subprocess.run(
-        ["archivebox", "add", "--index-only", "--depth=0", "https://example.com"],
-        capture_output=True,
-        env=disable_extractors_dict,
-        check=True,
-    )
-    run_queued_crawls(tmp_path, disable_extractors_dict)
+def test_snapshot_list_search_meta(initialized_archive):
+    """snapshot list should support metadata search mode."""
+    url = create_test_url(domain="meta-search-example.com")
+    run_archivebox_cmd(["snapshot", "create", url], data_dir=initialized_archive)
 
-    result = subprocess.run(
-        ["archivebox", "list", "--search=meta", "example.com"],
-        capture_output=True,
-        text=True,
-        timeout=30,
+    stdout, stderr, code = run_archivebox_cmd(
+        ["snapshot", "list", "--search=meta", "meta-search-example.com"],
+        data_dir=initialized_archive,
     )
 
-    rows = _parse_jsonl(result.stdout)
-    assert result.returncode == 0, result.stderr
-    assert len(rows) == 1
-    assert rows[0]["url"] == "https://example.com"
+    assert code == 0, f"Command failed: {stderr}"
+    records = parse_jsonl_output(stdout)
+    assert len(records) == 1
+    assert "meta-search-example.com" in records[0]["url"]
+
+
+def test_list_search_meta_matches_metadata(initialized_archive):
+    """top-level list --search=meta should apply metadata search to the queryset."""
+    url = create_test_url(domain="top-level-meta-search-example.com")
+    run_archivebox_cmd(["snapshot", "create", url], data_dir=initialized_archive)
+
+    stdout, stderr, code = run_archivebox_cmd(
+        ["list", "--search=meta", "top-level-meta-search-example.com"],
+        data_dir=initialized_archive,
+    )
+
+    assert code == 0, f"Command failed: {stderr}"
+    records = parse_jsonl_output(stdout)
+    assert len(records) == 1
+    assert "top-level-meta-search-example.com" in records[0]["url"]
+
+
+def test_search_command_finds_snapshots(initialized_archive):
+    run_archivebox_cmd(["snapshot", "create", "https://example.com"], data_dir=initialized_archive)
+
+    stdout, stderr, code = run_archivebox_cmd(["search", "example"], data_dir=initialized_archive)
+
+    assert code == 0, stderr
+    assert "example" in stdout
+
+
+def test_search_command_returns_no_results_for_missing_term(initialized_archive):
+    run_archivebox_cmd(["snapshot", "create", "https://example.com"], data_dir=initialized_archive)
+
+    _stdout, _stderr, code = run_archivebox_cmd(["search", "nonexistentterm12345"], data_dir=initialized_archive)
+
+    assert code in [0, 1]
+
+
+def test_search_command_on_empty_archive(initialized_archive):
+    _stdout, _stderr, code = run_archivebox_cmd(["search", "anything"], data_dir=initialized_archive)
+
+    assert code in [0, 1]
+
+
+def test_search_command_json_outputs_matching_snapshots(initialized_archive):
+    run_archivebox_cmd(["snapshot", "create", "https://example.com"], data_dir=initialized_archive)
+
+    stdout, stderr, code = run_archivebox_cmd(["search", "--json"], data_dir=initialized_archive)
+
+    assert code == 0, stderr
+    payload = json.loads(stdout)
+    assert any("example.com" in row.get("url", "") for row in payload)
+
+
+def test_search_command_json_with_headers_wraps_links_payload(initialized_archive):
+    run_archivebox_cmd(["snapshot", "create", "https://example.com"], data_dir=initialized_archive)
+
+    stdout, stderr, code = run_archivebox_cmd(["search", "--json", "--with-headers"], data_dir=initialized_archive)
+
+    assert code == 0, stderr
+    payload = json.loads(stdout)
+    links = payload.get("links", payload)
+    assert any("example.com" in row.get("url", "") for row in links)
+
+
+def test_search_command_html_outputs_markup(initialized_archive):
+    run_archivebox_cmd(["snapshot", "create", "https://example.com"], data_dir=initialized_archive)
+
+    stdout, stderr, code = run_archivebox_cmd(["search", "--html"], data_dir=initialized_archive)
+
+    assert code == 0, stderr
+    assert "<" in stdout
+
+
+def test_search_command_csv_outputs_requested_column(initialized_archive):
+    run_archivebox_cmd(["snapshot", "create", "https://example.com"], data_dir=initialized_archive)
+
+    stdout, stderr, code = run_archivebox_cmd(["search", "--csv", "url", "--with-headers"], data_dir=initialized_archive)
+
+    assert code == 0, stderr
+    assert "url" in stdout
+    assert "example.com" in stdout
+
+
+def test_search_command_with_headers_requires_structured_output_format(initialized_archive):
+    _stdout, stderr, code = run_archivebox_cmd(["search", "--with-headers"], data_dir=initialized_archive)
+
+    assert code != 0
+    assert "requires" in stderr.lower() or "json" in stderr.lower()
+
+
+def test_search_command_sort_option_runs_successfully(initialized_archive):
+    for url in ["https://iana.org", "https://example.com"]:
+        run_archivebox_cmd(["snapshot", "create", url], data_dir=initialized_archive)
+
+    stdout, stderr, code = run_archivebox_cmd(["search", "--csv", "url", "--sort=url"], data_dir=initialized_archive)
+
+    assert code == 0, stderr
+    assert "example.com" in stdout or "iana.org" in stdout
+
+
+def test_search_command_help_lists_supported_filters(initialized_archive):
+    stdout, _stderr, code = run_archivebox_cmd(["search", "--help"], data_dir=initialized_archive)
+
+    assert code == 0
+    assert "--filter-type" in stdout or "-f" in stdout
+    assert "--status" in stdout
+    assert "--sort" in stdout

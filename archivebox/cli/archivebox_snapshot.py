@@ -35,7 +35,7 @@ from collections.abc import Iterable
 
 import rich_click as click
 from rich import print as rprint
-from django.db.models import Case, IntegerField, Q, QuerySet, When
+from django.db.models import Case, IntegerField, QuerySet, When
 
 from archivebox.cli.cli_util import apply_filters
 
@@ -191,12 +191,7 @@ def build_snapshot_queryset(
     limit: int | None = None,
 ) -> QuerySet:
     from archivebox.core.models import Snapshot
-    from archivebox.search import (
-        get_default_search_mode,
-        get_search_mode,
-        prioritize_metadata_matches,
-        query_search_index,
-    )
+    from archivebox.search.query import apply_snapshot_search
 
     queryset = Snapshot.objects.order_by("-created_at")
     queryset = apply_filters(
@@ -214,39 +209,22 @@ def build_snapshot_queryset(
 
     query = (query or "").strip()
     if query:
-        metadata_qs = queryset.filter(
-            Q(title__icontains=query) | Q(url__icontains=query) | Q(timestamp__icontains=query) | Q(tags__name__icontains=query),
-        )
-        requested_search_mode = (search or "").strip().lower()
-        if requested_search_mode == "content":
-            requested_search_mode = "contents"
-        search_mode = get_default_search_mode() if not requested_search_mode else get_search_mode(requested_search_mode)
-
-        if search_mode == "meta":
-            queryset = metadata_qs
-        elif limit and len(list(metadata_qs.values_list("pk", flat=True).distinct()[:limit])) >= limit:
-            queryset = metadata_qs
-        else:
-            try:
-                deep_qsearch = None
-                if search_mode == "deep":
-                    qsearch = query_search_index(query, search_mode="contents", max_results=limit)
-                    deep_qsearch = query_search_index(query, search_mode="deep", max_results=limit)
-                else:
-                    qsearch = query_search_index(query, search_mode=search_mode, max_results=limit)
-                queryset = prioritize_metadata_matches(
-                    queryset,
-                    metadata_qs,
-                    qsearch,
-                    deep_queryset=deep_qsearch,
-                    ordering=("-created_at",) if not sort else None,
-                )
-            except Exception as err:
-                rprint(
-                    f"[yellow]Search backend error, falling back to metadata search: {err}[/yellow]",
-                    file=sys.stderr,
-                )
-                queryset = metadata_qs
+        try:
+            queryset = apply_snapshot_search(
+                queryset,
+                query,
+                search_mode=search,
+                ordering=("-created_at",) if not sort else None,
+                max_results=limit,
+                skip_backend_when_metadata_satisfies_limit=True,
+                include_metadata_for_forced_backend=True,
+            )
+        except Exception as err:
+            rprint(
+                f"[yellow]Search backend error, falling back to metadata search: {err}[/yellow]",
+                file=sys.stderr,
+            )
+            queryset = apply_snapshot_search(queryset, query, search_mode="meta")
 
     if sort:
         queryset = queryset.order_by(sort)
@@ -531,7 +509,7 @@ def create_cmd(urls: tuple, tag: str, status: str, depth: int):
 @click.option("--sort", "-o", type=str, help="Field to sort by, e.g. url, created_at, bookmarked_at, downloaded_at")
 @click.option("--csv", "-C", type=str, help="Print output as CSV with the provided fields, e.g.: timestamp,url,title")
 @click.option("--with-headers", is_flag=True, help="Include column headers in structured output")
-@click.option("--search", type=click.Choice(["meta", "content", "contents", "deep"]), help="Search mode to use for the query")
+@click.option("--search", help="Search mode to use for the query")
 @click.argument("query", nargs=-1)
 def list_cmd(
     status: str | None,

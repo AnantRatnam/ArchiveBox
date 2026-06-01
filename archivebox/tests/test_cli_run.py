@@ -1218,6 +1218,67 @@ class TestRecoverOrchestratorState:
         assert result.status == ArchiveResult.StatusChoices.SUCCEEDED
         assert snapshot.retry_at is None
 
+    def test_run_due_snapshot_runs_queued_plugin_after_fs_migration(self, monkeypatch):
+        from django.utils import timezone
+
+        from archivebox.base_models.models import get_or_create_system_user_pk
+        from archivebox.crawls.models import Crawl
+        from archivebox.core.models import ArchiveResult, Snapshot
+        from archivebox.services import runner
+
+        crawl = Crawl.objects.create(
+            urls="https://example.com",
+            created_by_id=get_or_create_system_user_pk(),
+            status=Crawl.StatusChoices.SEALED,
+            retry_at=None,
+        )
+        snapshot = Snapshot.objects.create(
+            url="https://example.com",
+            crawl=crawl,
+            status=Snapshot.StatusChoices.SEALED,
+            retry_at=timezone.now(),
+        )
+        Snapshot.objects.filter(pk=snapshot.pk).update(fs_version="0.9.0")
+        snapshot.refresh_from_db()
+        result = ArchiveResult.objects.create(
+            snapshot=snapshot,
+            plugin="search_backend_sonic",
+            hook_name="on_Snapshot__91_index_sonic",
+            status=ArchiveResult.StatusChoices.QUEUED,
+        )
+        calls = []
+
+        def fake_run_crawl(crawl_id, *, snapshot_ids=None, selected_plugins=None, **kwargs):
+            calls.append((crawl_id, snapshot_ids, selected_plugins, kwargs))
+            ArchiveResult.objects.filter(pk=result.pk).update(
+                status=ArchiveResult.StatusChoices.NORESULTS,
+                start_ts=timezone.now(),
+                end_ts=timezone.now(),
+                output_str="No indexable content",
+            )
+
+        monkeypatch.setattr(
+            runner,
+            "_snapshot_hook_names_by_plugin",
+            lambda: {"search_backend_sonic": frozenset({"on_Snapshot__91_index_sonic"})},
+        )
+        monkeypatch.setattr(runner, "run_crawl", fake_run_crawl)
+
+        assert runner.run_due_snapshot(snapshot, lock_seconds=60) is True
+
+        snapshot.refresh_from_db()
+        result.refresh_from_db()
+        assert snapshot.fs_version == Snapshot._fs_current_version()
+        assert result.status == ArchiveResult.StatusChoices.NORESULTS
+        assert calls == [
+            (
+                str(crawl.id),
+                [str(snapshot.id)],
+                ["search_backend_sonic"],
+                {"process_discovered_snapshots_inline": True, "interactive_interrupts": False},
+            ),
+        ]
+
     def test_run_due_snapshot_fails_obsolete_queued_hook_name(self):
         from django.utils import timezone
 

@@ -56,12 +56,14 @@ def pluginmap(
     from rich.panel import Panel
     from rich import box
 
-    from archivebox.hooks import (
-        BUILTIN_PLUGINS_DIR,
-        USER_PLUGINS_DIR,
+    from archivebox.plugins.hooks import (
         discover_hooks,
         is_background_hook,
         normalize_hook_event_name,
+    )
+    from archivebox.plugins.discovery import (
+        BUILTIN_PLUGINS_DIR,
+        USER_PLUGINS_DIR,
     )
 
     console = Console()

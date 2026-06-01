@@ -25,7 +25,7 @@ from django.utils import timezone
 
 from archivebox.core.permissions import PERMISSIONS_VALUES, normalize_permissions
 from archivebox.base_models.models import ModelWithConfig, get_or_create_system_user_pk
-from archivebox.uuid_compat import uuid7
+from archivebox.uuid_compat import CompactUUIDField, uuid7
 
 _fcntl: Any | None = None
 try:
@@ -81,7 +81,7 @@ class Persona(ModelWithConfig):
         persona.CHROME_USER_DATA_DIR  # -> Path to chrome_profile
     """
 
-    id = models.UUIDField(primary_key=True, default=uuid7, editable=False, unique=True)
+    id = CompactUUIDField(primary_key=True, default=uuid7, editable=False, unique=True)
     name = models.CharField(max_length=64, unique=True)
     created_at = models.DateTimeField(default=timezone.now, db_index=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, default=get_or_create_system_user_pk)

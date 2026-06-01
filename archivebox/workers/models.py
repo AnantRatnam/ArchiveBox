@@ -64,6 +64,17 @@ class BaseModelWithStateMachine(models.Model, MachineMixin):
         abstract = True
 
     @classmethod
+    def status_counts(cls, queryset: models.QuerySet | None = None, statuses: Iterable[str] | None = None) -> dict[str, int]:
+        """Count requested statuses with separate indexed COUNT probes.
+
+        For live/progress views this is often faster on large SQLite data dirs
+        than a grouped aggregate, because each status can use the status index
+        directly and the caller usually needs only a few states.
+        """
+        qs = queryset if queryset is not None else cls.objects.all()
+        return {status: qs.filter(status=status).count() for status in (statuses or cls.StatusChoices.values)}
+
+    @classmethod
     def check(cls, sender=None, **kwargs):
         import sys
 

@@ -27,7 +27,7 @@ class CrawlService(BaseService):
         await (
             Crawl.objects.filter(id=self.crawl_id)
             .exclude(
-                status__in=[Crawl.StatusChoices.PAUSED, Crawl.StatusChoices.SEALED],
+                status__in=Crawl.INACTIVE_STATES,
             )
             .aupdate(
                 status=Crawl.StatusChoices.STARTED,
@@ -42,7 +42,7 @@ class CrawlService(BaseService):
         await (
             Crawl.objects.filter(id=self.crawl_id)
             .exclude(
-                status__in=[Crawl.StatusChoices.PAUSED, Crawl.StatusChoices.SEALED],
+                status__in=Crawl.INACTIVE_STATES,
             )
             .aupdate(
                 status=Crawl.StatusChoices.STARTED,
@@ -61,7 +61,7 @@ class CrawlService(BaseService):
         await (
             Crawl.objects.filter(id=self.crawl_id)
             .exclude(
-                status__in=[Crawl.StatusChoices.PAUSED, Crawl.StatusChoices.SEALED],
+                status__in=Crawl.INACTIVE_STATES,
             )
             .aupdate(
                 status=Crawl.StatusChoices.STARTED,
@@ -77,14 +77,12 @@ class CrawlService(BaseService):
         crawl = await Crawl.objects.aget(id=self.crawl_id)
         if crawl.is_paused or crawl.status == Crawl.StatusChoices.SEALED:
             return
-        is_finished = not await crawl.snapshot_set.filter(
-            status__in=[Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED, Snapshot.StatusChoices.PAUSED],
-        ).aexists()
+        is_finished = not await crawl.snapshot_set.filter(status__in=Snapshot.OPEN_STATES).aexists()
         if not is_finished:
             await (
                 Crawl.objects.filter(id=self.crawl_id)
                 .exclude(
-                    status__in=[Crawl.StatusChoices.PAUSED, Crawl.StatusChoices.SEALED],
+                    status__in=Crawl.INACTIVE_STATES,
                 )
                 .aupdate(
                     status=Crawl.StatusChoices.STARTED,
@@ -97,7 +95,7 @@ class CrawlService(BaseService):
         await (
             Crawl.objects.filter(id=self.crawl_id)
             .exclude(
-                status__in=[Crawl.StatusChoices.PAUSED, Crawl.StatusChoices.SEALED],
+                status__in=Crawl.INACTIVE_STATES,
             )
             .aupdate(
                 status=Crawl.StatusChoices.SEALED,

@@ -77,7 +77,7 @@ class KeyValueWidget(forms.Widget):
         """Get available config options from plugins."""
         try:
             from archivebox.config.common import ArchiveBoxConfig
-            from archivebox.hooks import discover_plugin_configs
+            from archivebox.plugins.discovery import discover_plugin_configs
 
             options: dict[str, ConfigOption] = {}
             skipped_core_keys = {"ABX_RUNTIME", "DATA_DIR", "CRAWL_DIR", "SNAP_DIR"}

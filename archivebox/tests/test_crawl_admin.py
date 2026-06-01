@@ -1,3 +1,4 @@
+import re
 from typing import cast
 
 import pytest
@@ -63,6 +64,75 @@ def test_crawl_admin_add_view_renders_url_filter_alias_fields(client, admin_user
     assert b'name="url_filters_denylist"' in response.content
     assert b"Same domain only" in response.content
     assert b"Subpaths only" in response.content
+
+
+def test_crawl_admin_change_view_checks_effective_only_new(client, admin_user):
+    crawl = Crawl.objects.create(
+        urls="https://example.com",
+        config={},
+        created_by=admin_user,
+    )
+    client.login(username="crawladmin", password="testpassword")
+
+    response = client.get(
+        reverse("admin:crawls_crawl_change", args=[crawl.pk]),
+        HTTP_HOST=ADMIN_HOST,
+    )
+
+    assert response.status_code == 200
+    assert b"Effective ONLY_NEW" not in response.content
+    assert b'id="id_url_filters_only_new" name="url_filters_only_new" value="1" checked' in response.content
+
+
+def test_crawl_admin_change_view_derives_url_filter_shortcut_toggles(client, admin_user):
+    crawl = Crawl.objects.create(
+        urls="https://example.com/docs/page.html",
+        config={"URL_ALLOWLIST": r"^https?://example\.com/docs/"},
+        created_by=admin_user,
+    )
+    client.login(username="crawladmin", password="testpassword")
+
+    response = client.get(
+        reverse("admin:crawls_crawl_change", args=[crawl.pk]),
+        HTTP_HOST=ADMIN_HOST,
+    )
+
+    assert response.status_code == 200
+    assert b'id="id_url_filters_same_domain_only" name="url_filters_same_domain_only" value="1" checked' in response.content
+    assert b'id="id_url_filters_subpaths_only" name="url_filters_subpaths_only" value="1" checked' in response.content
+
+
+def test_admin_change_submit_row_uses_single_save_continue_button(client, admin_user, crawl):
+    client.login(username="crawladmin", password="testpassword")
+
+    response = client.get(
+        reverse("admin:crawls_crawl_change", args=[crawl.pk]),
+        HTTP_HOST=ADMIN_HOST,
+    )
+
+    assert response.status_code == 200
+    submit_rows = re.findall(r'<div class="submit-row">.*?</div>', response.content.decode(), flags=re.DOTALL)
+    assert submit_rows
+    for row in submit_rows:
+        assert 'name="_save"' not in row
+        assert 'name="_addanother"' not in row
+        assert 'value="Save and continue editing"' not in row
+        assert 'value="Save"' in row
+        assert 'name="_continue"' in row
+
+
+def test_admin_add_submit_row_hides_save_and_add_another(client, admin_user):
+    client.login(username="crawladmin", password="testpassword")
+
+    response = client.get(
+        reverse("admin:crawls_crawl_add"),
+        HTTP_HOST=ADMIN_HOST,
+    )
+
+    assert response.status_code == 200
+    submit_rows = re.findall(r'<div class="submit-row">.*?</div>', response.content.decode(), flags=re.DOTALL)
+    assert submit_rows
+    assert all('name="_addanother"' not in row for row in submit_rows)
 
 
 def test_crawl_schedule_admin_add_redirects_to_add_page_schedule_field(client, admin_user):
@@ -347,6 +417,67 @@ def test_create_snapshots_from_urls_respects_max_urls(admin_user):
     assert crawl.remaining_snapshot_capacity() == 0
     assert crawl.limit_stop_reason() == "crawl_max_urls"
     assert crawl.add_url({"url": "https://example.com/extra", "depth": 1}) is False
+
+
+def test_crawl_stop_reason_reports_no_viable_urls_for_sealed_empty_crawl(admin_user):
+    crawl = Crawl.objects.create(
+        urls="https://example.com/already-known",
+        status=Crawl.StatusChoices.SEALED,
+        retry_at=None,
+        created_by=admin_user,
+    )
+
+    assert crawl.stop_reason() == "no_viable_urls"
+
+
+def test_crawl_stop_reason_reports_done_for_sealed_crawl_with_all_snapshots_sealed(admin_user):
+    crawl = Crawl.objects.create(
+        urls="https://example.com/done",
+        status=Crawl.StatusChoices.SEALED,
+        retry_at=None,
+        created_by=admin_user,
+    )
+    Snapshot.objects.create(
+        url="https://example.com/done",
+        crawl=crawl,
+        status=Snapshot.StatusChoices.SEALED,
+        timestamp="1700000000.010",
+    )
+
+    assert crawl.stop_reason() == "done"
+
+
+def test_crawl_stop_reason_reports_paused_for_paused_crawl(admin_user):
+    crawl = Crawl.objects.create(
+        urls="https://example.com/paused",
+        status=Crawl.StatusChoices.PAUSED,
+        created_by=admin_user,
+    )
+
+    assert crawl.stop_reason() == "paused"
+
+
+def test_crawl_stop_reason_keeps_specific_limit_reason_over_lifecycle_fallback(admin_user):
+    crawl = Crawl.objects.create(
+        urls="\n".join(
+            [
+                "https://example.com/root",
+                "https://example.com/about",
+            ],
+        ),
+        config={"CRAWL_MAX_URLS": 1},
+        status=Crawl.StatusChoices.SEALED,
+        retry_at=None,
+        created_by=admin_user,
+    )
+    Snapshot.objects.create(
+        url="https://example.com/root",
+        crawl=crawl,
+        status=Snapshot.StatusChoices.SEALED,
+        timestamp="1700000000.011",
+    )
+
+    assert crawl.stop_reason() == "crawl_max_urls"
 
 
 def test_create_snapshots_from_urls_respects_only_new_exact_url_matches(admin_user):

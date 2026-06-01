@@ -65,7 +65,7 @@ def remove(
     log_removal_started(snapshots, yes=yes)
 
     from archivebox.core.models import Snapshot
-    from archivebox.search import flush_search_index
+    from archivebox.search.query import flush_search_index
 
     # Freeze the target set up-front so a concurrent daemon writing new
     # snapshots can't extend the deletion under us, and so the cursor isn't

@@ -47,7 +47,9 @@ def create_test_plugin_structure(plugins_dir: Path) -> None:
 def run_plugin_discovery_subprocess(tmp_path: Path, plugins_dir: Path, script: str):
     env = os.environ.copy()
     env["ARCHIVEBOX_USER_PLUGINS_DIR"] = str(plugins_dir)
-    env["DATA_DIR"] = str(tmp_path / "data")
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    env["DATA_DIR"] = str(data_dir)
     env["PYTHONPATH"] = str(REPO_ROOT) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     subprocess_script = "\n".join(
         [
@@ -67,7 +69,7 @@ def run_plugin_discovery_subprocess(tmp_path: Path, plugins_dir: Path, script: s
             "-c",
             subprocess_script,
         ],
-        cwd=tmp_path,
+        cwd=data_dir,
         env=env,
         capture_output=True,
         text=True,
@@ -87,37 +89,37 @@ class TestBackgroundHookDetection:
 
     def test_bg_js_suffix_detected(self):
         """Hooks with .bg.js suffix should be detected as background."""
-        from archivebox.hooks import is_background_hook
+        from archivebox.plugins.hooks import is_background_hook
 
         assert is_background_hook("on_Snapshot__21_consolelog.daemon.bg.js")
 
     def test_bg_py_suffix_detected(self):
         """Hooks with .bg.py suffix should be detected as background."""
-        from archivebox.hooks import is_background_hook
+        from archivebox.plugins.hooks import is_background_hook
 
         assert is_background_hook("on_Snapshot__24_responses.finite.bg.py")
 
     def test_bg_sh_suffix_detected(self):
         """Hooks with .bg.sh suffix should be detected as background."""
-        from archivebox.hooks import is_background_hook
+        from archivebox.plugins.hooks import is_background_hook
 
         assert is_background_hook("on_Snapshot__23_ssl.daemon.bg.sh")
 
     def test_legacy_background_suffix_detected(self):
         """Hooks with __background in stem should be detected (backwards compat)."""
-        from archivebox.hooks import is_background_hook
+        from archivebox.plugins.hooks import is_background_hook
 
         assert is_background_hook("on_Snapshot__21_consolelog__background.js")
 
     def test_foreground_hook_not_detected(self):
         """Hooks without .bg. or __background should NOT be detected as background."""
-        from archivebox.hooks import is_background_hook
+        from archivebox.plugins.hooks import is_background_hook
 
         assert not is_background_hook("on_Snapshot__11_favicon.js")
 
     def test_foreground_py_hook_not_detected(self):
         """Python hooks without .bg. should NOT be detected as background."""
-        from archivebox.hooks import is_background_hook
+        from archivebox.plugins.hooks import is_background_hook
 
         assert not is_background_hook("on_Snapshot__50_wget.py")
 
@@ -254,7 +256,7 @@ class TestHookDiscovery:
 
     def test_normalize_hook_event_name_accepts_event_classes(self):
         """Hook discovery should normalize bus event class names to hook families."""
-        from archivebox import hooks as hooks_module
+        from archivebox.plugins import hooks as hooks_module
 
         assert hooks_module.normalize_hook_event_name("InstallEvent") == "Install"
         assert hooks_module.normalize_hook_event_name("BinaryRequestEvent") == "BinaryRequest"
@@ -263,7 +265,7 @@ class TestHookDiscovery:
 
     def test_normalize_hook_event_name_strips_event_suffix_for_lifecycle_events(self):
         """Lifecycle event names should normalize via simple suffix stripping."""
-        from archivebox import hooks as hooks_module
+        from archivebox.plugins import hooks as hooks_module
 
         assert hooks_module.normalize_hook_event_name("BinaryEvent") == "Binary"
         assert hooks_module.normalize_hook_event_name("CrawlEvent") == "Crawl"
@@ -333,7 +335,7 @@ class TestHookDiscovery:
             tmp_path,
             plugins_dir,
             """
-            from archivebox import hooks as hooks_module
+            from archivebox.plugins import hooks as hooks_module
 
             hooks = hooks_module.discover_hooks("Snapshot", config={"CHROME_ENABLED": False, "WGET_ENABLED": True})
             emit([hook.parent.name for hook in hooks])
@@ -357,10 +359,11 @@ class TestHookDiscovery:
             tmp_path,
             plugins_dir,
             """
-            from archivebox import hooks as hooks_module
+            from archivebox.plugins import hooks as hooks_module
 
-            hooks_module.get_plugins.cache_clear()
-            emit(hooks_module.get_plugins())
+            from archivebox.plugins.discovery import get_plugins
+            get_plugins.cache_clear()
+            emit(get_plugins())
             """,
         )
         assert "env" in plugins
@@ -391,9 +394,10 @@ class TestHookDiscovery:
             tmp_path,
             plugins_dir,
             """
-            from archivebox import hooks as hooks_module
+            from archivebox.plugins import hooks as hooks_module
 
-            hooks_module.get_plugins.cache_clear()
+            from archivebox.plugins.discovery import get_plugins
+            get_plugins.cache_clear()
             hooks = hooks_module.discover_hooks("BinaryRequest", config={"PLUGINS": "singlefile"})
             emit([hook.name for hook in hooks])
             """,
@@ -409,9 +413,10 @@ class TestHookDiscovery:
             tmp_path,
             plugins_dir,
             """
-            from archivebox import hooks as hooks_module
+            from archivebox.plugins import hooks as hooks_module
 
-            hooks_module.get_plugins.cache_clear()
+            from archivebox.plugins.discovery import get_plugins
+            get_plugins.cache_clear()
             binary_hooks = hooks_module.discover_hooks("BinaryRequestEvent", filter_disabled=False)
             snapshot_hooks = hooks_module.discover_hooks("SnapshotEvent", filter_disabled=False)
             emit({
@@ -432,9 +437,10 @@ class TestHookDiscovery:
             tmp_path,
             plugins_dir,
             """
-            from archivebox import hooks as hooks_module
+            from archivebox.plugins import hooks as hooks_module
 
-            hooks_module.get_plugins.cache_clear()
+            from archivebox.plugins.discovery import get_plugins
+            get_plugins.cache_clear()
             emit({
                 "binary": [hook.name for hook in hooks_module.discover_hooks("BinaryEvent", filter_disabled=False)],
                 "crawl_cleanup": [
@@ -711,7 +717,7 @@ class TestPluginMetadata:
 @pytest.mark.django_db(transaction=True)
 def test_run_hook_exports_singular_node_modules_dir_with_colon_node_path(tmp_path):
     """Hook subprocesses must get a real NODE_MODULES_DIR even when NODE_PATH has multiple entries."""
-    from archivebox.hooks import run_hook
+    from archivebox.plugins.hooks import run_hook
 
     lib_dir = tmp_path / "lib"
     node_modules_dir = lib_dir / "npm" / "node_modules"

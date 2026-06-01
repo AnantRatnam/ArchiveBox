@@ -12,30 +12,48 @@ class Command(BaseCommand):
         parser.add_argument("--interval", type=float, default=1.0)
 
     def handle(self, *args, **kwargs):
+        from django.db import connections
+
         from archivebox.core.shutdown_util import wait_psutil_and_kill_children
         from archivebox.machine.models import Process
 
         supervisord_process_id = kwargs["supervisord_process_id"]
         interval = max(0.2, float(kwargs["interval"]))
 
+        # This watchdog runs as a supervisord-managed helper outside the
+        # orchestrator/runner. Keep every DB read/write as short as possible and
+        # close Django's connection immediately so this process does not hold a
+        # SQLite handle across sleep or process termination and trigger
+        # "database is locked" failures in normal ArchiveBox work.
+        def mark_supervisord_exited() -> None:
+            try:
+                supervisord_process.mark_exited(exit_code=0)
+            finally:
+                connections.close_all()
+
         while True:
             try:
                 supervisord_process = Process.objects.select_related("parent").get(id=supervisord_process_id)
             except Process.DoesNotExist:
                 return
+            finally:
+                connections.close_all()
 
             if supervisord_process.status != Process.StatusChoices.RUNNING:
                 return
 
-            supervisord = supervisord_process.proc
-            if supervisord is None:
-                supervisord_process.mark_exited(exit_code=0)
-                return
-
             owner = supervisord_process.parent
-            if owner is not None and owner.is_running:
+            if owner is not None and owner.status == Process.StatusChoices.RUNNING:
                 time.sleep(interval)
                 continue
+
+            try:
+                supervisord = supervisord_process.proc
+            finally:
+                connections.close_all()
+            if supervisord is None:
+                mark_supervisord_exited()
+                return
 
             try:
                 children = supervisord.children(recursive=True)
@@ -46,9 +64,9 @@ class Command(BaseCommand):
                     except psutil.NoSuchProcess:
                         pass
                 wait_psutil_and_kill_children(supervisord, children, timeout=5)
-                supervisord_process.mark_exited(exit_code=0)
+                mark_supervisord_exited()
             except psutil.NoSuchProcess:
-                supervisord_process.mark_exited(exit_code=0)
+                mark_supervisord_exited()
             except (BrokenPipeError, OSError, psutil.TimeoutExpired):
                 pass
             return

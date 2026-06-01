@@ -3,7 +3,7 @@ __package__ = "archivebox.core"
 from typing import TYPE_CHECKING, Optional, Any
 from collections.abc import Iterable, Sequence
 import uuid
-from archivebox.uuid_compat import uuid7
+from archivebox.uuid_compat import CompactUUIDField, uuid7
 from datetime import datetime, timedelta
 
 import os
@@ -15,7 +15,7 @@ from statemachine import State, registry
 
 from django.db import models, transaction
 from django.db.models import Case, Q, QuerySet, Sum, Value, When
-from django.db.models.functions import Concat
+from django.db.models.functions import Coalesce, Concat
 from django.db.models.fields.json import KT
 from django.utils.functional import cached_property
 from django.utils.text import slugify
@@ -41,7 +41,7 @@ from archivebox.misc.util import (
     urldecode,
     validate_url_length,
 )
-from archivebox.hooks import (
+from archivebox.plugins.discovery import (
     get_plugins,
     get_plugin_name,
     get_plugin_icon,
@@ -276,18 +276,6 @@ class SnapshotQuerySet(models.QuerySet):
                 raise SystemExit(2)
         return self.filter(q_filter)
 
-    def search(self, patterns: list[str]) -> "SnapshotQuerySet":
-        """Search snapshots using the configured search backend"""
-        from archivebox.search import query_search_index
-
-        qsearch = self.none()
-        for pattern in patterns:
-            try:
-                qsearch |= query_search_index(pattern)
-            except BaseException:
-                raise SystemExit(2)
-        return self.all() & qsearch
-
     # =========================================================================
     # Export Methods
     # =========================================================================
@@ -397,7 +385,7 @@ class SnapshotManager(models.Manager.from_queryset(SnapshotQuerySet)):  # ty: ig
 
 
 class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWithNotes, ModelWithHealthStats, ModelWithStateMachine):
-    id = models.UUIDField(primary_key=True, default=uuid7, editable=False, unique=True)
+    id = CompactUUIDField(primary_key=True, default=uuid7, editable=False, unique=True)
     created_at = models.DateTimeField(default=timezone.now, db_index=True)
     modified_at = models.DateTimeField(auto_now=True)
 
@@ -459,6 +447,8 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
     StatusChoices = ModelWithStateMachine.StatusChoices
     active_state = StatusChoices.STARTED
     delete_after_final_statuses = (StatusChoices.SEALED,)
+    RUNNABLE_STATES = (StatusChoices.QUEUED, StatusChoices.STARTED)
+    OPEN_STATES = (*RUNNABLE_STATES, StatusChoices.PAUSED)
 
     crawl_id: uuid.UUID
     parent_snapshot_id: uuid.UUID | None
@@ -491,6 +481,43 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
 
     def __str__(self):
         return f"[{self.id}] {self.url[:64]}"
+
+    @classmethod
+    def crawl_count_subquery(cls, *, status: str | None = None, outer_ref: str = "pk") -> QuerySet:
+        """Return a scalar subquery counting Snapshots for one outer Crawl."""
+        qs = cls.objects.filter(crawl_id=models.OuterRef(outer_ref))
+        if status is not None:
+            qs = qs.filter(status=status)
+        return qs.order_by().values("crawl_id").annotate(count=models.Count("pk")).values("count")
+
+    @classmethod
+    def crawl_count_expr(cls, *, status: str | None = None, outer_ref: str = "pk"):
+        # Use scalar subqueries for sortable Crawl admin counters: SQLite can
+        # probe the (crawl_id, status, modified_at) index per Crawl row instead
+        # of joining/grouping all visible Snapshot rows.
+        return Coalesce(
+            models.Subquery(cls.crawl_count_subquery(status=status, outer_ref=outer_ref), output_field=models.IntegerField()),
+            models.Value(0),
+        )
+
+    @classmethod
+    def crawl_total_and_status_counts(cls, crawl_ids: Iterable[Any], *, status: str) -> dict[str, dict[str, int]]:
+        """Return total and status-filtered Snapshot counts keyed by Crawl ID."""
+        crawl_ids = list(crawl_ids)
+        if not crawl_ids:
+            return {}
+        return {
+            str(row["crawl_id"]): {
+                "total": row["total"],
+                "status": row["status_count"],
+            }
+            for row in cls.objects.filter(crawl_id__in=crawl_ids)
+            .values("crawl_id")
+            .annotate(
+                total=models.Count("pk"),
+                status_count=models.Count("pk", filter=Q(status=status)),
+            )
+        }
 
     def update_and_requeue(self, **kwargs) -> bool:
         """
@@ -636,11 +663,8 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
 
     @classmethod
     def missing_delete_at_candidates(cls):
-        from archivebox.personas.models import Persona
-
-        persona_ids = Persona.objects.filter(config__has_key="DELETE_AFTER").values_list("id", flat=True)
         return cls.objects.filter(delete_at__isnull=True).filter(
-            Q(config__has_key="DELETE_AFTER") | Q(crawl__config__has_key="DELETE_AFTER") | Q(crawl__persona_id__in=persona_ids),
+            Q(config__has_key="DELETE_AFTER") | Q(crawl__config__has_key="DELETE_AFTER"),
         )
 
     @classmethod
@@ -649,7 +673,14 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
             return False
 
-        from archivebox.core.host_util import get_admin_host, get_api_host, get_listen_host, get_public_host, get_web_host, split_host_port
+        from archivebox.core.routes_util import (
+            get_admin_host,
+            get_api_host,
+            get_listen_host,
+            get_public_host,
+            get_web_host,
+            split_host_port,
+        )
 
         config = get_config()
         host = parsed.hostname.lower().strip(".")
@@ -742,10 +773,10 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
             if update_fields is not None:
                 kwargs["update_fields"] = tuple(dict.fromkeys([*update_fields, "fs_version", "modified_at"]))
         elif self.pk:
-            legacy_dir = get_config().ARCHIVE_DIR / self.timestamp
             current_dir = self.get_storage_path_for_version(self._fs_current_version())
-            if legacy_dir.exists() and not legacy_dir.is_symlink() and current_dir.exists() and legacy_dir != current_dir:
-                self.migrate_filesystem_to_current_version(source_dir=legacy_dir)
+            source_dir = Path(self.output_dir)
+            if source_dir.exists() and source_dir != current_dir and not source_dir.is_symlink():
+                self.migrate_filesystem_to_current_version(source_dir=source_dir)
 
         super().save(*args, **kwargs)
 
@@ -814,17 +845,8 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
 
     @staticmethod
     def _fs_current_version() -> str:
-        """Get current ArchiveBox filesystem version (normalized to x.x.0 format)"""
-        from archivebox.config import VERSION
-
-        # Normalize version to x.x.0 format (e.g., "0.9.0rc1" -> "0.9.0")
-        parts = VERSION.split(".")
-        if len(parts) >= 2:
-            major, minor = parts[0], parts[1]
-            # Strip any non-numeric suffix from minor version
-            minor = "".join(c for c in minor if c.isdigit())
-            return f"{major}.{minor}.0"
-        return "0.9.0"  # Fallback if version parsing fails
+        """Get current ArchiveBox filesystem layout version."""
+        return "0.9.4"
 
     @property
     def fs_migration_needed(self) -> bool:
@@ -836,6 +858,8 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         # Treat 0.7.0 and 0.8.0 as equivalent (both used archive/{timestamp})
         if version in ("0.7.0", "0.8.0"):
             return "0.9.0"
+        if version in ("0.9.0", "0.9.1", "0.9.2", "0.9.3"):
+            return "0.9.4"
         return self._fs_current_version()
 
     @staticmethod
@@ -868,6 +892,11 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         if source_dir and current == target:
             current_dir = self.get_storage_path_for_version(target, config=runtime_config)
             cleanup = self._fs_migrate_legacy_to_0_9_0(source_dir=source_dir, target_dir=current_dir)
+            crawl_dir = self.crawl.output_dir_for_config(runtime_config)
+            old_crawl_dir = crawl_dir.with_name(str(uuid.UUID(hex=self.crawl.id.hex)))
+            if old_crawl_dir.exists() and not crawl_dir.exists() and not old_crawl_dir.is_symlink():
+                crawl_dir.parent.mkdir(parents=True, exist_ok=True)
+                old_crawl_dir.rename(crawl_dir)
             if cleanup:
                 self._pending_fs_migration_cleanup = cleanup
             return
@@ -877,6 +906,10 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
             migrations = {
                 ("0.7.0", "0.9.0"): self._fs_migrate_from_0_7_0_to_0_9_0,
                 ("0.8.0", "0.9.0"): self._fs_migrate_from_0_8_0_to_0_9_0,
+                ("0.9.0", "0.9.4"): self._fs_migrate_from_0_9_0_to_0_9_4,
+                ("0.9.1", "0.9.4"): self._fs_migrate_from_0_9_0_to_0_9_4,
+                ("0.9.2", "0.9.4"): self._fs_migrate_from_0_9_0_to_0_9_4,
+                ("0.9.3", "0.9.4"): self._fs_migrate_from_0_9_0_to_0_9_4,
             }
 
             migration = migrations.get((current, next_ver))
@@ -896,6 +929,17 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
 
     def _fs_migrate_from_0_8_0_to_0_9_0(self, source_dir: Path | None = None, config: "ArchiveBoxBaseConfig | None" = None):
         return self._fs_migrate_legacy_to_0_9_0(source_dir=source_dir, config=config)
+
+    def _fs_migrate_from_0_9_0_to_0_9_4(self, source_dir: Path | None = None, config: "ArchiveBoxBaseConfig | None" = None):
+        runtime_config = config or get_config()
+        target_dir = self.get_storage_path_for_version("0.9.4", config=runtime_config)
+        cleanup = self._fs_migrate_legacy_to_0_9_0(source_dir=source_dir or self.output_dir, target_dir=target_dir, config=runtime_config)
+        crawl_dir = self.crawl.output_dir_for_config(runtime_config)
+        old_crawl_dir = crawl_dir.with_name(str(uuid.UUID(hex=self.crawl.id.hex)))
+        if old_crawl_dir.exists() and not crawl_dir.exists() and not old_crawl_dir.is_symlink():
+            crawl_dir.parent.mkdir(parents=True, exist_ok=True)
+            old_crawl_dir.rename(crawl_dir)
+        return cleanup
 
     def _fs_migrate_legacy_to_0_9_0(
         self,
@@ -1056,7 +1100,7 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         if version in ("0.7.0", "0.8.0"):
             return runtime_config.ARCHIVE_DIR / self.timestamp
 
-        elif version in ("0.9.0", "1.0.0"):
+        elif version in ("0.9.0", "0.9.1", "0.9.2", "0.9.3", "0.9.4", "1.0.0"):
             username = self.created_by.username
 
             date_base = self.bookmarked_at or self.created_at
@@ -2055,7 +2099,7 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
 
     @property
     def api_url(self) -> str:
-        return str(reverse_lazy("api-1:get_snapshot", args=[self.id.hex]))
+        return str(reverse_lazy("api-1:get_snapshot", args=[self.id]))
 
     def get_absolute_url(self):
         return f"/{self.archive_path}"
@@ -2162,6 +2206,11 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         if current_path.exists():
             return current_path
 
+        if self.fs_version in ("0.9.0", "0.9.1", "0.9.2", "0.9.3", "0.9.4", "1.0.0"):
+            hyphen_path = current_path.with_name(str(uuid.UUID(hex=self.id.hex)))
+            if hyphen_path.exists():
+                return hyphen_path
+
         # Check for backwards-compat symlink
         old_path = runtime_config.ARCHIVE_DIR / self.timestamp
         if old_path.is_symlink():
@@ -2250,7 +2299,7 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         if self.fs_version in ("0.7.0", "0.8.0"):
             return self.legacy_archive_path
 
-        if self.fs_version in ("0.9.0", "1.0.0"):
+        if self.fs_version in ("0.9.0", "0.9.1", "0.9.2", "0.9.3", "0.9.4", "1.0.0"):
             username = "web"
             crawl = getattr(self, "crawl", None)
             if crawl and getattr(crawl, "created_by_id", None):
@@ -2272,7 +2321,7 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
     @cached_property
     def url_path(self) -> str:
         """URL path matching the current snapshot output_dir layout."""
-        if self.fs_version in ("0.9.0", "1.0.0"):
+        if self.fs_version in ("0.9.0", "0.9.1", "0.9.2", "0.9.3", "0.9.4", "1.0.0"):
             return self.archive_path_from_db
 
         output_dir = Path(self.output_dir).resolve()
@@ -2290,7 +2339,7 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
                     username = "web"
                 date_str = parts[2]
                 domain = parts[3]
-                snapshot_id = parts[4]
+                snapshot_id = parts[4].replace("-", "")
                 return f"{username}/{date_str}/{domain}/{snapshot_id}"
 
         try:
@@ -2311,7 +2360,7 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
                 username = "web"
             date_str = parts[4]
             domain = parts[5]
-            snapshot_id = parts[6]
+            snapshot_id = parts[6].replace("-", "")
             return f"{username}/{date_str}/{domain}/{snapshot_id}"
 
         # Previous dev layout: users/<username>/snapshots/<YYYYMMDD>/<domain>/<uuid>/
@@ -2321,7 +2370,7 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
                 username = "web"
             date_str = parts[3]
             domain = parts[4]
-            snapshot_id = parts[5]
+            snapshot_id = parts[5].replace("-", "")
             return f"{username}/{date_str}/{domain}/{snapshot_id}"
 
         # Legacy layout: archive/<timestamp>/
@@ -2614,7 +2663,7 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         Creates one ArchiveResult per hook (not per plugin), with hook_name set.
         This enables step-based execution where all hooks in a step can run in parallel.
         """
-        from archivebox.hooks import discover_hooks
+        from archivebox.plugins.hooks import discover_hooks
         from archivebox.config.common import get_config
 
         # Get merged config with crawl-specific PLUGINS filter
@@ -2673,12 +2722,21 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
 
         results = self.archiveresult_set.all()
 
-        # Count by status
-        succeeded = results.filter(status="succeeded").count()
-        failed = results.filter(status="failed").count()
-        running = results.filter(status="started").count()
-        skipped = results.filter(status="skipped").count()
-        noresults = results.filter(status="noresults").count()
+        counts = ArchiveResult.status_counts(
+            results,
+            (
+                ArchiveResult.StatusChoices.SUCCEEDED,
+                ArchiveResult.StatusChoices.FAILED,
+                ArchiveResult.StatusChoices.STARTED,
+                ArchiveResult.StatusChoices.SKIPPED,
+                ArchiveResult.StatusChoices.NORESULTS,
+            ),
+        )
+        succeeded = counts.get(ArchiveResult.StatusChoices.SUCCEEDED, 0)
+        failed = counts.get(ArchiveResult.StatusChoices.FAILED, 0)
+        running = counts.get(ArchiveResult.StatusChoices.STARTED, 0)
+        skipped = counts.get(ArchiveResult.StatusChoices.SKIPPED, 0)
+        noresults = counts.get(ArchiveResult.StatusChoices.NORESULTS, 0)
         total = results.count()
         pending = total - succeeded - failed - running - skipped - noresults
 
@@ -2858,7 +2916,7 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
 
     def latest_outputs(self, status: str | None = None) -> dict[str, Any]:
         """Get the latest output that each plugin produced"""
-        from archivebox.hooks import get_plugins
+        from archivebox.plugins.discovery import get_plugins
         from django.db.models import Q
 
         latest: dict[str, Any] = {}
@@ -3054,7 +3112,7 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
 
     def to_dict(self, extended: bool = False) -> dict[str, Any]:
         """Convert Snapshot to a dictionary (replacement for Link._asdict())"""
-        from archivebox.core.host_util import build_snapshot_url
+        from archivebox.core.routes_util import build_snapshot_url
 
         archive_size = self.archive_size
 
@@ -3453,8 +3511,58 @@ class ArchiveResult(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, M
         plugins = [get_plugin_name(e) for e in get_plugins()]
         return tuple((e, e) for e in plugins)
 
+    @classmethod
+    def snapshot_count_subquery(cls, *, status: str | None = None, outer_ref: str = "pk") -> QuerySet:
+        """Return a scalar subquery counting ArchiveResults for one outer Snapshot.
+
+        Use this instead of filtered join aggregates for per-row Snapshot counts:
+        the scalar form lets SQLite probe the covering ``(snapshot_id, status)``
+        or ``(status, snapshot_id)`` indexes once per visible Snapshot row,
+        instead of joining and grouping the whole candidate Snapshot queryset.
+        """
+        qs = cls.objects.filter(snapshot_id=models.OuterRef(outer_ref))
+        if status is not None:
+            qs = qs.filter(status=status)
+        return qs.order_by().values("snapshot_id").annotate(count=models.Count("pk")).values("count")
+
+    @classmethod
+    def snapshot_count_expr(cls, *, status: str | None = None, outer_ref: str = "pk"):
+        return Coalesce(
+            models.Subquery(cls.snapshot_count_subquery(status=status, outer_ref=outer_ref), output_field=models.IntegerField()),
+            models.Value(0),
+        )
+
+    @classmethod
+    def status_counts(cls, queryset: QuerySet | None = None, statuses: Iterable[str] | None = None) -> dict[str, int]:
+        """Count requested statuses with separate indexed COUNT probes."""
+        qs = queryset if queryset is not None else cls.objects.all()
+        return {status: qs.filter(status=status).count() for status in (statuses or cls.StatusChoices.values)}
+
+    @classmethod
+    def snapshot_ids_with_majority_status(cls, status: str) -> QuerySet:
+        """Return Snapshot IDs where more than half of ArchiveResults have ``status``.
+
+        Start from ArchiveResult.status for every majority-status filter. The
+        ``(status, snapshot_id)`` index keeps the plan predictable even when a
+        user's collection has an unusual status distribution.
+        """
+        return (
+            cls.objects.filter(status=status)
+            .order_by()
+            .values("snapshot_id")
+            .annotate(
+                matching_results=models.Count("pk"),
+                total_results=models.Subquery(
+                    cls.snapshot_count_subquery(outer_ref="snapshot_id"),
+                    output_field=models.IntegerField(),
+                ),
+            )
+            .filter(matching_results__gt=models.F("total_results") / 2)
+            .values("snapshot_id")
+        )
+
     # UUID primary key (migrated from integer in 0029)
-    id = models.UUIDField(primary_key=True, default=uuid7, editable=False, unique=True)
+    id = CompactUUIDField(primary_key=True, default=uuid7, editable=False, unique=True)
     created_at = models.DateTimeField(default=timezone.now, db_index=True)
     modified_at = models.DateTimeField(auto_now=True)
 
@@ -3540,14 +3648,10 @@ class ArchiveResult(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, M
 
     @classmethod
     def missing_delete_at_candidates(cls):
-        from archivebox.personas.models import Persona
-
-        persona_ids = Persona.objects.filter(config__has_key="DELETE_AFTER").values_list("id", flat=True)
         return cls.objects.filter(delete_at__isnull=True).filter(
             Q(config__has_key="DELETE_AFTER")
             | Q(snapshot__config__has_key="DELETE_AFTER")
-            | Q(snapshot__crawl__config__has_key="DELETE_AFTER")
-            | Q(snapshot__crawl__persona_id__in=persona_ids),
+            | Q(snapshot__crawl__config__has_key="DELETE_AFTER"),
         )
 
     @property
@@ -4209,7 +4313,7 @@ class ArchiveResult(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, M
         from pathlib import Path
         from django.utils import timezone
         from abx_dl.output_files import guess_mimetype
-        from archivebox.hooks import process_hook_records, extract_records_from_process
+        from archivebox.plugins.hooks import process_hook_records, extract_records_from_process
         from archivebox.machine.models import Process
 
         plugin_dir = Path(self.pwd) if self.pwd else None
@@ -4259,7 +4363,7 @@ class ArchiveResult(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, M
             # No ArchiveResult record: treat background hooks or clean exits as skipped
             is_background = False
             try:
-                from archivebox.hooks import is_background_hook
+                from archivebox.plugins.hooks import is_background_hook
 
                 is_background = bool(self.hook_name and is_background_hook(self.hook_name))
             except Exception:

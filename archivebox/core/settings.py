@@ -13,7 +13,7 @@ import archivebox
 
 from archivebox.config.constants import CONSTANTS
 from archivebox.config.common import get_config
-from archivebox.core.host_util import normalize_base_url, get_admin_base_url, get_api_base_url
+from archivebox.core.routes_util import normalize_base_url, get_admin_base_url, get_api_base_url
 from .settings_logging import SETTINGS_LOGGING
 
 
@@ -63,14 +63,15 @@ INSTALLED_APPS = [
     # Our ArchiveBox-provided apps (use fully qualified names)
     # NOTE: Order matters! Apps with migrations that depend on other apps must come AFTER their dependencies
     # "archivebox.config",  # ArchiveBox config settings (no models, not a real Django app)
+    "archivebox.plugins",  # plugin discovery, hook helpers, config UI, and plugin metadata views
+    "archivebox.search",  # search backend query helpers, admin search UI, and daemon integrations
     "archivebox.machine",  # handles collecting and storing information about the host machine, network interfaces, binaries, etc.
     "archivebox.workers",  # handles starting and managing background workers and processes (orchestrators and actors)
     "archivebox.personas",  # handles Persona and session management
     "archivebox.core",  # core django model with Snapshot, ArchiveResult, etc. (crawls depends on this)
     "archivebox.crawls",  # handles Crawl and CrawlSchedule models and management (depends on core)
+    "archivebox.progressmonitor",  # live progress endpoint and admin monitor template
     "archivebox.api",  # Django-Ninja-based Rest API interfaces, config, APIToken model, etc.
-    # ArchiveBox plugins (hook-based plugins no longer add Django apps)
-    # Use hooks.py discover_hooks() for plugin functionality
     # 3rd-party apps from PyPI that need to be loaded last
     "admin_data_views",  # handles rendering some convenient automatic read-only views of data in Django admin
     "django_extensions",  # provides Django Debug Toolbar (and other non-debug helpers)
@@ -275,7 +276,7 @@ MIGRATION_MODULES = {"signal_webhooks": None}
 
 # Django requires DEFAULT_AUTO_FIELD to subclass AutoField (BigAutoField, SmallAutoField, etc.)
 # Cannot use UUIDField here until Django 6.0 introduces DEFAULT_PK_FIELD setting
-# For now: manually add `id = models.UUIDField(primary_key=True, default=uuid7, ...)` to all models
+# For now: manually add `id = CompactUUIDField(primary_key=True, default=uuid7, ...)` to all models
 # OR inherit from ModelWithUUID base class which provides UUID primary key
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
@@ -418,6 +419,8 @@ SECURE_REFERRER_POLICY = "strict-origin-when-cross-origin"
 CSRF_COOKIE_SECURE = False
 SESSION_COOKIE_SECURE = False
 SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_NAME = f"archivebox_sessionid_{CONSTANTS.COLLECTION_ID}"
+CSRF_COOKIE_NAME = f"archivebox_csrftoken_{CONSTANTS.COLLECTION_ID}"
 # Auth cookies are intentionally scoped to the exact host that set them so
 # the admin session is NOT readable from public.* / web.* / api.* — that
 # split is a security boundary, not a UX choice. Subdomains that need to
@@ -530,11 +533,11 @@ ADMIN_DATA_VIEWS = {
         },
         {
             "route": "plugins/",
-            "view": "archivebox.config.views.plugins_list_view",
+            "view": "archivebox.plugins.views.plugins_list_view",
             "name": "Plugins",
             "items": {
                 "route": "<str:key>/",
-                "view": "archivebox.config.views.plugin_detail_view",
+                "view": "archivebox.plugins.views.plugin_detail_view",
                 "name": "plugin",
             },
         },

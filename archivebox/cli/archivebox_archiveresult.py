@@ -74,7 +74,7 @@ def create_archiveresults(
         1: Failure
     """
     from archivebox.config.common import get_config
-    from archivebox.hooks import discover_hooks
+    from archivebox.plugins.hooks import discover_hooks
     from archivebox.misc.jsonl import read_stdin, write_record, TYPE_SNAPSHOT, TYPE_ARCHIVERESULT
     from archivebox.core.models import Snapshot
 

@@ -264,7 +264,7 @@ def run_runner(daemon: bool = False, crawl_id: str | None = None, maintenance_on
         from django.utils import timezone
         from archivebox.crawls.models import Crawl
 
-        crawl = Crawl.objects.filter(id=crawl_id, status__in=[Crawl.StatusChoices.QUEUED, Crawl.StatusChoices.STARTED]).first()
+        crawl = Crawl.objects.filter(id=crawl_id, status__in=Crawl.RUNNABLE_STATES).first()
         now = timezone.now()
         # Only re-lease when the row is unscheduled (retry_at IS NULL) or its
         # existing lease has already expired. A future retry_at means another

@@ -185,7 +185,7 @@ def add(
         label=f"{USER}@{HOSTNAME} $ {cmd_str} [{timestamp}]",
         created_by_id=created_by_id,
         status=Crawl.StatusChoices.QUEUED,
-        retry_at=None if index_only else timezone.now(),
+        retry_at=None if (index_only or bg) else timezone.now(),
         config=crawl_config,
     )
 
@@ -198,15 +198,8 @@ def add(
     #    Discovered URLs become child Snapshots (depth+1)
 
     if index_only:
-        # ``--index-only`` means "add the URLs to the index without archiving
-        # them now". That only holds if we actually materialize the Snapshot
-        # rows here — otherwise the CLI returns success with nothing in the
-        # index, which broke ``test_add_url_after_init`` & friends. Create
-        # the Snapshots synchronously (the same step the runner would do)
-        # but skip starting any worker so extractors don't run.
-        crawl.create_snapshots_from_urls()
-        print("[yellow]\\[*] Index-only mode - URLs indexed, runner not started[/yellow]")
-        return crawl, crawl.snapshot_set.all()
+        print("[yellow]\\[*] Index-only mode - URLs queued, runner not started[/yellow]")
+        return crawl, crawl.snapshot_set.none()
 
     # 5. Start the crawl runner to process the queue
     #    The runner will:
@@ -257,13 +250,14 @@ def add(
         # Print summary for foreground runs
         try:
             crawl.refresh_from_db()
-            snapshots_count = crawl.snapshot_set.count()
             try:
                 from django.db.models import Count, Sum
 
-                totals = crawl.snapshot_set.aggregate(snapshot_count=Count("id"), total_bytes=Sum("archiveresult__output_size"))
-                total_bytes = int(totals["total_bytes"] or 0) if totals["snapshot_count"] else 0
+                totals = crawl.snapshot_set.aggregate(snapshot_count=Count("id"), total_bytes=Sum("output_size"))
+                snapshots_count = int(totals["snapshot_count"] or 0)
+                total_bytes = int(totals["total_bytes"] or 0)
             except Exception:
+                snapshots_count = crawl.snapshot_set.count()
                 total_bytes, _, _ = get_dir_size(crawl.output_dir)
             total_size = printable_filesize(total_bytes)
             total_time = timezone.now() - started_at
@@ -284,9 +278,9 @@ def add(
             except Exception:
                 rel_output_str = str(crawl.output_dir)
 
-            from archivebox.core.host_util import build_admin_url
+            from archivebox.core.routes_util import build_admin_url
 
-            admin_url = build_admin_url(f"/admin/crawls/crawl/{crawl.id.hex}/change/", config=config)
+            admin_url = build_admin_url(f"/admin/crawls/crawl/{crawl.id}/change/", config=config)
 
             print("\n[bold]crawl output saved to:[/bold]")
             print(f"  {rel_output_str}")
@@ -330,6 +324,8 @@ def add(
     "Pass --no-only-new to force re-archive of URLs that already exist.",
 )
 @click.option("--index-only", is_flag=True, help="Just add the URLs to the index without archiving them now")
+@click.option("--overwrite", is_flag=True, help="Re-archive URLs even if they already exist (alias for --no-only-new)")
+@click.option("--update", is_flag=True, help="Re-archive URLs even if they already exist (alias for --no-only-new)")
 @click.option("--bg", is_flag=True, help="Run archiving in background (queue work and return immediately)")
 @click.argument("urls", nargs=-1, type=click.Path())
 @docstring(add.__doc__)
@@ -360,7 +356,11 @@ def main(**kwargs):
 
         # Translate --only-new/--no-only-new into a crawl config override.
         # add() takes config overrides as a dict; no per-flag kwargs.
+        overwrite = kwargs.pop("overwrite", False)
+        update = kwargs.pop("update", False)
         only_new = kwargs.pop("only_new", None)
+        if overwrite or update:
+            only_new = False
         if only_new is not None:
             kwargs["config"] = {"ONLY_NEW": bool(only_new)}
 

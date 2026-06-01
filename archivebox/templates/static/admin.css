@@ -35,6 +35,13 @@
     font-size: 13px;
 
 }
+#user-tools a.navbar-add-link,
+#user-tools a.navbar-add-link:link,
+#user-tools a.navbar-add-link:visited {
+    border: 1px solid #fff;
+    border-radius: 4px;
+    padding: 2px 6px;
+}
 
 div.breadcrumbs {
     background: #772948;
@@ -177,7 +184,7 @@ body.change-list #content .object-tools {
 
 
 #content #changelist .actions .button {
-    border-radius: 2px;
+    border-radius: 0px;
     background-color: #f5dd5d;
     color: #333;
     font-size: 12px;
@@ -536,110 +543,6 @@ body.change-list:not(.model-snapshot) #changelist #changelist-form > .results {
         white-space: normal;
     }
 
-    .model-snapshot.change-list #result_list {
-        display: block;
-        min-width: 0;
-        width: 100%;
-        border-collapse: separate;
-    }
-
-    .model-snapshot.change-list #result_list thead {
-        display: none;
-    }
-
-    .model-snapshot.change-list #result_list tbody {
-        display: block;
-    }
-
-    .model-snapshot.change-list #result_list tbody tr {
-        display: grid;
-        grid-template-columns: 28px minmax(0, 1fr);
-        gap: 5px 8px;
-        margin: 8px;
-        padding: 8px;
-        border: 1px solid #e2e8f0;
-        border-radius: 8px;
-        background: #fff;
-    }
-
-    .model-snapshot.change-list #result_list tbody tr.selected {
-        background: #fffde7;
-        border-color: #facc15;
-    }
-
-    .model-snapshot.change-list #result_list tbody th,
-    .model-snapshot.change-list #result_list tbody td {
-        display: block;
-        width: auto !important;
-        min-width: 0 !important;
-        max-width: none !important;
-        padding: 0 !important;
-        border: 0 !important;
-        background: transparent !important;
-        box-sizing: border-box;
-        overflow: visible;
-    }
-
-    .model-snapshot.change-list #result_list tbody td.action-checkbox {
-        grid-column: 1;
-        grid-row: 1 / 5;
-        align-self: start;
-        padding-top: 3px !important;
-    }
-
-    .model-snapshot.change-list #result_list tbody th.field-created_at,
-    .model-snapshot.change-list #result_list tbody td.field-created_at {
-        grid-column: 2;
-        grid-row: 1;
-        font-size: 12px;
-        color: #64748b;
-    }
-
-    .model-snapshot.change-list #result_list tbody td.field-preview_icon {
-        display: none;
-    }
-
-    .model-snapshot.change-list #result_list tbody td.field-title_str {
-        grid-column: 2;
-        grid-row: 2;
-    }
-
-    .model-snapshot.change-list #result_list tbody td.field-title_str a {
-        display: block;
-        max-width: 100%;
-        overflow-wrap: anywhere;
-    }
-
-    .model-snapshot.change-list #result_list tbody td.field-tags_inline {
-        grid-column: 2;
-        grid-row: 3;
-    }
-
-    .model-snapshot.change-list #result_list tbody td.field-status_with_progress,
-    .model-snapshot.change-list #result_list tbody td.field-files,
-    .model-snapshot.change-list #result_list tbody td.field-size_with_stats {
-        grid-column: 2;
-        font-size: 12px;
-    }
-
-    .model-snapshot.change-list #result_list tbody td.field-status_with_progress {
-        grid-row: 4;
-    }
-
-    .model-snapshot.change-list #result_list tbody td.field-files {
-        grid-row: 5;
-        white-space: normal;
-    }
-
-    .model-snapshot.change-list #result_list tbody td.field-size_with_stats {
-        grid-row: 6;
-        color: #64748b;
-    }
-
-    .model-snapshot.change-list #result_list tbody td.field-tags_inline .tag-editor-inline,
-    .model-snapshot.change-list #result_list tbody td.field-tags_inline .tag-pills-inline {
-        max-width: 100%;
-    }
 }
 
 /* Filter Sidebar - Improved Layout */
@@ -1472,256 +1375,7 @@ tbody .output-link:hover {opacity: 1;}
     border-radius: 4px;
 }
 
-/* Snapshot changelist responsive controls/results. Keep this at the end so it wins over Django admin defaults. */
-.model-snapshot.change-list #changelist .changelist-form-container > div {
-    align-items: stretch;
-    display: grid !important;
-    grid-template-columns: minmax(0, 1fr);
-    gap: 8px;
-}
-
-.model-snapshot.change-list #changelist #toolbar,
-.model-snapshot.change-list #changelist #changelist-form > .actions-top {
-    border: 1px solid #e2e8f0;
-    background: #ffffff;
-}
-
-.model-snapshot.change-list #changelist #toolbar {
-    width: 100%;
-    max-width: 100%;
-    min-width: 0;
-    padding: 8px !important;
-    border-radius: 8px;
-    box-sizing: border-box;
-}
-
-.model-snapshot.change-list #changelist #toolbar #changelist-search > div {
-    display: grid !important;
-    grid-template-columns: minmax(220px, 1fr) auto;
-    align-items: center;
-    gap: 8px;
-    position: relative;
-}
-
-.model-snapshot.change-list #changelist #toolbar label[for="searchbar"] {
-    grid-column: 1;
-    grid-row: 1;
-    position: relative;
-    left: 10px;
-    top: 0;
-    z-index: 1;
-    width: 18px;
-    height: 18px;
-    align-self: center;
-    opacity: 0.72;
-    pointer-events: none;
-}
-
-.model-snapshot.change-list #changelist #toolbar label[for="searchbar"] img {
-    display: block;
-    width: 18px;
-    height: 18px;
-}
-
-.model-snapshot.change-list #changelist #toolbar #searchbar {
-    grid-column: 1;
-    grid-row: 1;
-    width: 100% !important;
-    min-width: 0 !important;
-    height: 34px;
-    box-sizing: border-box;
-    padding-left: 34px;
-}
-
-.model-snapshot.change-list #changelist #toolbar form input[type="submit"] {
-    grid-column: 2;
-    height: 34px;
-    min-width: 78px;
-    margin: 0;
-    white-space: nowrap;
-}
-
-.model-snapshot.change-list #changelist #toolbar .search-mode-selector {
-    grid-column: 1 / -1;
-    display: flex !important;
-    flex-wrap: nowrap !important;
-    gap: 6px !important;
-    width: 100% !important;
-    min-width: 0 !important;
-    margin: 0 !important;
-}
-
-.model-snapshot.change-list #changelist #toolbar .search-mode-selector label {
-    flex: 1 1 0;
-    justify-content: center;
-    min-width: 0 !important;
-    height: 28px;
-    padding: 4px 8px !important;
-    overflow: hidden;
-}
-
-.model-snapshot.change-list #changelist #toolbar .small.quiet {
-    grid-column: 1 / -1;
-    padding-left: 1px;
-    line-height: 1.4;
-}
-
-.model-snapshot.change-list #changelist #changelist-form > .actions-top {
-    width: 100%;
-    max-width: 100%;
-    min-width: 0;
-    display: grid !important;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 8px;
-    align-items: start;
-    padding: 8px !important;
-    border-radius: 8px;
-    overflow: visible !important;
-}
-
-.model-snapshot.change-list #changelist #changelist-form > .actions-top .actions-left {
-    display: grid !important;
-    grid-template-columns: minmax(0, 1fr);
-    gap: 8px;
-    align-items: center;
-    min-width: 0;
-    white-space: normal !important;
-}
-
-.model-snapshot.change-list #changelist .actions-tags-with-buttons {
-    display: grid !important;
-    grid-template-columns: minmax(0, 1fr) 34px 34px;
-    align-items: stretch;
-    gap: 5px;
-    min-width: 0 !important;
-    max-width: none !important;
-    width: 100% !important;
-}
-
-.model-snapshot.change-list #changelist .actions-tags-with-buttons .tag-editor-container {
-    min-width: 0 !important;
-    width: 100% !important;
-    max-width: none !important;
-    height: 34px !important;
-    min-height: 34px !important;
-    padding: 4px 9px !important;
-    overflow: hidden;
-}
-
-.model-snapshot.change-list #changelist .actions-tags-with-buttons .tag-inline-input {
-    min-width: 120px;
-}
-
-.model-snapshot.change-list #content #changelist .actions-tags-with-buttons .button[name="add_tags"],
-.model-snapshot.change-list #content #changelist .actions-tags-with-buttons .button[name="remove_tags"] {
-    width: 34px !important;
-    min-width: 34px !important;
-    height: 34px;
-    padding: 0 !important;
-    margin: 0 !important;
-}
-
-.model-snapshot.change-list #changelist #changelist-form > .actions-top .action-buttons {
-    display: grid !important;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 6px;
-    min-width: 0;
-}
-
-.model-snapshot.change-list #content #changelist .actions-top .action-buttons .button {
-    width: 100%;
-    min-width: 0;
-    height: 34px;
-    margin: 0 !important;
-    justify-content: center;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.model-snapshot.change-list #changelist #changelist-form > .actions-top .action-summary {
-    display: inline-flex;
-    align-items: center;
-    gap: 18px;
-    min-width: 0;
-    white-space: nowrap;
-    color: #64748b;
-    font-size: 13px;
-    font-weight: 500;
-    line-height: 1.3;
-    letter-spacing: 0;
-}
-
-.model-snapshot.change-list #changelist #changelist-form > .actions-top .action-summary a {
-    font: inherit;
-    font-weight: 600;
-    color: #2563eb;
-    text-decoration: underline;
-    text-underline-offset: 2px;
-}
-
-.model-snapshot.change-list #changelist #changelist-form > .actions-top .action-summary .action-selected-count,
-.model-snapshot.change-list #changelist #changelist-form > .actions-top .action-summary .action-total-count {
-    font: inherit;
-    color: inherit;
-}
-
-.model-snapshot.change-list #changelist #changelist-form > .actions-top .action-summary .all,
-.model-snapshot.change-list #changelist #changelist-form > .actions-top .action-summary .clear {
-    font: inherit;
-}
-
-.model-snapshot.change-list #changelist #changelist-form > .actions-top .action-summary .action-counter,
-.model-snapshot.change-list #changelist #changelist-form > .actions-top .action-summary .all {
-    display: none !important;
-}
-
-.model-snapshot.change-list #changelist #changelist-form > .actions-top .action-total-count .question:not(.hidden) + .action-match-count-static,
-.model-snapshot.change-list #changelist #changelist-form > .actions-top .action-total-count .question:not(.hidden) ~ .action-total-reset {
-    display: none;
-}
-
-.model-snapshot.change-list #changelist #changelist-form > .actions-top .actions-right {
-    display: grid !important;
-    grid-template-columns: repeat(2, minmax(88px, auto));
-    gap: 6px;
-    margin-left: 0;
-}
-
-.model-snapshot.change-list #content #changelist .actions-top .actions-right .button {
-    width: 100%;
-    height: 34px;
-    margin: 0 !important;
-    justify-content: center;
-}
-
 @media (max-width: 1180px) {
-    .model-snapshot.change-list #changelist .changelist-form-container > div {
-        display: grid !important;
-        grid-template-columns: minmax(0, 1fr);
-        gap: 8px;
-    }
-
-    .model-snapshot.change-list #changelist #toolbar,
-    .model-snapshot.change-list #changelist #changelist-form > .actions-top,
-    .model-snapshot.change-list #changelist #changelist-form > .results,
-    .model-snapshot.change-list #changelist #changelist-form > .changelist-footer {
-        width: 100%;
-        max-width: 100%;
-        box-sizing: border-box;
-    }
-
-    .model-snapshot.change-list #changelist #changelist-form > .actions-top {
-        grid-template-columns: minmax(0, 1fr);
-    }
-
-    .model-snapshot.change-list #changelist #changelist-form > .actions-top .actions-left {
-        grid-template-columns: minmax(0, 1fr);
-    }
-
-    .model-snapshot.change-list #changelist #changelist-form > .actions-top .actions-right {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
     .model-snapshot.change-list #result_list {
         display: block;
         min-width: 0 !important;
@@ -1953,29 +1607,6 @@ tbody .output-link:hover {opacity: 1;}
     background: #fbfafb;
 }
 
-.model-snapshot.change-list #content #changelist #toolbar #changelist-search > div {
-    grid-template-columns: minmax(0, 1fr) auto !important;
-}
-
-.model-snapshot.change-list #content #changelist #toolbar label[for="searchbar"] {
-    grid-column: 1 !important;
-    grid-row: 1 !important;
-    width: 18px !important;
-    min-width: 18px !important;
-    justify-content: flex-start !important;
-}
-
-.model-snapshot.change-list #content #changelist #toolbar #searchbar {
-    grid-column: 1 !important;
-    grid-row: 1 !important;
-    margin: 0 !important;
-}
-
-.model-snapshot.change-list #content #changelist #toolbar form input[type="submit"] {
-    grid-column: 2 !important;
-    grid-row: 1 !important;
-}
-
 @media (max-width: 900px) {
     .model-snapshot.change-list .cards {
         grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
@@ -2043,217 +1674,6 @@ tbody .output-link:hover {opacity: 1;}
     }
 }
 
-/* Snapshot changelist toolbar. The controls live in search_form.html so the CSS does not have to move unrelated admin nodes around. */
-.model-snapshot.change-list #toolbar .changelist-toolbar-row {
-    display: grid;
-    grid-template-columns: 36px minmax(240px, 1fr) auto;
-    gap: 8px;
-    align-items: start;
-}
-
-.model-snapshot.change-list #toolbar .snapshot-view-icon-toggle,
-.model-snapshot.change-list #toolbar .filter-pane-toggle {
-    height: 34px;
-    margin: 0;
-    justify-content: center;
-}
-
-.model-snapshot.change-list #toolbar .snapshot-view-icon-toggle {
-    width: 36px;
-    min-width: 36px;
-    padding: 0;
-    flex: 0 0 36px;
-}
-
-.model-snapshot.change-list #toolbar .snapshot-view-icon {
-    width: 15px;
-    height: 15px;
-    display: grid;
-    gap: 2px;
-}
-
-.model-snapshot.change-list #toolbar .snapshot-view-icon span {
-    display: block;
-    border: 1px solid #64748b;
-    background: #f8fafc;
-    border-radius: 2px;
-}
-
-.model-snapshot.change-list #toolbar .snapshot-view-icon-grid {
-    grid-template-columns: repeat(2, 1fr);
-    grid-template-rows: repeat(2, 1fr);
-}
-
-.model-snapshot.change-list #toolbar .snapshot-view-icon-list {
-    grid-template-rows: repeat(3, 1fr);
-}
-
-.model-snapshot.change-list #toolbar .snapshot-view-icon-list span {
-    border-radius: 999px;
-}
-
-.model-snapshot.change-list #toolbar .filter-pane-toggle {
-    width: 96px;
-    min-width: 96px;
-    padding: 0 10px;
-    white-space: nowrap;
-}
-
-.model-snapshot.change-list #toolbar #changelist-search {
-    min-width: 0;
-}
-
-.model-snapshot.change-list #toolbar #changelist-search > div {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 6px;
-    align-items: center;
-    position: relative;
-}
-
-.model-snapshot.change-list #toolbar label[for="searchbar"] {
-    grid-column: 1;
-    grid-row: 1;
-    position: absolute;
-    left: 10px;
-    z-index: 1;
-    width: 18px;
-    height: 18px;
-    opacity: 0.72;
-    pointer-events: none;
-}
-
-.model-snapshot.change-list #toolbar label[for="searchbar"] img {
-    display: block;
-    width: 18px;
-    height: 18px;
-}
-
-.model-snapshot.change-list #toolbar #searchbar {
-    grid-column: 1;
-    grid-row: 1;
-    width: 100%;
-    min-width: 0;
-    height: 34px;
-    box-sizing: border-box;
-    padding-left: 34px;
-}
-
-.model-snapshot.change-list #toolbar form input[type="submit"] {
-    grid-column: 2;
-    grid-row: 1;
-    height: 34px;
-    margin: 0;
-    white-space: nowrap;
-}
-
-.model-snapshot.change-list #toolbar .search-mode-selector,
-.model-snapshot.change-list #toolbar .small.quiet {
-    grid-column: 1 / -1;
-    margin-left: 0 !important;
-}
-
-.model-snapshot.change-list #toolbar .search-mode-selector {
-    display: flex !important;
-    flex-wrap: nowrap !important;
-    gap: 6px !important;
-    min-width: 0;
-    width: 100%;
-    overflow: visible;
-}
-
-.model-snapshot.change-list #toolbar .search-mode-selector .search-mode-option {
-    flex: 0 0 auto;
-    justify-content: center;
-    padding-left: 8px !important;
-    padding-right: 8px !important;
-    overflow: visible;
-    white-space: nowrap;
-}
-
-.model-snapshot.change-list #changelist #toolbar .search-mode-selector .search-mode-meta,
-.model-snapshot.change-list #changelist #toolbar .search-mode-selector .search-mode-deep {
-    min-width: 78px !important;
-}
-
-.model-snapshot.change-list #changelist #toolbar .search-mode-selector .search-mode-contents {
-    min-width: 112px !important;
-}
-
-.model-snapshot.change-list #changelist #changelist-form > .actions-top {
-    padding: 8px;
-}
-
-.model-snapshot.change-list #changelist #changelist-form > .actions-top .actions-left {
-    display: grid;
-    grid-template-columns: minmax(220px, 0.8fr) minmax(360px, 1.2fr) auto;
-    gap: 8px;
-    align-items: center;
-    min-width: 0;
-}
-
-.model-snapshot.change-list #changelist .actions-tags-with-buttons {
-    display: grid !important;
-    grid-template-columns: minmax(0, 1fr) 34px 34px;
-    gap: 0;
-    align-items: stretch;
-    min-width: 0;
-    width: 100%;
-    border: 1px solid #cbd5e1;
-    border-radius: 8px;
-    background: #ffffff;
-    overflow: hidden;
-}
-
-.model-snapshot.change-list #changelist .actions-tags-with-buttons .tag-editor-container {
-    width: auto;
-    max-width: none;
-    min-height: 32px;
-    height: 32px;
-    padding: 3px 9px;
-    border: 0;
-    border-radius: 0;
-    box-shadow: none;
-    overflow: hidden;
-}
-
-.model-snapshot.change-list #changelist .actions-tags-with-buttons .button[name="add_tags"],
-.model-snapshot.change-list #changelist .actions-tags-with-buttons .button[name="remove_tags"] {
-    width: 34px;
-    min-width: 34px;
-    height: 32px;
-    padding: 0;
-    margin: 0;
-    border: 0;
-    border-left: 1px solid #cbd5e1;
-    border-radius: 0;
-    justify-content: center;
-}
-
-.model-snapshot.change-list #changelist #changelist-form > .actions-top .action-buttons {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 6px;
-    min-width: 0;
-}
-
-.model-snapshot.change-list #changelist #changelist-form > .actions-top .action-buttons .button {
-    width: 100%;
-    min-width: 0;
-    height: 34px;
-    margin: 0;
-    justify-content: center;
-}
-
-.model-snapshot.change-list .cards .card .card-info .files-icons {
-    display: inline-flex !important;
-    flex-flow: row wrap !important;
-    justify-content: center !important;
-    align-items: center !important;
-    gap: 2px !important;
-    max-width: 100%;
-}
-
 body.embedded-change-list #content {
     padding: 0;
 }
@@ -2289,120 +1709,6 @@ body.embedded-change-list.model-snapshot.change-list #changelist .actions {
     border-left: 0;
     border-right: 0;
     border-radius: 0;
-}
-
-@media (min-width: 760px) and (max-width: 1180px) {
-    .model-snapshot.change-list:not(.embedded-change-list) #changelist .changelist-form-container {
-        display: grid;
-        grid-template-columns: minmax(330px, 0.9fr) minmax(390px, 1.1fr);
-        gap: 8px;
-        align-items: stretch;
-    }
-
-    .model-snapshot.change-list:not(.embedded-change-list) #changelist #toolbar {
-        grid-column: 1;
-        grid-row: 1;
-        align-self: stretch;
-        box-sizing: border-box;
-    }
-
-    .model-snapshot.change-list:not(.embedded-change-list) #changelist #changelist-form > .actions-top {
-        grid-column: 2;
-        grid-row: 1;
-        align-self: stretch;
-        margin: 0;
-        box-sizing: border-box;
-    }
-
-    .model-snapshot.change-list:not(.embedded-change-list) #changelist #changelist-form > .cards,
-    .model-snapshot.change-list:not(.embedded-change-list) #changelist #changelist-form > .results,
-    .model-snapshot.change-list:not(.embedded-change-list) #changelist #changelist-form > .changelist-footer,
-    .model-snapshot.change-list:not(.embedded-change-list) #changelist .paginator,
-    .model-snapshot.change-list:not(.embedded-change-list) #changelist .xfull {
-        grid-column: 1 / -1;
-    }
-
-    .model-snapshot.change-list #toolbar .changelist-toolbar-row {
-        grid-template-columns: 36px minmax(0, 1fr) 96px;
-    }
-
-    .model-snapshot.change-list #changelist #changelist-form > .actions-top .actions-left {
-        grid-template-columns: minmax(0, 1fr);
-    }
-
-    .model-snapshot.change-list #changelist #changelist-form > .actions-top .action-counter {
-        grid-column: 1 / -1;
-        font-size: 12px;
-    }
-}
-
-@media (min-width: 760px) and (max-width: 900px) {
-    .model-snapshot.change-list:not(.embedded-change-list) #changelist .changelist-form-container {
-        grid-template-columns: minmax(380px, 1fr) minmax(340px, 0.9fr);
-    }
-
-    .model-snapshot.change-list #toolbar .changelist-toolbar-row {
-        grid-template-columns: 36px minmax(0, 1fr) 84px;
-    }
-
-    .model-snapshot.change-list #toolbar .filter-pane-toggle {
-        width: 84px;
-        min-width: 84px;
-        padding-left: 6px;
-        padding-right: 6px;
-    }
-
-    .model-snapshot.change-list #toolbar form input[type="submit"] {
-        min-width: 72px;
-        padding-left: 10px;
-        padding-right: 10px;
-    }
-
-    .model-snapshot.change-list #toolbar .search-mode-selector label span[aria-hidden="true"] {
-        display: none;
-    }
-
-    .model-snapshot.change-list #toolbar .search-mode-selector .search-mode-meta,
-    .model-snapshot.change-list #toolbar .search-mode-selector .search-mode-deep {
-        min-width: 72px !important;
-    }
-
-    .model-snapshot.change-list #toolbar .search-mode-selector .search-mode-contents {
-        min-width: 98px !important;
-    }
-
-    .model-snapshot.change-list #changelist #changelist-form > .actions-top .action-buttons {
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-    }
-
-    .model-snapshot.change-list #changelist #changelist-form > .actions-top .action-buttons .button {
-        padding-left: 5px;
-        padding-right: 5px;
-        font-size: 11px;
-    }
-}
-
-@media (max-width: 759px) {
-    .model-snapshot.change-list #toolbar .changelist-toolbar-row {
-        grid-template-columns: 36px minmax(0, 1fr) 84px;
-    }
-
-    .model-snapshot.change-list #changelist #changelist-form > .actions-top .actions-left {
-        grid-template-columns: minmax(0, 1fr);
-    }
-
-    .model-snapshot.change-list #toolbar .filter-pane-toggle {
-        width: 100%;
-    }
-
-    .model-snapshot.change-list #toolbar .snapshot-view-icon-toggle {
-        width: 36px;
-        min-width: 36px;
-    }
-
-    .model-snapshot.change-list #changelist #changelist-form > .actions-top .action-buttons {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
 }
 
 /* Snapshot changelist final layout pass.
@@ -2449,7 +1755,7 @@ body.embedded-change-list.model-snapshot.change-list #changelist .actions {
     display: inline-flex;
     width: 36px;
     min-width: 36px;
-    height: 34px;
+    height: 40px;
     padding: 0;
     margin: 0;
     align-items: center;
@@ -2485,7 +1791,7 @@ body.embedded-change-list.model-snapshot.change-list #changelist .actions {
     display: inline-flex;
     width: 96px;
     min-width: 96px;
-    height: 34px;
+    height: 40px;
     padding: 0 10px;
     margin: 0;
     align-items: center;
@@ -2495,47 +1801,6 @@ body.embedded-change-list.model-snapshot.change-list #changelist .actions {
 
 .model-snapshot.change-list #toolbar #changelist-search {
     min-width: 0;
-}
-
-.model-snapshot.change-list #toolbar #changelist-search > div {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 6px;
-    align-items: center;
-    position: relative;
-}
-
-.model-snapshot.change-list #toolbar label[for="searchbar"] {
-    grid-column: 1;
-    grid-row: 1;
-    position: absolute;
-    left: 10px;
-    top: 50%;
-    width: 18px;
-    height: 18px;
-    transform: translateY(-50%);
-    opacity: 0.72;
-    pointer-events: none;
-    z-index: 1;
-}
-
-.model-snapshot.change-list #toolbar #searchbar {
-    grid-column: 1;
-    grid-row: 1;
-    width: 100%;
-    min-width: 0;
-    height: 34px;
-    margin: 0;
-    box-sizing: border-box;
-    padding-left: 34px;
-}
-
-.model-snapshot.change-list #toolbar form input[type="submit"] {
-    grid-column: 2;
-    grid-row: 1;
-    height: 34px;
-    margin: 0;
-    white-space: nowrap;
 }
 
 .model-snapshot.change-list #toolbar .search-mode-selector {
@@ -2682,6 +1947,7 @@ body.embedded-change-list.model-snapshot.change-list #changelist .actions {
 
     .model-snapshot.change-list #changelist #changelist-form > .actions-top .action-summary {
         grid-column: 1 / -1;
+        grid-row: auto;
     }
 }
 
@@ -2699,6 +1965,11 @@ body.embedded-change-list.model-snapshot.change-list #changelist .actions {
     .model-snapshot.change-list #changelist #changelist-form > .actions-top .action-buttons {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
+
+    .model-snapshot.change-list #changelist #changelist-form > .actions-top .action-summary {
+        overflow-x: auto;
+        max-width: 100%;
+    }
 }
 
 @media (max-width: 520px) {
@@ -2715,121 +1986,6 @@ body.embedded-change-list.model-snapshot.change-list #changelist .actions {
 
     .model-snapshot.change-list #toolbar .search-mode-selector label span[aria-hidden="true"] {
         display: none;
-    }
-}
-
-.snapshot-changelist-widget.model-snapshot.change-list #changelist .changelist-form-container > div {
-    grid-template-columns: minmax(0, 1fr);
-}
-
-.snapshot-changelist-widget.model-snapshot.change-list #changelist #toolbar,
-.snapshot-changelist-widget.model-snapshot.change-list #changelist #changelist-form > .actions-top,
-.snapshot-changelist-widget.model-snapshot.change-list #changelist #changelist-form > .cards,
-.snapshot-changelist-widget.model-snapshot.change-list #changelist #changelist-form > .results,
-.snapshot-changelist-widget.model-snapshot.change-list #changelist #changelist-form > .changelist-footer,
-.snapshot-changelist-widget.model-snapshot.change-list #changelist .paginator,
-.snapshot-changelist-widget.model-snapshot.change-list #changelist .xfull {
-    grid-column: 1;
-    grid-row: auto;
-}
-
-.snapshot-changelist-widget.model-snapshot.change-list #changelist {
-    display: block;
-    width: 100%;
-    max-width: 100%;
-    min-width: 0;
-    flex: none;
-    overflow: hidden;
-}
-
-.snapshot-changelist-widget.model-snapshot.change-list #changelist #changelist-form > .results {
-    overflow-x: auto;
-}
-
-.snapshot-changelist-widget.model-snapshot.change-list #changelist #changelist-form > .actions-top .actions-left {
-    grid-template-columns: minmax(0, 1fr);
-}
-
-.snapshot-changelist-widget.model-snapshot.change-list #toolbar .search-mode-selector {
-    flex-wrap: wrap !important;
-}
-
-.model-snapshot.change-list #toolbar .search-input-wrap {
-    grid-column: 1;
-    grid-row: 1;
-    position: relative;
-    display: block;
-    width: 100%;
-    min-width: 0;
-}
-
-.model-snapshot.change-list #toolbar .search-input-wrap label[for="searchbar"] {
-    position: absolute;
-    left: 10px;
-    top: 50%;
-    width: 18px;
-    height: 18px;
-    margin: 0;
-    transform: translateY(-50%);
-    opacity: 0.72;
-    pointer-events: none;
-    z-index: 1;
-}
-
-.model-snapshot.change-list #toolbar .search-input-wrap label[for="searchbar"] img {
-    display: block;
-    width: 18px;
-    height: 18px;
-}
-
-.model-snapshot.change-list #toolbar .search-input-wrap #searchbar {
-    width: 100%;
-    min-width: 0;
-    height: 34px;
-    margin: 0;
-    box-sizing: border-box;
-    padding-left: 34px;
-}
-
-.model-snapshot.change-list #content #changelist #toolbar .search-input-wrap label[for="searchbar"] {
-    grid-column: auto !important;
-    grid-row: auto !important;
-    position: absolute !important;
-    left: 10px !important;
-    top: 50% !important;
-    width: 18px !important;
-    min-width: 18px !important;
-    height: 18px !important;
-    margin: 0 !important;
-    transform: translateY(-50%);
-    justify-content: center !important;
-}
-
-.model-snapshot.change-list #content #changelist #toolbar .search-input-wrap #searchbar {
-    grid-column: auto !important;
-    grid-row: auto !important;
-    width: 100% !important;
-    padding-left: 34px !important;
-}
-
-.model-snapshot.change-list #changelist #changelist-form > .actions-top .action-summary {
-    grid-column: 3;
-    grid-row: 1;
-    align-self: center;
-    justify-self: start;
-}
-
-@media (max-width: 1420px) {
-    .model-snapshot.change-list #changelist #changelist-form > .actions-top .action-summary {
-        grid-column: 1 / -1;
-        grid-row: auto;
-    }
-}
-
-@media (max-width: 900px) {
-    .model-snapshot.change-list #changelist #changelist-form > .actions-top .action-summary {
-        overflow-x: auto;
-        max-width: 100%;
     }
 }
 
@@ -2948,25 +2104,6 @@ body.embedded-change-list.model-snapshot.change-list #changelist .actions {
     box-sizing: border-box;
 }
 
-.snapshot-changelist-widget.model-snapshot.change-list #toolbar .changelist-toolbar-row {
-    grid-template-columns: 36px minmax(0, 1fr) auto 96px;
-}
-
-.snapshot-changelist-widget.model-snapshot.change-list #toolbar .search-input-wrap {
-    grid-column: 2 !important;
-    grid-row: 1 !important;
-}
-
-.snapshot-changelist-widget.model-snapshot.change-list #toolbar input[type="submit"] {
-    grid-column: 3 !important;
-    grid-row: 1 !important;
-}
-
-.snapshot-changelist-widget.model-snapshot.change-list #toolbar .filter-pane-toggle {
-    grid-column: 4;
-    grid-row: 1;
-}
-
 /* Snapshot action row visual polish. Keep this last so older Django admin button
    and tag-widget rules cannot leak inconsistent type styles into the row. */
 .model-snapshot.change-list #changelist #changelist-form > .actions-top,
@@ -3064,11 +2201,31 @@ body.embedded-change-list.model-snapshot.change-list #changelist .actions {
     color: #fff7fb;
 }
 
+.model-snapshot.change-list #changelist #changelist-form > .actions-top .action-buttons .button[name="set_snapshot_permissions"],
+.model-snapshot.change-list #changelist #changelist-form > .actions-top .action-buttons .admin-add-action {
+    background: #f6e46f;
+    color: #1f2937;
+    text-decoration: none;
+}
+
+.model-snapshot.change-list #changelist #changelist-form > .actions-top .action-permissions-wrapper {
+    display: inline-flex;
+    min-width: 0;
+}
+
+.model-snapshot.change-list #changelist #changelist-form > .actions-top .action-permissions-wrapper > .button {
+    width: 100%;
+}
+
 .model-snapshot.change-list #changelist #changelist-form > .actions-top .action-summary {
     display: inline-flex;
     flex-direction: column;
+    grid-column: 3;
+    grid-row: 1;
     gap: 3px;
     align-items: flex-start;
+    align-self: center;
+    justify-self: start;
     color: #475569;
     font-size: 14px;
     font-weight: 500;
@@ -3077,15 +2234,10 @@ body.embedded-change-list.model-snapshot.change-list #changelist .actions {
 }
 
 .model-snapshot.change-list #changelist #changelist-form > .actions-top .action-summary .action-selected-count,
-.model-snapshot.change-list #changelist #changelist-form > .actions-top .action-summary .action-total-count,
-.model-snapshot.change-list #changelist #changelist-form > .actions-top .action-summary .clear {
+.model-snapshot.change-list #changelist #changelist-form > .actions-top .action-summary .action-total-count {
     color: #475569;
     font-size: 14px;
     font-weight: 500;
-}
-
-.model-snapshot.change-list #changelist #changelist-form > .actions-top .action-summary.action-summary-select-across .action-total-count {
-    display: none;
 }
 
 .model-snapshot.change-list #changelist #changelist-form > .actions-top .action-summary a {
@@ -3094,6 +2246,13 @@ body.embedded-change-list.model-snapshot.change-list #changelist .actions {
     font-weight: 600;
     text-decoration-thickness: 1px;
     text-underline-offset: 2px;
+}
+
+.model-snapshot.change-list #changelist #changelist-form > .actions-top .action-summary .action-counter,
+.model-snapshot.change-list #changelist #changelist-form > .actions-top .action-summary .question,
+.model-snapshot.change-list #changelist #changelist-form > .actions-top .action-summary .all,
+.model-snapshot.change-list #changelist #changelist-form > .actions-top .action-summary .clear {
+    display: none !important;
 }
 
 @media (max-width: 1180px) {
@@ -3310,6 +2469,42 @@ body.change-list:not(.model-snapshot) #changelist #toolbar .changelist-search-su
 
 .snapshot-changelist-widget.model-snapshot.change-list #toolbar .changelist-toolbar-row {
     grid-template-columns: minmax(0, 1fr);
+}
+
+.snapshot-changelist-widget.model-snapshot.change-list #changelist .changelist-form-container > div {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.snapshot-changelist-widget.model-snapshot.change-list #changelist #toolbar,
+.snapshot-changelist-widget.model-snapshot.change-list #changelist #changelist-form > .actions-top,
+.snapshot-changelist-widget.model-snapshot.change-list #changelist #changelist-form > .cards,
+.snapshot-changelist-widget.model-snapshot.change-list #changelist #changelist-form > .results,
+.snapshot-changelist-widget.model-snapshot.change-list #changelist #changelist-form > .changelist-footer,
+.snapshot-changelist-widget.model-snapshot.change-list #changelist .paginator,
+.snapshot-changelist-widget.model-snapshot.change-list #changelist .xfull {
+    grid-column: 1;
+    grid-row: auto;
+}
+
+.snapshot-changelist-widget.model-snapshot.change-list #changelist {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    flex: none;
+    overflow: hidden;
+}
+
+.snapshot-changelist-widget.model-snapshot.change-list #changelist #changelist-form > .results {
+    overflow-x: auto;
+}
+
+.snapshot-changelist-widget.model-snapshot.change-list #changelist #changelist-form > .actions-top .actions-left {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.snapshot-changelist-widget.model-snapshot.change-list #toolbar .search-mode-selector {
+    flex-wrap: wrap !important;
 }
 
 .snapshot-changelist-widget.model-snapshot.change-list #toolbar #changelist-search {
@@ -3588,12 +2783,6 @@ body.change-list:not(.model-snapshot) #changelist #toolbar .changelist-search-su
     content: "👁";
 }
 
-.model-crawl.change-list #changelist #changelist-form > .actions-top .action-buttons .crawl-add-action::before {
-    content: "+";
-    font-size: 17px;
-    font-weight: 800;
-}
-
 .model-crawl.change-list #changelist #changelist-form > .actions-top .action-buttons .button[name="pause_selected_crawls"] {
     background: #4fb5ad;
     color: #082f2c;
@@ -3619,7 +2808,7 @@ body.change-list:not(.model-snapshot) #changelist #toolbar .changelist-search-su
     color: #1f2937;
 }
 
-.model-crawl.change-list #changelist #changelist-form > .actions-top .action-buttons .crawl-add-action {
+.model-crawl.change-list #changelist #changelist-form > .actions-top .action-buttons .admin-add-action {
     background: #f6e46f;
     color: #1f2937;
     text-decoration: none;
@@ -3776,4 +2965,9 @@ body.change-list:not(.model-snapshot) #changelist #toolbar .changelist-search-su
         width: 100%;
         min-width: 0;
     }
+}
+
+body.change-list #changelist #changelist-form > .actions-top .action-buttons[hidden],
+body.change-list #changelist #changelist-form > .actions-top .actions-tags-with-buttons[hidden] {
+    display: none !important;
 }

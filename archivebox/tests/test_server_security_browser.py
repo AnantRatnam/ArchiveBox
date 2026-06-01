@@ -794,7 +794,7 @@ def test_server_security_modes_in_chrome(
 @pytest.mark.django_db(transaction=True)
 @pytest.mark.timeout(600)
 def test_archivewebpage_wacz_preview_serves_real_capture_frame(initialized_archive: Path, browser_runtime, tmp_path: Path) -> None:
-    from archivebox.core.host_util import get_snapshot_subdomain
+    from archivebox.core.routes_util import get_snapshot_subdomain
 
     url = "https://example.com"
     port = _get_free_port()
@@ -806,6 +806,7 @@ def test_archivewebpage_wacz_preview_serves_real_capture_frame(initialized_archi
         PUBLIC_ADD_VIEW="True",
         SERVER_SECURITY_MODE="safe-subdomains-fullreplay",
         USE_CHROME="True",
+        CHROME_BINARY=str(browser_runtime["chrome_binary"]),
         CHROME_HEADLESS="True",
         CHROME_SANDBOX="False",
         CHROME_ISOLATION="snapshot",

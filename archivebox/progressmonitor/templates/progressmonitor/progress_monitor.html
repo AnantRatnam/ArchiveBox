@@ -755,101 +755,6 @@
         white-space: nowrap;
     }
 
-    /* Thumbnail Strip */
-    #progress-monitor .thumbnail-strip {
-        display: flex;
-        gap: 8px;
-        padding: 10px 16px;
-        background: rgba(0,0,0,0.15);
-        border-top: 1px solid #21262d;
-        overflow-x: auto;
-        scrollbar-width: thin;
-        scrollbar-color: #30363d #0d1117;
-    }
-    #progress-monitor .thumbnail-strip::-webkit-scrollbar {
-        height: 6px;
-    }
-    #progress-monitor .thumbnail-strip::-webkit-scrollbar-track {
-        background: #0d1117;
-    }
-    #progress-monitor .thumbnail-strip::-webkit-scrollbar-thumb {
-        background: #30363d;
-        border-radius: 3px;
-    }
-    #progress-monitor .thumbnail-strip::-webkit-scrollbar-thumb:hover {
-        background: #484f58;
-    }
-    #progress-monitor .thumbnail-strip.empty {
-        display: none;
-    }
-    #progress-monitor .thumbnail-item {
-        flex-shrink: 0;
-        position: relative;
-        width: 64px;
-        height: 48px;
-        border-radius: 4px;
-        overflow: hidden;
-        border: 1px solid #30363d;
-        background: #161b22;
-        cursor: pointer;
-        transition: transform 0.2s, border-color 0.2s, box-shadow 0.2s;
-    }
-    #progress-monitor .thumbnail-item:hover {
-        transform: scale(1.1);
-        border-color: #58a6ff;
-        box-shadow: 0 0 12px rgba(88, 166, 255, 0.3);
-        z-index: 10;
-    }
-    #progress-monitor .thumbnail-item.new {
-        animation: thumbnail-pop 0.4s ease-out;
-    }
-    @keyframes thumbnail-pop {
-        0% { transform: scale(0.5); opacity: 0; }
-        50% { transform: scale(1.15); }
-        100% { transform: scale(1); opacity: 1; }
-    }
-    #progress-monitor .thumbnail-item img {
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-    }
-    #progress-monitor .thumbnail-item .thumbnail-fallback {
-        width: 100%;
-        height: 100%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 20px;
-        color: #8b949e;
-        background: linear-gradient(135deg, #21262d 0%, #161b22 100%);
-    }
-    #progress-monitor .thumbnail-item .thumbnail-plugin {
-        position: absolute;
-        bottom: 0;
-        left: 0;
-        right: 0;
-        padding: 2px 4px;
-        font-size: 8px;
-        font-weight: 600;
-        text-transform: uppercase;
-        color: #fff;
-        background: rgba(0,0,0,0.7);
-        text-align: center;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }
-    #progress-monitor .thumbnail-label {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        padding: 0 4px;
-        color: #8b949e;
-        font-size: 10px;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        flex-shrink: 0;
-    }
     #progress-monitor .pid-label {
         display: inline-flex;
         align-items: center;
@@ -1048,9 +953,10 @@
 
 </style>
 
-<div id="progress-monitor" class="collapsed"
+<div id="progress-monitor" class="{% if not progress_auto_expand %}collapsed{% endif %}"
      data-progress-endpoint="{{ progress_endpoint|default:'/progress.json' }}"
-     data-progress-scope="{{ progress_scope|default:'global' }}">
+     data-progress-scope="{{ progress_scope|default:'global' }}"
+     data-auto-expand="{% if progress_auto_expand %}1{% else %}0{% endif %}">
     <div class="header-bar">
         <div class="header-left">
             <div class="orchestrator-status">
@@ -1078,7 +984,9 @@
             </div>
         </div>
         <div class="header-right">
-            <button class="toggle-btn" id="progress-collapse" title="Toggle details" aria-expanded="false">Details</button>
+            <button class="toggle-btn" id="progress-collapse" title="Toggle details" aria-expanded="{% if progress_auto_expand %}true{% else %}false{% endif %}">
+                {% if progress_auto_expand %}Hide{% else %}Details{% endif %}
+            </button>
         </div>
     </div>
 
@@ -1099,13 +1007,12 @@
     const crawlTree = document.getElementById('crawl-tree');
     const idleMessage = document.getElementById('idle-message');
     const screencastPanel = document.getElementById('screencast-panel');
-    const thumbnailStrip = null;
 
     let pollInterval = null;
     let pollDelayMs = 1000;
     let idleTicks = 0;
-    let isCollapsed = true;
-    let knownThumbnailIds = new Set();
+    let isCollapsed = monitor.dataset.autoExpand !== '1';
+    const snapshotMedia = new Map();
 
     function getApiKey() {
         return (window.ARCHIVEBOX_API_KEY || '').trim();
@@ -1144,14 +1051,55 @@
     function escapeAttr(value) {
         return escapeHtml(value).replace(/`/g, '&#96;');
     }
+    function stableSnapshotMedia(snapshot) {
+        // The progress endpoint can briefly omit media URLs while ArchiveResult
+        // rows settle. Once this page has seen a snapshot image URL, keep using
+        // it so the preview/favicon branch does not flicker back to placeholder.
+        const snapshotId = String(snapshot.id || '');
+        const media = snapshotMedia.get(snapshotId) || {};
+        if (snapshot.favicon_url) media.favicon_url ||= snapshot.favicon_url;
+        if (snapshot.preview_url) {
+            media.preview_url ||= snapshot.preview_url;
+            media.preview_link ||= snapshot.preview_link;
+            media.preview_fallbacks ||= snapshot.preview_fallbacks || [];
+        }
+        if (snapshotId) snapshotMedia.set(snapshotId, media);
+        return media;
+    }
+    function preserveStableMediaNodes(nextRoot) {
+        // Snapshot preview/favicon files are immutable once visible. Keep the
+        // loaded DOM nodes across poll renders so the browser never reloads
+        // them while progress text/badges continue updating around them.
+        const currentCards = new Map(
+            Array.from(crawlTree.querySelectorAll('.snapshot-item[data-snapshot-id]')).map(card => [card.dataset.snapshotId, card])
+        );
+        nextRoot.querySelectorAll('.snapshot-item[data-snapshot-id]').forEach(nextCard => {
+            const currentCard = currentCards.get(nextCard.dataset.snapshotId);
+            if (!currentCard) return;
+            currentCard.querySelectorAll('[data-stable-media]').forEach(currentNode => {
+                const nextNode = nextCard.querySelector(`[data-stable-media="${currentNode.dataset.stableMedia}"]`);
+                if (nextNode) nextNode.replaceWith(currentNode);
+            });
+        });
+    }
+    function replaceCrawlTree(html) {
+        const template = document.createElement('template');
+        template.innerHTML = html;
+        preserveStableMediaNodes(template.content);
+        crawlTree.replaceChildren(...template.content.childNodes);
+    }
     window.nextPreviewFallback = function(img) {
         const fallbacks = (img.dataset.fallbacks || '').split(',').filter(Boolean);
         if (fallbacks.length > 0) {
             img.src = fallbacks.shift();
             img.dataset.fallbacks = fallbacks.join(',');
         } else {
-            img.closest('.snapshot-preview')?.classList.add('placeholder');
-            img.closest('.snapshot-preview').innerHTML = '<span>▤</span>';
+            const preview = img.closest('.snapshot-preview');
+            if (preview) {
+                preview.removeAttribute('data-stable-media');
+                preview.classList.add('placeholder');
+                preview.innerHTML = '<span>▤</span>';
+            }
         }
     };
     function formatUrl(url) {
@@ -1181,10 +1129,6 @@
         };
         return icons[plugin] || '•';
     }
-
-
-    function renderThumbnail(thumb, isNew) { return null; }
-    function updateThumbnails(thumbnails) {}
 
     function formatDuration(seconds) {
         seconds = Math.max(0, Math.floor(seconds || 0));
@@ -1273,10 +1217,10 @@
 
     function updateScreencastPanel(data) {
         const hasWork = (data.active_crawls || []).length > 0 ||
-            (data.crawls_pending || 0) > 0 ||
-            (data.crawls_started || 0) > 0 ||
-            (data.snapshots_pending || 0) > 0 ||
-            (data.snapshots_started || 0) > 0;
+            (data.crawls_queued || 0) > 0 ||
+            (data.crawls_active || 0) > 0 ||
+            (data.snapshots_queued || 0) > 0 ||
+            (data.snapshots_active || 0) > 0;
         let target = activeScreencastTarget(data);
         if (!target) {
             const currentFrame = screencastPanel.querySelector('.screencast-frame img');
@@ -1505,11 +1449,12 @@
         const snapshotDurationHtml = renderDurationBadge(snapshot.started);
         const titleText = snapshot.title || formatUrl(snapshot.full_url || snapshot.url);
         const urlText = snapshot.full_url || snapshot.url || '';
-        const faviconHtml = snapshot.favicon_url
-            ? `<img class="snapshot-favicon" src="${escapeAttr(snapshot.favicon_url)}" alt="" decoding="async" loading="lazy" onerror="this.remove()">`
+        const media = stableSnapshotMedia(snapshot);
+        const faviconHtml = media.favicon_url
+            ? `<img class="snapshot-favicon" data-stable-media="favicon" src="${escapeAttr(media.favicon_url)}" alt="" decoding="async" loading="lazy" onerror="this.remove()">`
             : '';
-        const previewHtml = snapshot.preview_url
-            ? `<a class="snapshot-preview" href="${escapeAttr(snapshot.preview_link || snapshot.view_url || adminUrl)}" title="Open snapshot output"><img src="${escapeAttr(snapshot.preview_url)}" alt="" decoding="async" loading="lazy" data-fallbacks="${escapeAttr((snapshot.preview_fallbacks || []).join(','))}" onerror="nextPreviewFallback(this)"></a>`
+        const previewHtml = media.preview_url
+            ? `<a class="snapshot-preview" data-stable-media="preview" href="${escapeAttr(media.preview_link || snapshot.view_url || adminUrl)}" title="Open snapshot output"><img src="${escapeAttr(media.preview_url)}" alt="" decoding="async" loading="lazy" data-fallbacks="${escapeAttr((media.preview_fallbacks || []).join(','))}" onerror="nextPreviewFallback(this)"></a>`
             : `<a class="snapshot-preview placeholder" href="${escapeAttr(snapshot.view_url || adminUrl)}" title="Open snapshot"><span>${statusIcon}</span></a>`;
 
         let extractorHtml = '';
@@ -1549,7 +1494,7 @@
                         : 'Waiting for extractors...';
 
         return `
-            <div class="snapshot-item">
+            <div class="snapshot-item" data-snapshot-id="${escapeAttr(snapshot.id || '')}">
                 <div class="snapshot-header">
                     ${previewHtml}
                     <a class="snapshot-header-link" href="${adminUrl}">
@@ -1742,12 +1687,19 @@
             const el = document.getElementById(id);
             if (el) el.textContent = Number(value || 0).toLocaleString();
         }
+        function setOrchestratorState(state, label) {
+            const dot = document.getElementById('orchestrator-dot');
+            dot.classList.remove('stopped', 'idle', 'running');
+            dot.classList.add(state);
+            document.getElementById('orchestrator-text').textContent = label;
+            return dot;
+        }
 
         // Calculate if there's activity
         const hasActivity = data.active_crawls.length > 0 ||
-                           data.crawls_pending > 0 || data.crawls_started > 0 ||
-                           data.snapshots_pending > 0 || data.snapshots_started > 0 ||
-                           data.archiveresults_pending > 0 || data.archiveresults_started > 0;
+                           data.crawls_queued > 0 || data.crawls_active > 0 ||
+                           data.snapshots_queued > 0 || data.snapshots_active > 0 ||
+                           data.archiveresults_queued > 0 || data.archiveresults_active > 0;
         if (hasActivity) {
             idleTicks = 0;
             if (pollDelayMs !== 1000) {
@@ -1761,29 +1713,20 @@
         }
 
         // Update orchestrator status - show "Running" only when there are active workers.
-        const dot = document.getElementById('orchestrator-dot');
-        const text = document.getElementById('orchestrator-text');
         const pidEl = document.getElementById('orchestrator-pid');
         const hasWorkers = data.total_workers > 0;
         const hasBlockedCrawl = (data.active_crawls || []).some(c => c.worker_state === 'crashed');
+        let dot = null;
 
         if (hasWorkers) {
-            dot.classList.remove('stopped', 'idle');
-            dot.classList.add('running');
-            text.textContent = 'Running';
+            dot = setOrchestratorState('running', 'Running');
         } else if (hasActivity && hasBlockedCrawl && !data.orchestrator_running) {
-            dot.classList.remove('idle', 'running');
-            dot.classList.add('stopped');
-            text.textContent = 'Runner stopped';
+            dot = setOrchestratorState('stopped', 'Runner stopped');
         } else if (hasActivity) {
-            dot.classList.remove('stopped', 'running');
-            dot.classList.add('idle');
-            text.textContent = data.orchestrator_running ? 'Idle' : 'Waiting';
+            dot = setOrchestratorState('idle', data.orchestrator_running ? 'Idle' : 'Waiting');
         } else {
             // No activity - show as idle (whether orchestrator process exists or not)
-            dot.classList.remove('stopped', 'running');
-            dot.classList.add('idle');
-            text.textContent = 'Idle';
+            dot = setOrchestratorState('idle', 'Idle');
         }
 
         if (data.orchestrator_pid) {
@@ -1798,15 +1741,16 @@
         dot.classList.add('flash');
         setTimeout(() => dot.classList.remove('flash'), 300);
 
-        // Update stats
-        setCount('crawls-active', data.crawls_active ?? data.crawls_started);
-        setCount('crawls-queued', data.crawls_queued ?? data.crawls_pending);
-        setCount('snapshots-active', data.snapshots_active ?? data.snapshots_started);
-        setCount('snapshots-queued', data.snapshots_queued ?? data.snapshots_pending);
-        setCount('downloads-active', data.downloads_active ?? data.downloads_started);
-        setCount('downloads-queued', data.downloads_queued ?? data.downloads_pending);
-        setCount('indexing-active', data.indexing_active ?? data.indexing_started);
-        setCount('indexing-queued', data.indexing_queued ?? data.indexing_pending);
+        [
+            ['crawls-active', data.crawls_active],
+            ['crawls-queued', data.crawls_queued],
+            ['snapshots-active', data.snapshots_active],
+            ['snapshots-queued', data.snapshots_queued],
+            ['downloads-active', data.downloads_active],
+            ['downloads-queued', data.downloads_queued],
+            ['indexing-active', data.indexing_active],
+            ['indexing-queued', data.indexing_queued],
+        ].forEach(([id, value]) => setCount(id, value));
         updateScreencastPanel(data);
 
         // Render crawl tree
@@ -1816,24 +1760,23 @@
             const queuedCrawlsNote = queuedCrawlsHidden > 0
                 ? `<div class="progress-overflow-note">${queuedCrawlsHidden} more queued crawl${queuedCrawlsHidden === 1 ? '' : 's'} not shown</div>`
                 : '';
-            crawlTree.innerHTML = data.active_crawls.map(c => renderCrawl(c)).join('') + queuedCrawlsNote;
+            replaceCrawlTree(data.active_crawls.map(c => renderCrawl(c)).join('') + queuedCrawlsNote);
         } else if (hasActivity) {
             idleMessage.style.display = 'none';
-            crawlTree.innerHTML = `
+            replaceCrawlTree(`
                 <div class="idle-message">
-                    ${data.snapshots_started || 0} snapshots processing, ${data.archiveresults_started || 0} extractors running
+                    ${data.snapshots_active || 0} snapshots processing, ${data.archiveresults_active || 0} extractors running
                 </div>
-            `;
+            `);
         } else {
             idleMessage.style.display = '';
             // Build the URL for recent crawls (last 24 hours)
             var yesterday = new Date(Date.now() - 24*60*60*1000).toISOString().split('T')[0];
             var recentUrl = '/admin/crawls/crawl/?created_at__gte=' + yesterday + '&o=-1';
-            idleMessage.innerHTML = `No active crawls (${data.crawls_pending || 0} pending, ${data.crawls_started || 0} started, <a href="${recentUrl}" style="color: #58a6ff;">${data.crawls_recent || 0} recent</a>)`;
-            crawlTree.innerHTML = '';
+            idleMessage.innerHTML = `No active crawls (${data.crawls_queued || 0} pending, ${data.crawls_active || 0} started, <a href="${recentUrl}" style="color: #58a6ff;">${data.crawls_recent || 0} recent</a>)`;
+            replaceCrawlTree('');
         }
 
-        // Recent thumbnails removed
         updateDurationBadges();
     }
 
@@ -1900,69 +1843,24 @@
         btn.textContent = busy ? '…' : label;
     }
 
-    function cancelCrawl(crawlId, btn) {
-        if (!crawlId) return;
+    function patchProgressItem(url, action, btn, errorLabel) {
+        if (!url || !action) return;
         setActionButtonState(btn, true);
 
-        fetch(buildApiUrl(`/api/v1/crawls/crawl/${crawlId}`), {
-            method: 'PATCH',
-            headers: buildApiHeaders(),
-            credentials: 'same-origin',
-            body: JSON.stringify({ action: 'cancel' }),
-        })
-        .then(response => response.json().then(data => ({response, data})))
-        .then(({response, data}) => {
-            if (!response.ok) throw new Error(data.detail || data.error || `HTTP ${response.status}`);
-            fetchProgress();
-        })
-        .catch(error => {
-            console.error('Cancel crawl failed:', error);
-            setActionButtonState(btn, false);
-        });
-    }
-
-    function setCrawlPaused(crawlId, action, btn) {
-        if (!crawlId) return;
-        setActionButtonState(btn, true);
-
-        fetch(buildApiUrl(`/api/v1/crawls/crawl/${crawlId}`), {
+        fetch(buildApiUrl(url), {
             method: 'PATCH',
             headers: buildApiHeaders(),
             credentials: 'same-origin',
             body: JSON.stringify({ action: action }),
         })
-        .then(response => response.json())
-        .then(data => {
-            if (data.error) {
-                console.error('Crawl action error:', data.error);
-            }
+        .then(response => response.json().then(data => ({response, data})))
+        .then(({response, data}) => {
+            if (!response.ok) throw new Error(data.detail || data.error || `HTTP ${response.status}`);
+            if (data.error) console.error(`${errorLabel} error:`, data.error);
             fetchProgress();
         })
         .catch(error => {
-            console.error('Crawl action failed:', error);
-            setActionButtonState(btn, false);
-        });
-    }
-
-    function cancelSnapshot(snapshotId, btn) {
-        if (!snapshotId) return;
-        setActionButtonState(btn, true);
-
-        fetch(buildApiUrl(`/api/v1/core/snapshot/${snapshotId}`), {
-            method: 'PATCH',
-            headers: buildApiHeaders(),
-            credentials: 'same-origin',
-            body: JSON.stringify({ action: 'cancel' }),
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.error) {
-                console.error('Cancel snapshot error:', data.error);
-            }
-            fetchProgress();
-        })
-        .catch(error => {
-            console.error('Cancel snapshot failed:', error);
+            console.error(`${errorLabel} failed:`, error);
             setActionButtonState(btn, false);
         });
     }
@@ -1977,7 +1875,12 @@
         if (actionBtn) {
             event.preventDefault();
             event.stopPropagation();
-            setCrawlPaused(actionBtn.dataset.crawlId, actionBtn.dataset.crawlAction, actionBtn);
+            patchProgressItem(
+                actionBtn.dataset.crawlId ? `/api/v1/crawls/crawl/${actionBtn.dataset.crawlId}` : '',
+                actionBtn.dataset.crawlAction,
+                actionBtn,
+                'Crawl action',
+            );
             return;
         }
         const btn = event.target.closest('.cancel-item-btn');
@@ -1987,9 +1890,9 @@
 
         const cancelType = btn.dataset.cancelType;
         if (cancelType === 'crawl') {
-            cancelCrawl(btn.dataset.crawlId, btn);
+            patchProgressItem(btn.dataset.crawlId ? `/api/v1/crawls/crawl/${btn.dataset.crawlId}` : '', 'cancel', btn, 'Cancel crawl');
         } else if (cancelType === 'snapshot') {
-            cancelSnapshot(btn.dataset.snapshotId, btn);
+            patchProgressItem(btn.dataset.snapshotId ? `/api/v1/core/snapshot/${btn.dataset.snapshotId}` : '', 'cancel', btn, 'Cancel snapshot');
         }
     });
 

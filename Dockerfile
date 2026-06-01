@@ -313,11 +313,10 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$T
     && export CHROME_USER_DATA_DIR="$LIB_DIR/chrome_profile" \
     && mkdir -p "$LIB_DIR" \
     && apt-get update -qq \
-    && abxpkg install --no-cache --install-timeout=900 --binproviders=playwright chrome \
-    && CHROME_BINARY="$(abxpkg load --binproviders=playwright chromium | awk 'NF {print $2; exit}')" \
-    && export CHROME_BINARY \
-    && test -x "$CHROME_BINARY" \
-    && "$CHROME_BINARY" --version | tee -a /VERSION.txt \
+    && if [ "$TARGETARCH" = "arm64" ]; then \
+        abxpkg install --binproviders=npm --overrides='{"npm":{"install_args":["playwright@next"]}}' playwright; \
+        abxpkg install --no-cache --install-timeout=600 --binproviders=playwright --bin-dir="$LIB_DIR/env/bin" chromium; \
+    fi \
     && TIMEOUT=600 PUID=0 PGID=0 abx-dl plugins --install \
     && find "$LIB_DIR" -type d -name __pycache__ -prune -exec rm -rf {} + \
     && find "$LIB_DIR" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
@@ -371,11 +370,8 @@ RUN (echo -e "\n\n[√] Finished Docker build successfully. Saving build summary
 # Verify ArchiveBox is installed and write full version/dependency info.
 RUN chmod +x "$CODE_DIR"/bin/*.sh \
     && chown -R "$DEFAULT_PUID:$DEFAULT_PGID" "$LIB_DIR" \
-    && chmod g+w "$TMP_DIR" "$LIB_DIR" "$PLAYWRIGHT_BROWSERS_PATH" \
-    && CHROME_BINARY="$(abxpkg load --binproviders=playwright chromium | awk 'NF {print $2; exit}')" \
-    && export CHROME_BINARY \
-    && test -x "$CHROME_BINARY" \
-    && "$CHROME_BINARY" --version | tee -a /VERSION.txt \
+    && chmod g+w "$TMP_DIR" "$LIB_DIR" "$LIB_DIR"/bin "$PLAYWRIGHT_BROWSERS_PATH" \
+    && TIMEOUT=600 gosu "$ARCHIVEBOX_USER" archivebox install 2>&1 | tee -a /VERSION.txt \
     && gosu "$ARCHIVEBOX_USER" archivebox version 2>&1 | tee -a /VERSION.txt \
     && find /venv "$CODE_DIR" "$LIB_DIR" "$DATA_DIR" -type d -name __pycache__ -prune -exec rm -rf {} + \
     && find /venv "$CODE_DIR" "$LIB_DIR" "$DATA_DIR" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
