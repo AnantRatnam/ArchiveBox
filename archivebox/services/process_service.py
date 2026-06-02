@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
+import time
+from contextlib import contextmanager
 from datetime import datetime
+from functools import wraps
 from typing import ClassVar
 
 from asgiref.sync import sync_to_async
@@ -10,6 +15,41 @@ from django.utils import timezone
 from abxbus import BaseEvent
 from abx_dl.events import CrawlCleanupEvent, CrawlCompletedEvent, ProcessCompletedEvent, ProcessStartedEvent
 from abx_dl.services.base import BaseService
+
+
+def _perf_trace(label):
+    def decorator(func):
+        if asyncio.iscoroutinefunction(func):
+
+            @wraps(func)
+            async def async_wrapper(*args, **kwargs):
+                if os.environ.get("ARCHIVEBOX_PERF_TRACE") != "1":
+                    return await func(*args, **kwargs)
+                started_at = time.perf_counter()
+                try:
+                    return await func(*args, **kwargs)
+                finally:
+                    elapsed_ms = (time.perf_counter() - started_at) * 1000
+                    print(f"PERF_TRACE label={label} ms={elapsed_ms:.3f}", file=sys.stderr, flush=True)
+
+            return async_wrapper
+
+        return func
+
+    return decorator
+
+
+@contextmanager
+def _perf_span(label: str):
+    if os.environ.get("ARCHIVEBOX_PERF_TRACE") != "1":
+        yield
+        return
+    started_at = time.perf_counter()
+    try:
+        yield
+    finally:
+        elapsed_ms = (time.perf_counter() - started_at) * 1000
+        print(f"PERF_TRACE label={label} ms={elapsed_ms:.3f}", file=sys.stderr, flush=True)
 
 
 def parse_event_datetime(value: str | None):
@@ -55,6 +95,7 @@ class ProcessService(BaseService):
             self._iface = await sync_to_async(current_network_interface_with_machine, thread_sensitive=True)()
         return self._iface
 
+    @_perf_trace("archivebox.ProcessService.on_ProcessStartedEvent__save_to_db")
     async def on_ProcessStartedEvent__save_to_db(self, event: ProcessStartedEvent) -> None:
         from archivebox.machine.models import Process
 
@@ -153,6 +194,7 @@ class ProcessService(BaseService):
     async def on_CrawlCompletedEvent__flush_completed(self, event: CrawlCompletedEvent) -> None:
         await self.flush_completed()
 
+    @_perf_trace("archivebox.ProcessService._save_completed_process_to_db")
     async def _save_completed_process_to_db(self, event: ProcessCompletedEvent) -> None:
         from archivebox.machine.models import Process
 

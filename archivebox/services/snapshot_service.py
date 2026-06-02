@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import sys
+import os
+import time
+from functools import wraps
 
 from asgiref.sync import sync_to_async
 from django.utils import timezone
@@ -11,6 +15,40 @@ from abx_dl.limits import CrawlLimitState
 from abx_dl.services.base import BaseService
 
 
+def _perf_trace(label):
+    def decorator(func):
+        if asyncio.iscoroutinefunction(func):
+
+            @wraps(func)
+            async def async_wrapper(*args, **kwargs):
+                if os.environ.get("ARCHIVEBOX_PERF_TRACE") != "1":
+                    return await func(*args, **kwargs)
+                started_at = time.perf_counter()
+                try:
+                    return await func(*args, **kwargs)
+                finally:
+                    elapsed_ms = (time.perf_counter() - started_at) * 1000
+                    print(f"PERF_TRACE label={label} ms={elapsed_ms:.3f}", file=sys.stderr, flush=True)
+
+            return async_wrapper
+
+        @wraps(func)
+        def sync_wrapper(*args, **kwargs):
+            if os.environ.get("ARCHIVEBOX_PERF_TRACE") != "1":
+                return func(*args, **kwargs)
+            started_at = time.perf_counter()
+            try:
+                return func(*args, **kwargs)
+            finally:
+                elapsed_ms = (time.perf_counter() - started_at) * 1000
+                print(f"PERF_TRACE label={label} ms={elapsed_ms:.3f}", file=sys.stderr, flush=True)
+
+        return sync_wrapper
+
+    return decorator
+
+
+@_perf_trace("archivebox.SnapshotService.finalize_completed_snapshot")
 def finalize_completed_snapshot(
     snapshot_id: str,
     *,
@@ -70,6 +108,7 @@ class SnapshotService(BaseService):
         self.bus.on(SnapshotEvent, self.on_SnapshotEvent)
         self.bus.on(SnapshotCompletedEvent, self.on_SnapshotCompletedEvent)
 
+    @_perf_trace("archivebox.SnapshotService.on_SnapshotEvent")
     async def on_SnapshotEvent(self, event: SnapshotEvent) -> None:
         from archivebox.core.models import Snapshot
 
@@ -101,5 +140,6 @@ class SnapshotService(BaseService):
                 return
             await sync_to_async(snapshot.ensure_crawl_symlink, thread_sensitive=True)()
 
+    @_perf_trace("archivebox.SnapshotService.on_SnapshotCompletedEvent")
     async def on_SnapshotCompletedEvent(self, event: SnapshotCompletedEvent) -> None:
         await sync_to_async(finalize_completed_snapshot, thread_sensitive=True)(event.snapshot_id)

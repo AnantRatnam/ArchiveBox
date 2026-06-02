@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import sys
+import time
 from collections import defaultdict
 from collections.abc import Iterable
+from functools import wraps
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -18,11 +22,45 @@ from abx_dl.services.base import BaseService
 from .process_service import parse_event_datetime
 
 
+def _perf_trace(label):
+    def decorator(func):
+        if asyncio.iscoroutinefunction(func):
+
+            @wraps(func)
+            async def async_wrapper(*args, **kwargs):
+                if os.environ.get("ARCHIVEBOX_PERF_TRACE") != "1":
+                    return await func(*args, **kwargs)
+                started_at = time.perf_counter()
+                try:
+                    return await func(*args, **kwargs)
+                finally:
+                    elapsed_ms = (time.perf_counter() - started_at) * 1000
+                    print(f"PERF_TRACE label={label} ms={elapsed_ms:.3f}", file=sys.stderr, flush=True)
+
+            return async_wrapper
+
+        @wraps(func)
+        def sync_wrapper(*args, **kwargs):
+            if os.environ.get("ARCHIVEBOX_PERF_TRACE") != "1":
+                return func(*args, **kwargs)
+            started_at = time.perf_counter()
+            try:
+                return func(*args, **kwargs)
+            finally:
+                elapsed_ms = (time.perf_counter() - started_at) * 1000
+                print(f"PERF_TRACE label={label} ms={elapsed_ms:.3f}", file=sys.stderr, flush=True)
+
+        return sync_wrapper
+
+    return decorator
+
+
 @runtime_checkable
 class ModelDumpable(Protocol):
     def model_dump(self) -> dict[str, Any]: ...
 
 
+@_perf_trace("archivebox.ArchiveResultService._collect_output_metadata")
 def _collect_output_metadata(plugin_dir: Path) -> tuple[dict[str, dict], int, str]:
     exclude_names = {"stdout.log", "stderr.log", "process.pid", "hook.pid", "listener.pid"}
     output_files: dict[str, dict] = {}
@@ -135,6 +173,7 @@ def _summarize_output_files(output_files: dict[str, dict]) -> tuple[int, str]:
     return total_size, output_mimetypes
 
 
+@_perf_trace("archivebox.ArchiveResultService._resolve_output_metadata")
 def _resolve_output_metadata(raw_output_files: Any, plugin_dir: Path) -> tuple[dict[str, dict], int, str]:
     normalized_output_files = _normalize_output_files(raw_output_files)
     if normalized_output_files and _has_structured_output_metadata(normalized_output_files):
@@ -215,6 +254,7 @@ class ArchiveResultService(BaseService):
         self.bus.on(ArchiveResultEvent, self.on_ArchiveResultEvent__save_to_db)
         self.bus.on(ProcessCompletedEvent, self.on_ProcessCompletedEvent__save_to_db)
 
+    @_perf_trace("archivebox.ArchiveResultService.on_ArchiveResultEvent__save_to_db")
     async def on_ArchiveResultEvent__save_to_db(self, event: ArchiveResultEvent) -> None:
         from archivebox.core.models import ArchiveResult, Snapshot
         from archivebox.machine.models import Process
@@ -307,6 +347,7 @@ class ArchiveResultService(BaseService):
                 snapshot.title = next_title
                 await snapshot.asave(update_fields=["title", "modified_at"])
 
+    @_perf_trace("archivebox.ArchiveResultService.on_ProcessCompletedEvent__save_to_db")
     async def on_ProcessCompletedEvent__save_to_db(self, event: ProcessCompletedEvent) -> None:
         if event.event_id in self._completed_process_event_ids:
             return
