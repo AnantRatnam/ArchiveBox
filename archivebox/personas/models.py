@@ -237,6 +237,15 @@ class Persona(ModelWithConfig):
     def runtime_downloads_dir_for_crawl(self, crawl) -> Path:
         return self.runtime_root_for_crawl(crawl) / "chrome_downloads"
 
+    def runtime_root_for_snapshot(self, snapshot) -> Path:
+        return Path(snapshot.output_dir) / ".persona" / self.name
+
+    def runtime_profile_dir_for_snapshot(self, snapshot) -> Path:
+        return self.runtime_root_for_snapshot(snapshot) / "chrome_profile"
+
+    def runtime_downloads_dir_for_snapshot(self, snapshot) -> Path:
+        return self.runtime_root_for_snapshot(snapshot) / "chrome_downloads"
+
     def copy_chrome_profile(self, source_dir: Path, destination_dir: Path) -> None:
         destination_dir.parent.mkdir(parents=True, exist_ok=True)
         shutil.rmtree(destination_dir, ignore_errors=True)
@@ -283,6 +292,33 @@ class Persona(ModelWithConfig):
             (runtime_root / "template_dir.txt").write_text(str(template_dir))
             if chrome_binary:
                 (runtime_root / "chrome_binary.txt").write_text(chrome_binary)
+
+        return {
+            "CHROME_USER_DATA_DIR": str(runtime_profile_dir),
+            "CHROME_DOWNLOADS_DIR": str(runtime_downloads_dir),
+        }
+
+    def prepare_runtime_for_snapshot(self, snapshot, chrome_binary: str = "") -> dict[str, str]:
+        crawl_runtime_profile_dir = self.runtime_profile_dir_for_crawl(snapshot.crawl)
+        template_dir = crawl_runtime_profile_dir if crawl_runtime_profile_dir.exists() else Path(self.CHROME_USER_DATA_DIR)
+        runtime_root = self.runtime_root_for_snapshot(snapshot)
+        runtime_profile_dir = self.runtime_profile_dir_for_snapshot(snapshot)
+        runtime_downloads_dir = self.runtime_downloads_dir_for_snapshot(snapshot)
+
+        if runtime_root.exists():
+            shutil.rmtree(runtime_root, ignore_errors=True)
+        if template_dir.exists() and any(template_dir.iterdir()):
+            self.copy_chrome_profile(template_dir, runtime_profile_dir)
+        else:
+            runtime_profile_dir.mkdir(parents=True, exist_ok=True)
+
+        runtime_downloads_dir.mkdir(parents=True, exist_ok=True)
+        self.cleanup_chrome_profile(runtime_profile_dir)
+
+        (runtime_root / "persona_name.txt").write_text(self.name)
+        (runtime_root / "template_dir.txt").write_text(str(template_dir))
+        if chrome_binary:
+            (runtime_root / "chrome_binary.txt").write_text(chrome_binary)
 
         return {
             "CHROME_USER_DATA_DIR": str(runtime_profile_dir),

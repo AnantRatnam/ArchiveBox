@@ -760,21 +760,28 @@ class CrawlRunner:
         with _perf_span("runner.CrawlRunner.load_snapshot_payload.resolve_persona"):
             self.persona = snapshot.crawl.resolve_persona()
         with _perf_span("runner.CrawlRunner.load_snapshot_payload.get_config"):
-            self.base_config = get_config(crawl=snapshot.crawl)
-        if self.persona:
-            with _perf_span("runner.CrawlRunner.load_snapshot_payload.persona_runtime"):
-                self.base_config.update(
-                    self.persona.prepare_runtime_for_crawl(
-                        snapshot.crawl,
-                        chrome_binary=self.base_config["CHROME_BINARY"],
-                    ),
-                )
+            self.base_config = get_config(crawl=snapshot.crawl, persona=self.persona)
         with _perf_span("runner.CrawlRunner.load_snapshot_payload.runtime_dirs"):
             self.base_config.update(self.config_overrides)
             self.crawl_output_dir = str(snapshot.crawl.output_dir)
-            runtime_chrome_overrides = {
-                key: self.base_config[key] for key in ("CHROME_USER_DATA_DIR", "CHROME_DOWNLOADS_DIR") if self.base_config.get(key)
-            }
+            runtime_chrome_overrides = {}
+            if self.persona:
+                if str(self.base_config.get("CHROME_ISOLATION") or "crawl").lower() == "snapshot":
+                    runtime_chrome_overrides.update(
+                        self.persona.prepare_runtime_for_snapshot(
+                            snapshot,
+                            chrome_binary=self.base_config["CHROME_BINARY"],
+                        ),
+                    )
+                else:
+                    crawl_downloads_dir = self.persona.runtime_downloads_dir_for_crawl(snapshot.crawl)
+                    crawl_downloads_dir.mkdir(parents=True, exist_ok=True)
+                    runtime_chrome_overrides.update(
+                        {
+                            "CHROME_USER_DATA_DIR": str(self.persona.runtime_profile_dir_for_crawl(snapshot.crawl)),
+                            "CHROME_DOWNLOADS_DIR": str(crawl_downloads_dir),
+                        },
+                    )
             snapshot_output_dir = str(snapshot.output_dir)
         with _perf_span("runner.CrawlRunner.load_snapshot_payload.for_crawl_runtime"):
             config = self.base_config.for_crawl_runtime(
@@ -824,10 +831,15 @@ class CrawlRunner:
         if parent_snapshot is None:
             return
         config = await sync_to_async(
-            lambda: get_config(crawl=self.crawl, snapshot=parent_snapshot),
+            lambda: get_config(crawl=self.crawl, snapshot=parent_snapshot).for_crawl_runtime(
+                crawl=self.crawl,
+                snapshot=parent_snapshot,
+                persona=self.crawl.resolve_persona(),
+                crawl_output_dir=self.crawl.output_dir,
+                snapshot_output_dir=parent_snapshot.output_dir,
+            ),
             thread_sensitive=True,
         )()
-        config = config.for_crawl_runtime(crawl=self.crawl, snapshot=parent_snapshot, persona=self.crawl.resolve_persona())
         if CrawlLimitState.from_config(config).get_stop_reason() in ("crawl_max_size", "crawl_timeout"):
             return
 

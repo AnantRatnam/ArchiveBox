@@ -195,6 +195,11 @@ def build_crawl_config_snapshot(
     plugin_owned_keys = set(_plugin_config_properties(PLUGIN_CONFIG_SCHEMAS)) - set(ArchiveBoxBaseConfig.model_fields)
     effective = get_config(persona=persona, base_config=base_config)
     frozen = effective.for_crawl_frozen(persona=persona)
+    if persona is not None:
+        persona_config = persona.get_derived_config()
+        for key in plugin_owned_keys - explicit_overrides:
+            if key in persona_config:
+                frozen.pop(key, None)
     if overrides:
         resolved = get_config(base_config=frozen, overrides=overrides, include_machine=False)
         resolved_payload = normalize_runtime_config(resolved)
@@ -202,6 +207,11 @@ def build_crawl_config_snapshot(
         for key in plugin_owned_keys & explicit_overrides:
             if ArchiveBoxConfig.scope_for_key(key) == _SCOPE_CRAWL_FROZEN and key in resolved_payload:
                 frozen[key] = resolved_payload[key]
+        if persona is not None:
+            persona_config = persona.get_derived_config()
+            for key in plugin_owned_keys - explicit_overrides:
+                if key in persona_config:
+                    frozen.pop(key, None)
     return frozen
 
 
@@ -1045,14 +1055,20 @@ def get_config(
         )
 
     if persona is not None:
-        scope_overrides.update(
-            normalize_runtime_config(
-                persona.get_derived_config(),
-                only_crawl_execution=crawl_config_base,
-                exclude_runtime_derived=not crawl_config_base,
-                json_safe=False,
-            ),
+        persona_config = normalize_runtime_config(
+            persona.get_derived_config(),
+            exclude_runtime_derived=not crawl_config_base,
+            json_safe=False,
         )
+        if crawl_config_base:
+            scope_by_key = ArchiveBoxConfig._scope_by_key()
+            crawl_keys = set(dict(crawl.config or {}))
+            persona_config = {
+                key: value
+                for key, value in persona_config.items()
+                if scope_by_key.get(key) == _SCOPE_CRAWL_EXECUTION or key not in crawl_keys
+            }
+        scope_overrides.update(persona_config)
 
     if crawl is not None and crawl.config and not crawl_config_base:
         scope_overrides.update(normalize_runtime_config(crawl.config, exclude_crawl_execution=True, json_safe=False))
