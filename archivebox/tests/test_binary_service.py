@@ -25,11 +25,13 @@ def _link_real_binary(bin_dir: Path, name: str, *, source: str | None = None) ->
 
 
 def _runtime_env(data_dir: Path, bin_dir: Path) -> dict[str, str]:
+    archivebox_bin = shutil.which("archivebox")
+    assert archivebox_bin, "archivebox console script must be available for CLI tests"
     return {
         "LIB_DIR": str(data_dir / "lib"),
         "LIB_BIN_DIR": str(data_dir / "lib" / "bin"),
         "ABXPKG_LIB_DIR": str(data_dir / "lib"),
-        "PATH": os.pathsep.join([str(bin_dir), "/usr/bin", "/bin", "/usr/sbin", "/sbin"]),
+        "PATH": os.pathsep.join([str(bin_dir), str(Path(archivebox_bin).parent), "/usr/bin", "/bin", "/usr/sbin", "/sbin"]),
     }
 
 

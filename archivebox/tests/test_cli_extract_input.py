@@ -145,7 +145,7 @@ def test_extract_pipeline_from_snapshot(initialized_archive):
 
     # Create snapshot and pipe to extract
     snapshot_proc = run_archivebox_cmd(
-        ["snapshot", "https://example.com"],
+        ["snapshot", "create", "https://example.com"],
         cwd=initialized_archive,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

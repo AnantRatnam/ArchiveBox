@@ -41,7 +41,7 @@ def test_crawl_service_run_processes_queued_crawl_and_applies_crawl_config(tmp_p
 
     port = get_free_port()
     env = cli_env(
-        port,
+        port=port,
         PLUGINS="wget,parse_html_urls",
         SAVE_WGET="True",
         SAVE_FAVICON="False",

@@ -38,6 +38,7 @@ from rich import print as rprint
 from django.db.models import QuerySet
 
 SNAPSHOT_FILTER_TYPE_CHOICES = ("exact", "substring", "regex", "domain", "tag", "timestamp")
+SNAPSHOT_LIST_CHUNK_SIZE = 100
 
 
 # =============================================================================
@@ -287,7 +288,7 @@ def list_snapshots(
         if with_headers:
             sys.stdout.write(",".join(cols))
             sys.stdout.write("\n")
-        for snapshot in queryset.prefetch_related("tags").iterator(chunk_size=500):
+        for snapshot in queryset.prefetch_related("tags").iterator(chunk_size=SNAPSHOT_LIST_CHUNK_SIZE):
             sys.stdout.write(snapshot.to_csv(cols=cols, separator=","))
             sys.stdout.write("\n")
             count += 1
@@ -295,13 +296,13 @@ def list_snapshots(
         return 0
 
     if not is_tty:
-        for snapshot in queryset.prefetch_related("tags").iterator(chunk_size=500):
+        for snapshot in queryset.prefetch_related("tags").iterator(chunk_size=SNAPSHOT_LIST_CHUNK_SIZE):
             write_record(snapshot.to_json())
             count += 1
         rprint(f"[dim]Listed {count} snapshots[/dim]", file=sys.stderr)
         return 0
 
-    for snapshot in queryset.iterator(chunk_size=500):
+    for snapshot in queryset.iterator(chunk_size=SNAPSHOT_LIST_CHUNK_SIZE):
         status_color = {
             "queued": "yellow",
             "started": "blue",

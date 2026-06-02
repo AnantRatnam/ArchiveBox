@@ -71,7 +71,12 @@
         animation: idle-pulse 5s infinite;
     }
     #progress-monitor .status-dot.stopped {
-        background: #6e7681;
+        background: #d29922;
+        box-shadow: 0 0 4px #d29922;
+    }
+    #progress-monitor .status-dot.error {
+        background: #f85149;
+        box-shadow: 0 0 8px #f85149;
     }
     #progress-monitor .status-dot.flash {
         animation: flash 0.3s ease-out;
@@ -967,19 +972,19 @@
             <div class="stats">
                 <div class="stat">
                     <span class="stat-label">Crawls</span>
-                    <span class="stat-value compact info"><span id="crawls-active">0</span> active · <span id="crawls-queued">0</span> queued</span>
+                    <span class="stat-value compact info"><span id="crawls-active-segment"><span id="crawls-active">0</span> active · </span><span id="crawls-queued">0</span> queued</span>
                 </div>
                 <div class="stat">
                     <span class="stat-label">Snapshots</span>
-                    <span class="stat-value compact info"><span id="snapshots-active">0</span> active · <span id="snapshots-queued">0</span> queued</span>
+                    <span class="stat-value compact info"><span id="snapshots-active-segment"><span id="snapshots-active">0</span> active · </span><span id="snapshots-queued">0</span> queued</span>
                 </div>
                 <div class="stat">
                     <span class="stat-label">Downloads</span>
-                    <span class="stat-value compact warning"><span id="downloads-active">0</span> active · <span id="downloads-queued">0</span> queued</span>
+                    <span class="stat-value compact warning"><span id="downloads-active-segment"><span id="downloads-active">0</span> active · </span><span id="downloads-queued">0</span> queued</span>
                 </div>
                 <div class="stat">
                     <span class="stat-label">Indexing</span>
-                    <span class="stat-value compact success"><span id="indexing-active">0</span> active · <span id="indexing-queued">0</span> queued</span>
+                    <span class="stat-value compact success"><span id="indexing-active-segment"><span id="indexing-active">0</span> active · </span><span id="indexing-queued">0</span> queued</span>
                 </div>
             </div>
         </div>
@@ -1682,17 +1687,24 @@
         `;
     }
 
+    function setOrchestratorState(state, label) {
+        const dot = document.getElementById('orchestrator-dot');
+        dot.classList.remove('stopped', 'idle', 'running', 'error');
+        dot.classList.add(state);
+        document.getElementById('orchestrator-text').textContent = label;
+        return dot;
+    }
+
     function updateProgress(data) {
+        idleMessage.style.color = '';
         function setCount(id, value) {
             const el = document.getElementById(id);
             if (el) el.textContent = Number(value || 0).toLocaleString();
         }
-        function setOrchestratorState(state, label) {
-            const dot = document.getElementById('orchestrator-dot');
-            dot.classList.remove('stopped', 'idle', 'running');
-            dot.classList.add(state);
-            document.getElementById('orchestrator-text').textContent = label;
-            return dot;
+        function setActiveCount(id, value) {
+            setCount(id, value);
+            const segment = document.getElementById(`${id}-segment`);
+            if (segment) segment.style.display = Number(value || 0) > 0 ? '' : 'none';
         }
 
         // Calculate if there's activity
@@ -1715,17 +1727,15 @@
         // Update orchestrator status - show "Running" only when there are active workers.
         const pidEl = document.getElementById('orchestrator-pid');
         const hasWorkers = data.total_workers > 0;
-        const hasBlockedCrawl = (data.active_crawls || []).some(c => c.worker_state === 'crashed');
         let dot = null;
 
         if (hasWorkers) {
             dot = setOrchestratorState('running', 'Running');
-        } else if (hasActivity && hasBlockedCrawl && !data.orchestrator_running) {
+        } else if (!data.orchestrator_running) {
             dot = setOrchestratorState('stopped', 'Runner stopped');
         } else if (hasActivity) {
-            dot = setOrchestratorState('idle', data.orchestrator_running ? 'Idle' : 'Waiting');
+            dot = setOrchestratorState('idle', 'Idle');
         } else {
-            // No activity - show as idle (whether orchestrator process exists or not)
             dot = setOrchestratorState('idle', 'Idle');
         }
 
@@ -1742,15 +1752,17 @@
         setTimeout(() => dot.classList.remove('flash'), 300);
 
         [
-            ['crawls-active', data.crawls_active],
             ['crawls-queued', data.crawls_queued],
-            ['snapshots-active', data.snapshots_active],
             ['snapshots-queued', data.snapshots_queued],
-            ['downloads-active', data.downloads_active],
             ['downloads-queued', data.downloads_queued],
-            ['indexing-active', data.indexing_active],
             ['indexing-queued', data.indexing_queued],
         ].forEach(([id, value]) => setCount(id, value));
+        [
+            ['crawls-active', data.crawls_active],
+            ['snapshots-active', data.snapshots_active],
+            ['downloads-active', data.downloads_active],
+            ['indexing-active', data.indexing_active],
+        ].forEach(([id, value]) => setActiveCount(id, value));
         updateScreencastPanel(data);
 
         // Render crawl tree
@@ -1784,18 +1796,24 @@
 
     function fetchProgress() {
         fetch(progressEndpoint, { credentials: 'same-origin' })
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                return response.json();
+            })
             .then(data => {
                 if (data.error) {
                     console.error('Progress API error:', data.error, data.traceback);
+                    setOrchestratorState('error', 'Backend not responding');
                     idleMessage.textContent = 'API Error: ' + data.error;
                     idleMessage.style.color = '#f85149';
+                    return;
                 }
                 monitor.classList.toggle('is-guest', data.is_admin === false);
                 updateProgress(data);
             })
             .catch(error => {
                 console.error('Progress fetch error:', error);
+                setOrchestratorState('error', 'Backend not responding');
                 idleMessage.textContent = 'Fetch Error: ' + error.message;
                 idleMessage.style.color = '#f85149';
             });

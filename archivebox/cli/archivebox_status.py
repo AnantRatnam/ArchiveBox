@@ -105,7 +105,7 @@ def status(out_dir: Path = CONSTANTS.DATA_DIR) -> None:
 
     if num_indexed:
         print("    [violet]Hint:[/violet] You can list snapshots by status like so:")
-        print("        [green]archivebox list --status=<status>  (e.g. archived, queued, etc.)[/green]")
+        print("        [green]archivebox list --status=<status>  (e.g. sealed, queued, etc.)[/green]")
 
     if orphaned_dirs:
         print("    [violet]Hint:[/violet] To automatically import orphaned data directories into the main index, run:")

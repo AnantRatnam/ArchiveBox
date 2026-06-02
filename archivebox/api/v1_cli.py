@@ -291,7 +291,10 @@ def cli_remove(request: HttpRequest, args: RemoveCommandSchema):
     remove_kwargs = snapshot_filter_kwargs(args, default_filter_type=FilterTypeChoices.exact)
     timeout_arg = remove_kwargs.pop("timeout")
     timeout = min(float(timeout_arg if timeout_arg is not None else 60.0), 60.0)
-    snapshots_to_remove = Snapshot.objects.order_by("-created_at").search(**remove_kwargs)
+    try:
+        snapshots_to_remove = Snapshot.objects.order_by("-created_at").search(**remove_kwargs)
+    except ValueError as err:
+        raise HttpError(400, str(err)) from err
 
     result = remove(
         yes=True,  # no way to interactively ask for confirmation via API, so we force yes
