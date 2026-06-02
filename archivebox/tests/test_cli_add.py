@@ -642,7 +642,7 @@ def test_cli_add_real_urls_with_options_writes_inspectable_outputs(initialized_a
 
 
 @pytest.mark.timeout(180)
-def test_cli_recursive_crawl_processes_discovered_html_urls(initialized_archive):
+def test_cli_recursive_crawl_processes_discovered_html_urls(initialized_archive, recursive_test_site):
 
     env = os.environ.copy()
     env.update(
@@ -665,8 +665,11 @@ def test_cli_recursive_crawl_processes_discovered_html_urls(initialized_archive)
             "SAVE_FAVICON": "false",
             "PARSE_HTML_URLS_ENABLED": "true",
             "PARSE_DOM_OUTLINKS_ENABLED": "false",
+            "URL_ALLOWLIST": r"127\.0\.0\.1[:/].*",
         },
     )
+    root_url = recursive_test_site["root_url"]
+    child_url = recursive_test_site["child_urls"][0]
 
     _cmd_result = run_archivebox_cmd(
         [
@@ -677,7 +680,7 @@ def test_cli_recursive_crawl_processes_discovered_html_urls(initialized_archive)
             "--tag=recursive-flow",
             "--parser=url_list",
             "--plugins=wget,parse_html_urls",
-            "https://example.com",
+            root_url,
         ],
         cwd=initialized_archive,
         env=env,
@@ -701,14 +704,14 @@ def test_cli_recursive_crawl_processes_discovered_html_urls(initialized_archive)
     assert crawl_config["CRAWL_MAX_URLS"] == 2
     assert crawl_config["CRAWL_MAX_SIZE"] == 50 * 1024 * 1024
     assert crawl_config.get("SNAPSHOT_MAX_SIZE", 0) == 0
-    assert ("https://example.com", 0, "sealed") in snapshots
-    assert any(url == "https://iana.org/domains/example" and depth == 1 and status == "sealed" for url, depth, status in snapshots)
+    assert (root_url, 0, "sealed") in snapshots
+    assert any(url == child_url and depth == 1 and status == "sealed" for url, depth, status in snapshots)
 
     by_url_plugin = {(url, plugin): status for url, plugin, status, _files in archive_results}
-    assert by_url_plugin[("https://example.com", "wget")] == "succeeded"
-    assert by_url_plugin[("https://example.com", "parse_html_urls")] == "succeeded"
-    assert by_url_plugin[("https://iana.org/domains/example", "wget")] == "succeeded"
+    assert by_url_plugin[(root_url, "wget")] == "succeeded"
+    assert by_url_plugin[(root_url, "parse_html_urls")] == "succeeded"
+    assert by_url_plugin[(child_url, "wget")] == "succeeded"
 
     urls_outputs = list((initialized_archive / "archive/users/system/snapshots").rglob("parse_html_urls/urls.jsonl"))
     assert urls_outputs
-    assert any("https://iana.org/domains/example" in path.read_text() for path in urls_outputs)
+    assert any(child_url in path.read_text() for path in urls_outputs)
