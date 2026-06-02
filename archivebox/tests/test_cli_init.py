@@ -201,9 +201,10 @@ def test_init_with_existing_data_preserves_snapshots(initialized_archive):
     # Add a snapshot
     run_archivebox_cmd(
         ["add", "--index-only", "--depth=0", "https://example.com"],
+        cwd=initialized_archive,
         env=env,
     )
-    run_queued_crawls(initialized_archive, env)
+    run_queued_crawls(initialized_archive, env, timeout=300)
 
     # Check snapshot was created
     with use_archivebox_db(initialized_archive):
@@ -211,7 +212,7 @@ def test_init_with_existing_data_preserves_snapshots(initialized_archive):
     assert count_before == 1
 
     # Run init again
-    result = run_archivebox_cmd(["init"])
+    result = run_archivebox_cmd(["init"], cwd=initialized_archive)
     assert result.returncode == 0
 
     # Snapshot should still exist

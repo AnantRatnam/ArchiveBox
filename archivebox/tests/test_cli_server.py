@@ -8,6 +8,7 @@ import os
 import asyncio
 import json
 import signal
+import shutil
 import socket
 import subprocess
 import sys
@@ -167,8 +168,11 @@ def test_reload_workers_use_current_interpreter_and_supervisord_managed_runner()
 
 
 def test_server_daemon_starts_real_plugin_owned_sonic_worker(archivebox_daemon_server):
+    if shutil.which("sonic") is None:
+        pytest.skip("sonic server binary is required for Sonic worker integration tests")
+
     server = archivebox_daemon_server(
-        SEARCH_BACKEND_ENGINE="sqlite",
+        SEARCH_BACKEND_ENGINE="sonic",
     )
     state = server.wait_for_workers(("worker_daphne", "worker_sonic", "worker_runner"))
 
@@ -289,6 +293,9 @@ def test_sonic_worker_is_disabled_when_sonic_disabled(tmp_path):
 
 
 def test_sonic_daemon_event_handler_accepts_real_running_worker(archivebox_daemon_server):
+    if shutil.which("sonic") is None:
+        pytest.skip("sonic server binary is required for Sonic worker integration tests")
+
     from abx_dl.events import ProcessStdoutEvent
     from abx_dl.orchestrator import create_bus
     from archivebox.search.sonic_daemon import register_sonic_daemon_event_handler

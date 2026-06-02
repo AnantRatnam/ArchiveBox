@@ -31,12 +31,17 @@ def _write_tool_shim(bin_dir: Path, name: str, version: str) -> Path:
 
 
 def _runtime_env(data_dir: Path, bin_dir: Path) -> dict[str, str]:
+    path_entries = [
+        str(bin_dir),
+        str(data_dir / "lib" / "env" / "bin"),
+        os.environ.get("PATH", ""),
+    ]
     return {
         "LIB_DIR": str(data_dir / "lib"),
         "LIB_BIN_DIR": str(data_dir / "lib" / "bin"),
         "ABXPKG_LIB_DIR": str(data_dir / "lib"),
         "LITEPARSE_ENABLED": "True",
-        "PATH": os.pathsep.join([str(bin_dir), str(data_dir / "lib" / "env" / "bin"), "/usr/bin", "/bin", "/usr/sbin", "/sbin"]),
+        "PATH": os.pathsep.join(entry for entry in path_entries if entry),
     }
 
 

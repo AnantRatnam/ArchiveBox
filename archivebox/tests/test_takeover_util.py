@@ -3,6 +3,7 @@
 
 import os
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -37,6 +38,11 @@ from archivebox.tests.test_orm_helpers import use_archivebox_db
 pytestmark = pytest.mark.django_db(transaction=True)
 
 
+def _require_sonic_binary() -> None:
+    if shutil.which("sonic") is None:
+        pytest.skip("sonic server binary is required for Sonic worker takeover tests")
+
+
 def _archive_pages_for_sqlite_reindexing(data_dir: Path, env: dict[str, str], root_url: str) -> None:
     add_env = dict(env)
     add_env["SEARCH_BACKEND_ENGINE"] = "ripgrep"
@@ -63,6 +69,7 @@ def _archive_pages_for_sqlite_reindexing(data_dir: Path, env: dict[str, str], ro
 
 @pytest.mark.timeout(360)
 def test_behavior_update_index_only_keeps_server_http_and_search_visible(tmp_path, initialized_archive, recursive_test_site):
+    _require_sonic_binary()
 
     env = cli_env(
         live=True,
@@ -106,6 +113,7 @@ def test_behavior_update_index_only_keeps_server_http_and_search_visible(tmp_pat
 
 @pytest.mark.timeout(420)
 def test_behavior_update_yields_to_server_then_finishes_visible_indexing(tmp_path, initialized_archive, recursive_test_site):
+    _require_sonic_binary()
 
     env = cli_env(
         live=True,
@@ -331,6 +339,7 @@ def test_live_update_index_only_does_not_take_over_server_runtime(tmp_path, init
 
 @pytest.mark.timeout(360)
 def test_live_server_keeps_http_runtime_while_update_runs_real_sqlite_indexer(tmp_path, initialized_archive, recursive_test_site):
+    _require_sonic_binary()
 
     env = cli_env(
         live=True,
@@ -419,6 +428,7 @@ def test_live_server_keeps_http_runtime_while_update_runs_real_sqlite_indexer(tm
 
 @pytest.mark.timeout(420)
 def test_live_update_yields_to_server_then_reclaims_real_sqlite_indexing(tmp_path, initialized_archive, recursive_test_site):
+    _require_sonic_binary()
 
     env = cli_env(
         live=True,

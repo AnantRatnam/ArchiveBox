@@ -110,25 +110,28 @@ def _build_script(body: str) -> str:
                 output_rel = "index.jsonl"
         assert output_rel is not None
 
-        responses_root = Path(snapshot.output_dir) / "responses" / snapshot.domain
+        responses_root = Path(snapshot.output_dir) / "responses"
         assert responses_root.exists()
         response_file = None
         response_rel = None
         for candidate in responses_root.rglob("*"):
             if not candidate.is_file():
                 continue
-            rel = candidate.relative_to(responses_root)
+            if snapshot.domain not in candidate.relative_to(responses_root).parts:
+                continue
+            rel = candidate.relative_to(snapshot.output_dir)
             if str(rel) in reserved_snapshot_paths:
                 continue
-            if not (Path(snapshot.output_dir) / rel).exists():
-                response_file = candidate
-                response_rel = str(rel)
-                break
+            response_file = candidate
+            response_rel = str(rel)
+            break
         if response_file is None:
             for candidate in responses_root.rglob("*"):
                 if not candidate.is_file():
                     continue
-                rel = candidate.relative_to(responses_root)
+                if snapshot.domain not in candidate.relative_to(responses_root).parts:
+                    continue
+                rel = candidate.relative_to(snapshot.output_dir)
                 if str(rel) in reserved_snapshot_paths:
                     continue
                 response_file = candidate
@@ -136,7 +139,7 @@ def _build_script(body: str) -> str:
                 break
         if response_file is None:
             response_file = next(p for p in responses_root.rglob("*") if p.is_file())
-            response_rel = str(response_file.relative_to(responses_root))
+            response_rel = str(response_file.relative_to(snapshot.output_dir))
         response_output_path = Path(snapshot.output_dir) / response_rel
         return output_rel, response_file, response_rel, response_output_path
 
@@ -148,14 +151,14 @@ def _build_script(body: str) -> str:
         )
         safe_json = Path(snapshot.output_dir) / "safe.json"
         safe_json.write_text('{"ok": true}', encoding="utf-8")
-        responses_root = Path(snapshot.output_dir) / "responses" / snapshot.domain
+        responses_root = Path(snapshot.output_dir) / "responses" / "text" / snapshot.domain
         responses_root.mkdir(parents=True, exist_ok=True)
         sniffed_response = responses_root / "dangerous-response"
         sniffed_response.write_text(
             "<!doctype html><html><body><script>window.__archivebox_response__ = true;</script><p>Response Danger</p></body></html>",
             encoding="utf-8",
         )
-        return "dangerous.html", "safe.json", "dangerous-response"
+        return "dangerous.html", "safe.json", str(sniffed_response.relative_to(snapshot.output_dir))
     """,
     )
     return prelude + "\n" + textwrap.dedent(body)

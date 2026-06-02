@@ -744,7 +744,7 @@ def test_archivewebpage_wacz_preview_serves_real_capture_frame(initialized_archi
     url = "https://example.com"
     port = get_free_port()
     env = cli_env(
-        port,
+        port=port,
         PLUGINS="archivewebpage",
         URL_ALLOWLIST="",
         PUBLIC_INDEX="True",

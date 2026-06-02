@@ -1339,10 +1339,10 @@ def wait_for_archive_outputs(
         if output_rel is None:
             raise SystemExit(1)
 
-        responses_root = Path(snapshot.output_dir) / 'responses' / snapshot.domain
+        responses_root = Path(snapshot.output_dir) / 'responses'
         if not responses_root.exists():
             raise SystemExit(1)
-        if not any(candidate.is_file() for candidate in responses_root.rglob('*')):
+        if not any(candidate.is_file() and snapshot.domain in candidate.relative_to(responses_root).parts for candidate in responses_root.rglob('*')):
             raise SystemExit(1)
 
         print('READY')

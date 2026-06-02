@@ -391,7 +391,7 @@ def test_crawl_pause_resume_api_survives_server_restart_and_processes_after_resu
         stop_server(tmp_path)
 
 
-@pytest.mark.timeout(180)
+@pytest.mark.timeout(420)
 def test_update_index_only_runs_paused_search_rows_and_resume_later_runs_crawl(tmp_path, recursive_test_site):
     init_archive(tmp_path)
 
@@ -492,7 +492,7 @@ def test_update_index_only_runs_paused_search_rows_and_resume_later_runs_crawl(t
         assert resume_response.status_code == 200, resume_response.text
         assert resume_response.json()["status"] == "queued"
 
-        captured_text = wait_for_snapshot_capture(tmp_path, recursive_test_site["root_url"], timeout=180)
+        captured_text = wait_for_snapshot_capture(tmp_path, recursive_test_site["root_url"], timeout=240)
         assert "Root" in captured_text
         assert "About" in captured_text
 

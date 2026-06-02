@@ -32,6 +32,7 @@ def test_title_is_extracted(tmp_path, initialized_archive):
     _install_chrome(tmp_path, env)
     add_process = run_archivebox_cmd(
         ["add", "--plugins=chrome,wget,title", "https://example.com"],
+        cwd=tmp_path,
         env=env,
     )
     assert add_process.returncode == 0, add_process.stderr or add_process.stdout
@@ -54,11 +55,13 @@ def test_title_is_listed_by_search_alias(tmp_path, initialized_archive):
     _install_chrome(tmp_path, env)
     add_process = run_archivebox_cmd(
         ["add", "--plugins=chrome,wget,title", "https://example.com"],
+        cwd=tmp_path,
         env=env,
     )
     assert add_process.returncode == 0, add_process.stderr or add_process.stdout
     list_process = run_archivebox_cmd(
         ["search"],
+        cwd=tmp_path,
         env=env,
     )
     assert list_process.returncode == 0, list_process.stderr or list_process.stdout

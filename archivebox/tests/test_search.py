@@ -1,5 +1,6 @@
 import os
 import signal
+import shutil
 import socket
 import subprocess
 import time
@@ -446,6 +447,9 @@ class TestPublicIndexSearch:
 
 class TestSearchBackendsE2E:
     def test_real_fulltext_search_backends_survive_reindex_transition(self, tmp_path):
+        if shutil.which("sonic") is None:
+            pytest.skip("sonic server binary is required for Sonic search integration tests")
+
         data_dir = tmp_path / "archivebox_data"
         data_dir.mkdir()
         query = "documentation examples"

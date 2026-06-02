@@ -28,7 +28,7 @@ def test_add_view_restarts_stopped_supervisord_runner(tmp_path, recursive_test_s
 
     port = get_free_port()
     env = cli_env(
-        port,
+        port=port,
         PLUGINS="wget",
         PUBLIC_ADD_VIEW="True",
         PYTEST_CURRENT_TEST="",
