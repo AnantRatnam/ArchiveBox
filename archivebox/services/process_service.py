@@ -99,73 +99,81 @@ class ProcessService(BaseService):
     async def on_ProcessStartedEvent__save_to_db(self, event: ProcessStartedEvent) -> None:
         from archivebox.machine.models import Process
 
-        iface = await self.current_iface()
-        process_type = event.process_type or Process.TypeChoices.HOOK
-        worker_type = event.worker_type or ""
-        started_at = parse_event_datetime(event.start_ts)
+        with _perf_span("archivebox.ProcessService.on_ProcessStartedEvent.current_iface"):
+            iface = await self.current_iface()
+        with _perf_span("archivebox.ProcessService.on_ProcessStartedEvent.prepare_fields"):
+            process_type = event.process_type or Process.TypeChoices.HOOK
+            worker_type = event.worker_type or ""
+            started_at = parse_event_datetime(event.start_ts)
         if started_at is None:
             raise ValueError("ProcessStartedEvent.start_ts is required")
-        if event.pid:
-            process_query = Process.objects.filter(pid=event.pid, started_at=started_at)
-        else:
-            process_query = Process.objects.filter(
-                process_type=process_type,
-                worker_type=worker_type,
-                pwd=event.output_dir,
-                started_at=started_at,
-            )
-        process = await process_query.order_by("-modified_at").afirst()
+        with _perf_span("archivebox.ProcessService.on_ProcessStartedEvent.lookup"):
+            if event.pid:
+                process_query = Process.objects.filter(pid=event.pid, started_at=started_at)
+            else:
+                process_query = Process.objects.filter(
+                    process_type=process_type,
+                    worker_type=worker_type,
+                    pwd=event.output_dir,
+                    started_at=started_at,
+                )
+            process = await process_query.order_by("-modified_at").afirst()
         if process is None:
-            process = await Process.objects.acreate(
-                machine=iface.machine,
-                iface=iface,
-                process_type=process_type,
-                worker_type=worker_type,
-                pwd=event.output_dir,
-                cmd=[event.hook_path, *event.hook_args],
-                env=event.env,
-                timeout=event.timeout,
-                pid=event.pid or None,
-                url=event.url or None,
-                started_at=started_at,
-                status=Process.StatusChoices.RUNNING,
-                retry_at=None,
-            )
+            with _perf_span("archivebox.ProcessService.on_ProcessStartedEvent.create"):
+                process = await Process.objects.acreate(
+                    machine=iface.machine,
+                    iface=iface,
+                    process_type=process_type,
+                    worker_type=worker_type,
+                    pwd=event.output_dir,
+                    cmd=[event.hook_path, *event.hook_args],
+                    env=event.env,
+                    timeout=event.timeout,
+                    pid=event.pid or None,
+                    url=event.url or None,
+                    started_at=started_at,
+                    status=Process.StatusChoices.RUNNING,
+                    retry_at=None,
+                )
         elif process.iface_id != iface.id or process.machine_id != iface.machine_id:
             process.iface = iface
             process.machine = iface.machine
-            await process.asave(update_fields=["iface", "machine", "modified_at"])
+            with _perf_span("archivebox.ProcessService.on_ProcessStartedEvent.update_iface"):
+                await process.asave(update_fields=["iface", "machine", "modified_at"])
 
-        process.pwd = event.output_dir
-        process.cmd = [event.hook_path, *event.hook_args]
-        process.env = event.env
-        process.timeout = event.timeout
-        process.pid = event.pid or None
-        process.url = event.url or process.url
-        process.process_type = process_type or process.process_type
-        process.worker_type = worker_type or process.worker_type
-        process.started_at = started_at
-        process.status = process.StatusChoices.RUNNING
-        process.retry_at = None
-        await sync_to_async(process.hydrate_binary_from_context, thread_sensitive=True)(
-            plugin_name=event.plugin_name,
-            hook_path=event.hook_path,
-        )
-        await Process.objects.filter(id=process.id).aupdate(
-            pwd=process.pwd,
-            cmd=process.cmd,
-            env=process.env,
-            timeout=process.timeout,
-            pid=process.pid,
-            url=process.url,
-            process_type=process.process_type,
-            worker_type=process.worker_type,
-            started_at=process.started_at,
-            status=process.status,
-            retry_at=process.retry_at,
-            binary_id=process.binary_id,
-            modified_at=timezone.now(),
-        )
+        with _perf_span("archivebox.ProcessService.on_ProcessStartedEvent.assign_fields"):
+            process.pwd = event.output_dir
+            process.cmd = [event.hook_path, *event.hook_args]
+            process.env = event.env
+            process.timeout = event.timeout
+            process.pid = event.pid or None
+            process.url = event.url or process.url
+            process.process_type = process_type or process.process_type
+            process.worker_type = worker_type or process.worker_type
+            process.started_at = started_at
+            process.status = process.StatusChoices.RUNNING
+            process.retry_at = None
+        with _perf_span("archivebox.ProcessService.on_ProcessStartedEvent.hydrate_binary"):
+            await sync_to_async(process.hydrate_binary_from_context, thread_sensitive=True)(
+                plugin_name=event.plugin_name,
+                hook_path=event.hook_path,
+            )
+        with _perf_span("archivebox.ProcessService.on_ProcessStartedEvent.update"):
+            await Process.objects.filter(id=process.id).aupdate(
+                pwd=process.pwd,
+                cmd=process.cmd,
+                env=process.env,
+                timeout=process.timeout,
+                pid=process.pid,
+                url=process.url,
+                process_type=process.process_type,
+                worker_type=process.worker_type,
+                started_at=process.started_at,
+                status=process.status,
+                retry_at=process.retry_at,
+                binary_id=process.binary_id,
+                modified_at=timezone.now(),
+            )
 
     async def _completed_worker_loop(self) -> None:
         while True:
@@ -198,60 +206,66 @@ class ProcessService(BaseService):
     async def _save_completed_process_to_db(self, event: ProcessCompletedEvent) -> None:
         from archivebox.machine.models import Process
 
-        iface = await self.current_iface()
-        process_type = event.process_type or Process.TypeChoices.HOOK
-        worker_type = event.worker_type or ""
-        started_at = parse_event_datetime(event.start_ts)
+        with _perf_span("archivebox.ProcessService._save_completed.current_iface"):
+            iface = await self.current_iface()
+        with _perf_span("archivebox.ProcessService._save_completed.prepare_fields"):
+            process_type = event.process_type or Process.TypeChoices.HOOK
+            worker_type = event.worker_type or ""
+            started_at = parse_event_datetime(event.start_ts)
         if started_at is None:
             raise ValueError("ProcessCompletedEvent.start_ts is required")
-        if event.pid:
-            process_query = Process.objects.filter(pid=event.pid, started_at=started_at)
-        else:
-            process_query = Process.objects.filter(
-                process_type=process_type,
-                worker_type=worker_type,
-                pwd=event.output_dir,
-                started_at=started_at,
-            )
-        process = await process_query.order_by("-modified_at").afirst()
-        if process is None:
-            await Process.objects.acreate(
-                machine=iface.machine,
-                iface=iface,
-                process_type=process_type,
-                worker_type=worker_type,
-                pwd=event.output_dir,
-                cmd=[event.hook_path, *event.hook_args],
-                env=event.env,
-                timeout=event.timeout,
-                pid=event.pid or None,
-                url=event.url or None,
-                started_at=started_at,
-                status=Process.StatusChoices.RUNNING,
-                retry_at=None,
-            )
+        with _perf_span("archivebox.ProcessService._save_completed.lookup"):
+            if event.pid:
+                process_query = Process.objects.filter(pid=event.pid, started_at=started_at)
+            else:
+                process_query = Process.objects.filter(
+                    process_type=process_type,
+                    worker_type=worker_type,
+                    pwd=event.output_dir,
+                    started_at=started_at,
+                )
             process = await process_query.order_by("-modified_at").afirst()
+        if process is None:
+            with _perf_span("archivebox.ProcessService._save_completed.create_missing"):
+                await Process.objects.acreate(
+                    machine=iface.machine,
+                    iface=iface,
+                    process_type=process_type,
+                    worker_type=worker_type,
+                    pwd=event.output_dir,
+                    cmd=[event.hook_path, *event.hook_args],
+                    env=event.env,
+                    timeout=event.timeout,
+                    pid=event.pid or None,
+                    url=event.url or None,
+                    started_at=started_at,
+                    status=Process.StatusChoices.RUNNING,
+                    retry_at=None,
+                )
+                process = await process_query.order_by("-modified_at").afirst()
             if process is None:
                 return
 
-        missing_cmd = not process.cmd
-        updates = {
-            "machine_id": iface.machine_id,
-            "iface_id": iface.id,
-            "pwd": event.output_dir,
-            "pid": event.pid or process.pid,
-            "url": event.url or process.url,
-            "process_type": process_type or process.process_type,
-            "worker_type": worker_type or process.worker_type,
-            "started_at": started_at,
-            "ended_at": parse_event_datetime(event.end_ts) or timezone.now(),
-            "stdout": event.stdout,
-            "stderr": event.stderr,
-            "exit_code": event.exit_code,
-            "status": Process.StatusChoices.EXITED,
-            "retry_at": None,
-            "modified_at": timezone.now(),
-        }
-        if missing_cmd:
-            updates["cmd"] = [event.hook_path, *event.hook_args]
-        await Process.objects.filter(id=process.id).aupdate(**updates)
+        with _perf_span("archivebox.ProcessService._save_completed.prepare_updates"):
+            missing_cmd = not process.cmd
+            updates = {
+                "machine_id": iface.machine_id,
+                "iface_id": iface.id,
+                "pwd": event.output_dir,
+                "pid": event.pid or process.pid,
+                "url": event.url or process.url,
+                "process_type": process_type or process.process_type,
+                "worker_type": worker_type or process.worker_type,
+                "started_at": started_at,
+                "ended_at": parse_event_datetime(event.end_ts) or timezone.now(),
+                "stdout": event.stdout,
+                "stderr": event.stderr,
+                "exit_code": event.exit_code,
+                "status": Process.StatusChoices.EXITED,
+                "retry_at": None,
+                "modified_at": timezone.now(),
+            }
+            if missing_cmd:
+                updates["cmd"] = [event.hook_path, *event.hook_args]
+        with _perf_span("archivebox.ProcessService._save_completed.update"):
+            await Process.objects.filter(id=process.id).aupdate(**updates)

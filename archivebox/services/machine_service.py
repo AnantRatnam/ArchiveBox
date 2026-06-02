@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+import sys
+import time
+from contextlib import contextmanager
 from typing import Any
 
 from asgiref.sync import sync_to_async
@@ -8,6 +12,19 @@ from abx_dl.events import MachineEvent
 from abx_dl.services.base import BaseService
 
 _BINARY_EVENT_ALLOWED_KEYS = frozenset({"ABX_INSTALL_CACHE"})
+
+
+@contextmanager
+def _perf_span(label: str):
+    if os.environ.get("ARCHIVEBOX_PERF_TRACE") != "1":
+        yield
+        return
+    started_at = time.perf_counter()
+    try:
+        yield
+    finally:
+        elapsed_ms = (time.perf_counter() - started_at) * 1000
+        print(f"PERF_TRACE label={label} ms={elapsed_ms:.3f}", file=sys.stderr, flush=True)
 
 
 def _is_binary_event_key(key: str) -> bool:
@@ -45,25 +62,29 @@ class MachineService(BaseService):
         if event.config_type != "derived":
             return
 
-        machine = await sync_to_async(Machine.current, thread_sensitive=True)()
-        old_config = dict(machine.config or {})
-        config = dict(old_config)
+        with _perf_span("archivebox.MachineService.on_MachineEvent.machine_current"):
+            machine = await sync_to_async(Machine.current, thread_sensitive=True)()
+        with _perf_span("archivebox.MachineService.on_MachineEvent.prepare_config"):
+            old_config = dict(machine.config or {})
+            config = dict(old_config)
 
-        if event.config is not None:
-            binary_only = _strip_to_binary_keys(event.config)
-            config.update(binary_only)
-        elif event.method == "update":
-            key = event.key.replace("config/", "", 1).strip()
-            if key and _is_binary_event_key(key):
-                config[key] = event.value
-        elif event.method == "unset":
-            key = event.key.replace("config/", "", 1).strip()
-            if key and _is_binary_event_key(key):
-                config.pop(key, None)
-        else:
-            return
+        with _perf_span("archivebox.MachineService.on_MachineEvent.merge_config"):
+            if event.config is not None:
+                binary_only = _strip_to_binary_keys(event.config)
+                config.update(binary_only)
+            elif event.method == "update":
+                key = event.key.replace("config/", "", 1).strip()
+                if key and _is_binary_event_key(key):
+                    config[key] = event.value
+            elif event.method == "unset":
+                key = event.key.replace("config/", "", 1).strip()
+                if key and _is_binary_event_key(key):
+                    config.pop(key, None)
+            else:
+                return
 
         if config == old_config:
             return
         machine.config = config
-        await machine.asave(update_fields=["config", "modified_at"])
+        with _perf_span("archivebox.MachineService.on_MachineEvent.save"):
+            await machine.asave(update_fields=["config", "modified_at"])

@@ -188,24 +188,28 @@ async def _emit_machine_config(
     derived_config: dict[str, Any],
     parent_event=None,
 ) -> None:
-    user_config = normalize_runtime_config(config)
-    user_config["ABX_RUNTIME"] = "archivebox"
-    derived_machine_config = normalize_runtime_config(derived_config)
-    user_event = MachineEvent(
-        config=user_config,
-        config_type="user",
-    )
-    if parent_event is not None:
-        user_event.event_parent_id = parent_event.event_id
-    await bus.emit(user_event).now()
-    if derived_machine_config:
-        derived_event = MachineEvent(
-            config=derived_machine_config,
-            config_type="derived",
+    with _perf_span("runner._emit_machine_config.normalize_user"):
+        user_config = normalize_runtime_config(config)
+        user_config["ABX_RUNTIME"] = "archivebox"
+    with _perf_span("runner._emit_machine_config.normalize_derived"):
+        derived_machine_config = normalize_runtime_config(derived_config)
+    with _perf_span("runner._emit_machine_config.user_event"):
+        user_event = MachineEvent(
+            config=user_config,
+            config_type="user",
         )
         if parent_event is not None:
-            derived_event.event_parent_id = parent_event.event_id
-        await bus.emit(derived_event).now()
+            user_event.event_parent_id = parent_event.event_id
+        await bus.emit(user_event).now()
+    if derived_machine_config:
+        with _perf_span("runner._emit_machine_config.derived_event"):
+            derived_event = MachineEvent(
+                config=derived_machine_config,
+                config_type="derived",
+            )
+            if parent_event is not None:
+                derived_event.event_parent_id = parent_event.event_id
+            await bus.emit(derived_event).now()
 
 
 @_perf_trace("runner._run_event_now")
