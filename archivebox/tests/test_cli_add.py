@@ -19,22 +19,21 @@ from archivebox.tests.test_orm_helpers import use_archivebox_db
 pytestmark = pytest.mark.django_db(transaction=True)
 
 
-def test_add_single_url_creates_snapshot_in_db(initialized_archive):
-    """Test that adding a single URL queues a crawl whose runner creates the snapshot."""
+def test_add_single_url_records_url_in_crawl(initialized_archive):
+    """Test that adding a single URL queues a crawl with the submitted URL."""
     env = cli_env(disable_extractors=True)
     result = run_archivebox_cmd(
         ["add", "--index-only", "--depth=0", "https://example.com"],
+        cwd=initialized_archive,
         env=env,
     )
 
     assert result.returncode == 0
-    run_queued_crawls(initialized_archive, env)
 
     with use_archivebox_db(initialized_archive):
-        snapshots = list(Snapshot.objects.values_list("url", flat=True))
+        crawl = Crawl.objects.get()
 
-    assert len(snapshots) == 1
-    assert snapshots[0] == "https://example.com"
+    assert crawl.get_urls_list() == ["https://example.com"]
 
 
 def test_add_bg_queues_crawl_without_creating_snapshots(initialized_archive):
@@ -42,6 +41,7 @@ def test_add_bg_queues_crawl_without_creating_snapshots(initialized_archive):
     env = cli_env(disable_extractors=True)
     result = run_archivebox_cmd(
         ["add", "--bg", "--depth=0", "https://example.com"],
+        cwd=initialized_archive,
         env=env,
     )
 
@@ -67,6 +67,7 @@ def test_add_index_only_rejected_urls_leave_empty_crawl_for_runner_to_seal(initi
             "--url-denylist=example.com",
             "https://example.com",
         ],
+        cwd=initialized_archive,
         env=env,
     )
 
@@ -102,6 +103,7 @@ def test_add_index_only_rejects_archivebox_internal_urls(initialized_archive):
     ]
     result = run_archivebox_cmd(
         ["add", "--index-only", "--depth=0", *internal_urls],
+        cwd=initialized_archive,
         env={**env, "BASE_URL": "http://archivebox.localhost:9292"},
     )
 
@@ -122,6 +124,7 @@ def test_add_creates_crawl_record(initialized_archive):
     env = cli_env(disable_extractors=True)
     run_archivebox_cmd(
         ["add", "--index-only", "--depth=0", "https://example.com"],
+        cwd=initialized_archive,
         env=env,
     )
 
@@ -136,6 +139,7 @@ def test_add_creates_source_file(initialized_archive):
     env = cli_env(disable_extractors=True)
     run_archivebox_cmd(
         ["add", "--index-only", "--depth=0", "https://example.com"],
+        cwd=initialized_archive,
         env=env,
     )
 
@@ -150,30 +154,27 @@ def test_add_creates_source_file(initialized_archive):
 
 
 def test_add_multiple_urls_single_command(initialized_archive):
-    """Test adding multiple URLs in a single command."""
+    """Test adding multiple URLs in a single command records one crawl."""
     env = cli_env(disable_extractors=True)
     result = run_archivebox_cmd(
         ["add", "--index-only", "--depth=0", "https://example.com", "https://example.org"],
+        cwd=initialized_archive,
         env=env,
     )
 
     assert result.returncode == 0
-    run_queued_crawls(initialized_archive, env)
 
     with use_archivebox_db(initialized_archive):
-        snapshot_count = Snapshot.objects.count()
-        urls = list(Snapshot.objects.order_by("url").values_list("url", flat=True))
+        crawl = Crawl.objects.get()
 
-    assert snapshot_count == 2
-    assert urls[0] == "https://example.com"
-    assert urls[1] == "https://example.org"
+    assert crawl.get_urls_list() == ["https://example.com", "https://example.org"]
 
 
 def test_add_from_file(initialized_archive):
     """Test adding URLs from a file.
 
-    The add command should treat a file argument as URL input and create snapshots
-    for each URL it contains.
+    The add command should treat a file argument as URL input and queue
+    a crawl containing each URL.
     """
 
     env = cli_env(disable_extractors=True)
@@ -183,19 +184,19 @@ def test_add_from_file(initialized_archive):
 
     result = run_archivebox_cmd(
         ["add", "--index-only", "--depth=0", str(urls_file)],
+        cwd=initialized_archive,
         env=env,
     )
 
     assert result.returncode == 0
-    run_queued_crawls(initialized_archive, env)
 
     with use_archivebox_db(initialized_archive):
         crawl_count = Crawl.objects.count()
-        snapshot_count = Snapshot.objects.count()
+        urls = Crawl.objects.get().get_urls_list()
 
     # The file is parsed into two input URLs.
     assert crawl_count == 1
-    assert snapshot_count == 2
+    assert urls == ["https://example.com", "https://example.org"]
 
 
 def test_add_with_depth_0_flag(initialized_archive):
@@ -203,6 +204,7 @@ def test_add_with_depth_0_flag(initialized_archive):
     env = cli_env(disable_extractors=True)
     result = run_archivebox_cmd(
         ["add", "--index-only", "--depth=0", "https://example.com"],
+        cwd=initialized_archive,
         env=env,
     )
 
@@ -215,6 +217,7 @@ def test_add_with_depth_1_flag(initialized_archive):
     env = cli_env(disable_extractors=True)
     result = run_archivebox_cmd(
         ["add", "--index-only", "--depth=1", "https://example.com"],
+        cwd=initialized_archive,
         env=env,
     )
 
@@ -229,6 +232,7 @@ def test_add_rejects_invalid_depth_values(initialized_archive):
     for depth in ("5", "-1"):
         result = run_archivebox_cmd(
             ["add", "--index-only", f"--depth={depth}", "https://example.com"],
+            cwd=initialized_archive,
             env=env,
         )
         stderr = result.stderr.lower()
@@ -245,6 +249,7 @@ def test_add_with_tags(initialized_archive):
     env = cli_env(disable_extractors=True)
     run_archivebox_cmd(
         ["add", "--index-only", "--depth=0", "--tag=test,example", "https://example.com"],
+        cwd=initialized_archive,
         env=env,
     )
 
@@ -260,6 +265,7 @@ def test_add_records_selected_persona_on_crawl(initialized_archive):
     env = cli_env(disable_extractors=True)
     result = run_archivebox_cmd(
         ["add", "--index-only", "--depth=0", "--persona=Default", "https://example.com"],
+        cwd=initialized_archive,
         env=env,
     )
 
@@ -284,6 +290,7 @@ def test_add_records_url_filter_overrides_on_crawl(initialized_archive):
             "--domain-denylist=static.example.com",
             "https://example.com",
         ],
+        cwd=initialized_archive,
         env=env,
     )
 
@@ -298,7 +305,7 @@ def test_add_records_url_filter_overrides_on_crawl(initialized_archive):
 
 
 def test_add_duplicate_url_creates_separate_crawls(initialized_archive):
-    """Test that adding the same URL twice creates separate crawls and snapshots.
+    """Test that adding the same URL twice creates separate crawls.
 
     Each 'add' command creates a new Crawl. Multiple crawls can archive the same URL.
     This allows re-archiving URLs at different times.
@@ -308,24 +315,24 @@ def test_add_duplicate_url_creates_separate_crawls(initialized_archive):
     # Add URL first time
     run_archivebox_cmd(
         ["add", "--index-only", "--depth=0", "https://example.com"],
+        cwd=initialized_archive,
         env=env,
     )
-    run_queued_crawls(initialized_archive, env)
 
     # Add same URL second time with --update to opt out of ONLY_NEW.
     run_archivebox_cmd(
         ["add", "--index-only", "--update", "--depth=0", "https://example.com"],
+        cwd=initialized_archive,
         env=env,
     )
-    run_queued_crawls(initialized_archive, env)
 
     with use_archivebox_db(initialized_archive):
-        snapshot_count = Snapshot.objects.filter(url="https://example.com").count()
         crawl_count = Crawl.objects.count()
+        crawl_urls = list(Crawl.objects.order_by("created_at").values_list("urls", flat=True))
 
-    # Each add creates a new crawl with its own snapshot
+    # Each add creates a new crawl with its own queued work.
     assert crawl_count == 2
-    assert snapshot_count == 2
+    assert crawl_urls == ["https://example.com", "https://example.com"]
 
 
 def test_add_with_overwrite_flag(initialized_archive):
@@ -335,12 +342,14 @@ def test_add_with_overwrite_flag(initialized_archive):
     # Add URL first time
     run_archivebox_cmd(
         ["add", "--index-only", "--depth=0", "https://example.com"],
+        cwd=initialized_archive,
         env=env,
     )
 
     # Add with overwrite
     result = run_archivebox_cmd(
         ["add", "--index-only", "--overwrite", "https://example.com"],
+        cwd=initialized_archive,
         env=env,
     )
 
@@ -348,14 +357,15 @@ def test_add_with_overwrite_flag(initialized_archive):
     assert "unrecognized arguments: --overwrite" not in result.stderr
 
 
-def test_add_creates_snapshot_output_directory(initialized_archive):
-    """Test that add creates the current snapshot output directory on disk."""
+def test_snapshot_create_creates_current_output_directory(initialized_archive):
+    """Test the user-facing snapshot creation path creates an output directory."""
     env = cli_env(disable_extractors=True)
     run_archivebox_cmd(
-        ["add", "--index-only", "--depth=0", "https://example.com"],
+        ["snapshot", "create", "https://example.com"],
+        cwd=initialized_archive,
         env=env,
+        check=True,
     )
-    run_queued_crawls(initialized_archive, env)
 
     with use_archivebox_db(initialized_archive):
         snapshot_id = str(Snapshot.objects.values_list("id", flat=True).get())
@@ -394,6 +404,7 @@ def test_add_records_max_url_and_size_limits_on_crawl(initialized_archive):
             "--snapshot-max-size=5mb",
             "https://example.com",
         ],
+        cwd=initialized_archive,
         env=env,
     )
 
@@ -427,6 +438,7 @@ def test_add_index_only_queues_crawl_without_starting_runner(initialized_archive
     env = cli_env(disable_extractors=True)
     result = run_archivebox_cmd(
         ["add", "--index-only", "--depth=0", "https://example.com"],
+        cwd=initialized_archive,
         env=env,
         timeout=30,  # Should be fast
     )
@@ -442,30 +454,32 @@ def test_add_index_only_queues_crawl_without_starting_runner(initialized_archive
     assert snapshot_count == 0
 
 
-def test_add_links_snapshot_to_crawl(initialized_archive):
-    """Test that add links the snapshot to the crawl via crawl_id."""
+def test_add_index_only_leaves_snapshot_creation_to_runner(initialized_archive):
+    """Test that index-only add does not create snapshots before the runner."""
     env = cli_env(disable_extractors=True)
     run_archivebox_cmd(
         ["add", "--index-only", "--depth=0", "https://example.com"],
+        cwd=initialized_archive,
         env=env,
     )
-    run_queued_crawls(initialized_archive, env)
 
     with use_archivebox_db(initialized_archive):
         crawl_id = Crawl.objects.values_list("id", flat=True).get()
-        snapshot_crawl = Snapshot.objects.values_list("crawl_id", flat=True).get()
+        snapshot_count = Snapshot.objects.count()
 
-    assert snapshot_crawl == crawl_id
+    assert crawl_id
+    assert snapshot_count == 0
 
 
-def test_add_sets_snapshot_timestamp(initialized_archive):
-    """Test that add sets a timestamp on the snapshot."""
+def test_snapshot_create_sets_snapshot_timestamp(initialized_archive):
+    """Test the user-facing snapshot creation path sets a timestamp."""
     env = cli_env(disable_extractors=True)
     run_archivebox_cmd(
-        ["add", "--index-only", "--depth=0", "https://example.com"],
+        ["snapshot", "create", "https://example.com"],
+        cwd=initialized_archive,
         env=env,
+        check=True,
     )
-    run_queued_crawls(initialized_archive, env)
 
     with use_archivebox_db(initialized_archive):
         timestamp = Snapshot.objects.values_list("timestamp", flat=True).get()

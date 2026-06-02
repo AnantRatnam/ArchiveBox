@@ -107,6 +107,22 @@ def wait_for_crawl_child_snapshots_paused_or_sealed(cwd, crawl_id, timeout=45):
     raise AssertionError(f"timed out waiting for runner to pause or seal snapshots for crawl {crawl_id}: {latest_state}")
 
 
+def wait_for_crawl_wget_success(cwd, crawl_id, timeout=240):
+    deadline = time.time() + timeout
+    latest_state = None
+    while time.time() < deadline:
+        latest_state = get_crawl_runtime_state(cwd, crawl_id)
+        wget_results = [result for result in latest_state["results"] if result["plugin"] == "wget"]
+        if (
+            latest_state["snapshots"]
+            and latest_state["snapshots"][0]["status"] == "sealed"
+            and any(result["status"] == "succeeded" and result["output_size"] > 0 for result in wget_results)
+        ):
+            return latest_state
+        time.sleep(2)
+    raise AssertionError(f"timed out waiting for wget success for crawl {crawl_id}: {latest_state}")
+
+
 def make_snapshot(*, user, url: str, title: str, bookmarked_at: datetime):
     crawl = Crawl.objects.create(urls=url, created_by=user)
     snapshot = Snapshot.objects.create(
@@ -492,11 +508,11 @@ def test_update_index_only_runs_paused_search_rows_and_resume_later_runs_crawl(t
         assert resume_response.status_code == 200, resume_response.text
         assert resume_response.json()["status"] == "queued"
 
-        captured_text = wait_for_snapshot_capture(tmp_path, recursive_test_site["root_url"], timeout=240)
+        resumed_state = wait_for_crawl_wget_success(tmp_path, crawl_id, timeout=240)
+        captured_text = wait_for_snapshot_capture(tmp_path, recursive_test_site["root_url"], timeout=60)
         assert "Root" in captured_text
         assert "About" in captured_text
 
-        resumed_state = get_crawl_runtime_state(tmp_path, crawl_id)
         assert resumed_state["snapshots"][0]["status"] == "sealed"
         wget_results = [result for result in resumed_state["results"] if result["plugin"] == "wget"]
         assert wget_results
