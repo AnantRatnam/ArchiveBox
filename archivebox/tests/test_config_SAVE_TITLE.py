@@ -22,13 +22,15 @@ def _install_chrome(tmp_path, env):
         timeout=600,
     )
     assert install_process.returncode == 0, install_process.stderr or install_process.stdout
+    cached_browser = _find_cached_chrome(Path(env["LIB_DIR"]))
+    if cached_browser is not None:
+        env["CHROME_BINARY"] = str(cached_browser)
+        return
     system_browser = _find_system_browser()
     if system_browser:
         env["CHROME_BINARY"] = str(system_browser)
         return
-    cached_browser = _find_cached_chrome(Path(env["LIB_DIR"]))
-    assert cached_browser is not None, install_process.stderr or install_process.stdout
-    env["CHROME_BINARY"] = str(cached_browser)
+    raise AssertionError(install_process.stderr or install_process.stdout)
 
 
 def _wait_for_snapshot_title(data_dir, *, timeout=60):
