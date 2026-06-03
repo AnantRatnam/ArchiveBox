@@ -329,28 +329,19 @@ def test_recursive_crawl_depth_two_writes_real_outputs_and_process_records(tmp_p
         },
     )
 
-    stdout, stderr = run_add_until(
-        ["archivebox", "add", "--depth=2", "--plugins=wget,parse_html_urls", recursive_test_site["root_url"]],
+    result = run_archivebox_cmd(
+        ["add", "--depth=2", "--plugins=wget,parse_html_urls", recursive_test_site["root_url"]],
+        cwd=initialized_archive,
         env=env,
-        timeout=180,
-        condition=lambda: (
-            Snapshot.objects.filter(depth=0).count() >= 1
-            and Snapshot.objects.filter(depth=1).count() >= len(recursive_test_site["child_urls"])
-            and Snapshot.objects.filter(depth=2).count() >= len(recursive_test_site["deep_urls"])
-            and ArchiveResult.objects.filter(
-                plugin__startswith="parse_",
-                plugin__endswith="_urls",
-                snapshot__depth__in=(0, 1),
-                status__in=("started", "succeeded", "failed", "skipped", "noresults"),
-            ).count()
-            >= 2
-        ),
+        timeout=240,
     )
+    stdout, stderr = result.stdout, result.stderr
 
     if stderr:
         print(f"\n=== STDERR ===\n{stderr}\n=== END STDERR ===\n")
     if stdout:
         print(f"\n=== STDOUT (last 2000 chars) ===\n{stdout[-2000:]}\n=== END STDOUT ===\n")
+    assert result.returncode == 0, stderr or stdout
 
     with use_archivebox_db(tmp_path):
         depths = list(Snapshot.objects.values_list("depth", flat=True))
