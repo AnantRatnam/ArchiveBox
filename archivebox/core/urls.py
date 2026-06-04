@@ -26,6 +26,7 @@ from archivebox.core.views import (
     HealthCheckView,
 )
 from archivebox.progressmonitor.views import live_progress_view
+from abx_plugins.plugins.opencode.views import opencode_proxy_view
 
 
 # GLOBAL_CONTEXT doesn't work as-is, disabled for now: https://github.com/ArchiveBox/ArchiveBox/discussions/1306
@@ -42,6 +43,7 @@ urlpatterns = [
     path("favicon.ico", static.serve, {"document_root": CONSTANTS.STATIC_DIR, "path": "favicon.ico"}),
     path("docs/", RedirectView.as_view(url="https://github.com/ArchiveBox/ArchiveBox/wiki"), name="Docs"),
     re_path(r"^admin/agent/?(?=$|opencode)", include("abx_plugins.plugins.opencode.urls")),
+    re_path(r"^assets/(?P<path>.*)$", opencode_proxy_view, name="opencode-assets"),
     path("public/", PublicIndexView.as_view(), name="public-index"),
     path("public.html", RedirectView.as_view(url="/public/"), name="public-index-html"),
     path("archive/", RedirectView.as_view(url="/")),
