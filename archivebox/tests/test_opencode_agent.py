@@ -34,6 +34,7 @@ def _reset_runtime_config() -> None:
 
 
 def _set_archivebox_config(data_dir: Path, *values: str, env: dict[str, str] | None = None) -> None:
+    os.chdir(data_dir)
     result = run_archivebox_cmd(
         ["config", "--set", *values],
         cwd=data_dir,
@@ -124,8 +125,14 @@ def live_opencode(opencode_archive_config):
         views._PROCESS = None
 
 
-def test_opencode_disabled_route_does_not_start_server(client):
+def test_opencode_disabled_route_does_not_start_server(client, initialized_archive):
+    from archivebox.machine.models import Machine
     from abx_plugins.plugins.opencode import views
+
+    os.chdir(initialized_archive)
+    Machine.from_json({"config": {"OPENCODE_ENABLED": False}})
+    _reset_runtime_config()
+    assert views._machine_config()["OPENCODE_ENABLED"] is False
 
     response = client.get("/admin/agent", HTTP_HOST=ADMIN_TEST_HOST)
 
