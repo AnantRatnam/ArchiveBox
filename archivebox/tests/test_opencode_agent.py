@@ -1,5 +1,4 @@
 import os
-import sqlite3
 
 import pytest
 import requests
@@ -149,6 +148,17 @@ def test_opencode_project_current_is_seeded_data_project(admin_client, tmp_path,
     monkeypatch.setattr(views, "_machine_config", lambda: {"OPENCODE_ENABLED": True, "OPENCODE_WORKDIR": str(workdir)})
     monkeypatch.setattr(views, "_ensure_opencode", lambda settings: (True, ""))
 
+    def fake_request(method, url, **kwargs):
+        assert url == "http://127.0.0.1:4096/project/current"
+        assert kwargs["params"] == (("directory", str(workdir)),)
+        upstream = requests.Response()
+        upstream.status_code = 200
+        upstream._content = (f'{{"id":"global","worktree":"{workdir.resolve()}","name":"data"}}').encode()
+        upstream.headers["Content-Type"] = "application/json"
+        return upstream
+
+    monkeypatch.setattr(views.requests, "request", fake_request)
+
     response = admin_client.get(
         f"/admin/agent/opencode/project/current?directory={workdir}",
         HTTP_HOST=ADMIN_TEST_HOST,
@@ -166,6 +176,17 @@ def test_opencode_path_reports_data_as_worktree(admin_client, tmp_path, db, monk
     workdir = tmp_path / "data"
     monkeypatch.setattr(views, "_machine_config", lambda: {"OPENCODE_ENABLED": True, "OPENCODE_WORKDIR": str(workdir)})
     monkeypatch.setattr(views, "_ensure_opencode", lambda settings: (True, ""))
+
+    def fake_request(method, url, **kwargs):
+        assert url == "http://127.0.0.1:4096/path"
+        assert kwargs["params"] == (("directory", str(workdir)),)
+        upstream = requests.Response()
+        upstream.status_code = 200
+        upstream._content = (f'{{"directory":"{workdir.resolve()}","worktree":"{workdir.resolve()}"}}').encode()
+        upstream.headers["Content-Type"] = "application/json"
+        return upstream
+
+    monkeypatch.setattr(views.requests, "request", fake_request)
 
     response = admin_client.get(
         f"/admin/agent/opencode/path?directory={workdir}",
@@ -284,10 +305,9 @@ def test_opencode_starts_without_opening_browser(tmp_path, monkeypatch):
         return FakeProcess()
 
     monkeypatch.setattr(views, "_health", lambda settings: next(health_checks))
-    monkeypatch.setattr(views.shutil, "which", lambda binary: "/usr/bin/false")
     monkeypatch.setattr(views.subprocess, "Popen", fake_popen)
 
-    settings = views._settings({"OPENCODE_WORKDIR": str(tmp_path)})
+    settings = views._settings({"OPENCODE_WORKDIR": str(tmp_path), "OPENCODE_BINARY": "/usr/bin/false"})
     ok, error = views._ensure_opencode(settings)
 
     assert ok, error
@@ -310,35 +330,47 @@ def test_opencode_state_dir_is_separate_from_workdir(tmp_path):
     assert settings["config_home"] == workdir / "opencode" / "config"
     assert settings["data_home"] == workdir / "opencode" / "data"
     assert settings["state_home"] == workdir / "opencode" / "state"
-    skill = workdir / "opencode" / "config" / "opencode" / "skills" / "archivebox" / "SKILL.md"
-    assert skill.exists()
-    assert f"ArchiveBox collection directory: {workdir.resolve()}" in skill.read_text()
+    editable_skill = workdir / "opencode" / "SKILL.md"
+    loaded_skill = workdir / "opencode" / "config" / "opencode" / "skills" / "archivebox" / "SKILL.md"
+    assert editable_skill.exists()
+    assert loaded_skill.is_symlink()
+    assert loaded_skill.resolve() == editable_skill.resolve()
+    assert f"ArchiveBox collection directory: {workdir.resolve()}" in editable_skill.read_text()
 
 
-def test_opencode_seeds_global_project_under_embedded_data_dir(tmp_path):
+def test_opencode_ensures_default_session_with_public_api(tmp_path, monkeypatch):
     from abx_plugins.plugins.opencode import views
 
     workdir = tmp_path / "data"
     settings = views._settings({"OPENCODE_WORKDIR": str(workdir)})
-    db_path = settings["data_home"] / "opencode" / "opencode.db"
-    db_path.parent.mkdir(parents=True)
-    with sqlite3.connect(db_path) as db:
-        db.execute(
-            """
-            CREATE TABLE project (
-                id text PRIMARY KEY,
-                worktree text NOT NULL,
-                name text,
-                time_created integer NOT NULL,
-                time_updated integer NOT NULL,
-                sandboxes text NOT NULL
-            )
-            """,
-        )
+    calls = []
 
-    views._ensure_global_project(settings)
+    def fake_get(url, **kwargs):
+        calls.append(("GET", url, kwargs))
+        response = requests.Response()
+        response.status_code = 200
+        response._content = b"[]" if url.endswith("/session") else b"{}"
+        return response
 
-    with sqlite3.connect(db_path) as db:
-        row = db.execute("SELECT id, worktree, name, sandboxes FROM project").fetchone()
+    def fake_post(url, **kwargs):
+        calls.append(("POST", url, kwargs))
+        response = requests.Response()
+        response.status_code = 200
+        response._content = b'{"id":"session"}'
+        return response
 
-    assert row == ("global", str(workdir.resolve()), "data", "[]")
+    monkeypatch.setattr(views.requests, "get", fake_get)
+    monkeypatch.setattr(views.requests, "post", fake_post)
+
+    views._ensure_default_session(settings)
+
+    assert calls[0] == (
+        "GET",
+        "http://127.0.0.1:4096/project/current",
+        {"params": {"directory": str(workdir.resolve())}, "timeout": 30},
+    )
+    assert calls[1][0:2] == ("GET", "http://127.0.0.1:4096/session")
+    assert calls[1][2]["params"] == {"directory": str(workdir.resolve()), "roots": "true", "limit": 55}
+    assert calls[2][0:2] == ("POST", "http://127.0.0.1:4096/session")
+    assert calls[2][2]["params"] == {"directory": str(workdir.resolve())}
+    assert calls[2][2]["json"] == {}

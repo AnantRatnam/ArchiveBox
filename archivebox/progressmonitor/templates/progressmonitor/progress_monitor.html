@@ -35,6 +35,9 @@
         top: 0;
         z-index: 10;
     }
+    #progress-monitor.collapsed .header-bar {
+        cursor: pointer;
+    }
     #progress-monitor .header-left {
         display: flex;
         align-items: center;
@@ -1884,8 +1887,13 @@
     }
 
     // Collapse toggle
-    collapseBtn.addEventListener('click', function() {
+    collapseBtn.addEventListener('click', function(event) {
+        event.stopPropagation();
         setCollapsedState(!isCollapsed);
+    });
+    monitor.querySelector('.header-bar').addEventListener('click', function(event) {
+        if (event.target.closest('button, a, input, select, textarea, [role="button"]')) return;
+        if (isCollapsed) setCollapsedState(false);
     });
 
     crawlTree.addEventListener('click', function(event) {

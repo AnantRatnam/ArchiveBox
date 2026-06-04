@@ -128,6 +128,7 @@ def test_search_mode_options_use_canonical_backend_names(monkeypatch):
 
     options = get_search_mode_options()
 
+    assert {"value": "contents", "label": "deep"} in options
     assert {"value": "deep:ripgrep", "label": "deep:ripgrep"} in options
     assert all(not option["label"].startswith("deep: ") for option in options)
 
@@ -176,7 +177,8 @@ class TestAdminSnapshotSearch:
         assert response.status_code == 200
         assert response.context["cl"].search_mode == "deep:ripgrep"
         assert b'name="search_mode"' in response.content
-        assert b'value="contents"' in response.content
+        assert b'<option value="contents">deep</option>' in response.content
+        assert b">contents<" not in response.content
         assert b'value="deep:ripgrep"' in response.content
         assert b">deep:ripgrep<" in response.content
 
@@ -388,6 +390,8 @@ class TestPublicIndexSearch:
         assert response.status_code == 200
         assert response.context["search_mode"] == "deep:ripgrep"
         assert b'name="search_mode"' in response.content
+        assert b'<option value="contents">deep</option>' in response.content
+        assert b">contents<" not in response.content
         assert b'value="deep:ripgrep"' in response.content
         assert b">deep:ripgrep<" in response.content
 

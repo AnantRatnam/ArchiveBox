@@ -62,7 +62,7 @@ def get_search_mode_options(config: dict[str, Any] | None = None, **config_kwarg
     ]
     options = [
         {"value": "meta", "label": "meta"},
-        {"value": "contents", "label": "contents"},
+        {"value": "contents", "label": "deep"},
     ]
     if backend_names:
         options.extend(
