@@ -155,8 +155,8 @@ jobs:
 
       - name: Install dependencies with uv
         run: |
-          uv sync --dev --all-extras --no-sources --no-cache
-          uv pip install -e ./abxpkg -e ./abx-plugins[dev] -e ./abx-dl
+          uv venv
+          uv pip install --group dev --all-extras -e ./abxpkg -e ./abx-plugins -e ./abx-dl -e .
 
       - name: Install Chrome through ArchiveBox
         if: ${{ matrix.test.needs_chromium }}
@@ -266,8 +266,8 @@ jobs:
 
       - name: Install dependencies with uv
         run: |
-          uv sync --dev --all-extras --no-sources --no-cache
-          uv pip install -e ./abxpkg -e ./abx-plugins[dev] -e ./abx-dl
+          uv venv
+          uv pip install --group dev --all-extras -e ./abxpkg -e ./abx-plugins -e ./abx-dl -e .
 
       - name: Install Chrome through ArchiveBox
         if: ${{ matrix.plugin.needs_chromium }}
