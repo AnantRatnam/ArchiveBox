@@ -43,7 +43,7 @@ urlpatterns = [
     path("favicon.ico", static.serve, {"document_root": CONSTANTS.STATIC_DIR, "path": "favicon.ico"}),
     path("docs/", RedirectView.as_view(url="https://github.com/ArchiveBox/ArchiveBox/wiki"), name="Docs"),
     re_path(r"^admin/agent/?(?=$|opencode)", include("abx_plugins.plugins.opencode.urls")),
-    re_path(r"^assets/(?P<path>.*)$", opencode_proxy_view, name="opencode-assets"),
+    re_path(r"^(?P<path>assets/.*)$", opencode_proxy_view, name="opencode-assets"),
     path("public/", PublicIndexView.as_view(), name="public-index"),
     path("public.html", RedirectView.as_view(url="/public/"), name="public-index-html"),
     path("archive/", RedirectView.as_view(url="/")),
