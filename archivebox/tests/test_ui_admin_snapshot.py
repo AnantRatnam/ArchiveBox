@@ -27,6 +27,7 @@ def test_snapshot_changelist_uses_stable_ordering_without_unordered_paginator_wa
     assert response.status_code == 200
     assert not any(issubclass(warning.category, UnorderedObjectListWarning) for warning in caught)
     assert response.context["cl"].queryset.ordered is True
+    assert response.context["cl"].queryset.query.order_by[0] == "-created_at"
 
 
 def test_snapshot_changelist_bulk_permissions_action_updates_selected_snapshots(client, admin_user, crawl, snapshot):

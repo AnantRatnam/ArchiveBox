@@ -465,7 +465,7 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         ),
     )
 
-    ordering = ["-id"]
+    ordering = ["-created_at"]
     actions = [
         "add_tags",
         "remove_tags",
