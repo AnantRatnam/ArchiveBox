@@ -86,7 +86,13 @@ URL_REGEX = re.compile(
     re.IGNORECASE | re.UNICODE,
 )
 
-MAX_URL_LENGTH = 65535
+# Maximum supported URL length. Very long URLs are rare but must be supported
+# correctly (e.g. data: URLs, deeply nested query strings). 8000 chars matches the
+# practical upper bound enforced by most web servers/proxies. The Snapshot.url column is
+# stored as a variable-length TextField (so short URLs don't reserve space and long URLs
+# still fit) while keeping a normal index on the field so exact, prefix, and substring
+# lookups all keep working.
+MAX_URL_LENGTH = 8000
 
 QUOTE_DELIMITERS = (
     '"',

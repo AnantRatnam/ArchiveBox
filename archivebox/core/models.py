@@ -31,7 +31,6 @@ from archivebox.config import CONSTANTS
 from archivebox.config.common import get_config, rprint
 from archivebox.misc.system import atomic_write
 from archivebox.misc.util import (
-    MAX_URL_LENGTH,
     parse_date,
     domain as url_domain,
     to_json,
@@ -468,7 +467,10 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
     created_at = models.DateTimeField(default=timezone.now, db_index=True)
     modified_at = models.DateTimeField(auto_now=True)
 
-    url = models.CharField(max_length=MAX_URL_LENGTH, unique=False, db_index=True)  # URLs can appear in multiple crawls
+    # Stored as a variable-length TextField so short URLs don't reserve space and very long
+    # URLs (up to MAX_URL_LENGTH chars, enforced in save()) are supported, while keeping a
+    # normal index so exact, prefix, and substring lookups all stay fast.
+    url = models.TextField(db_index=True)  # URLs can appear in multiple crawls
     timestamp = models.CharField(max_length=32, unique=True, db_index=True, editable=False)
     bookmarked_at = models.DateTimeField(default=timezone.now, db_index=True)
     crawl: Crawl = models.ForeignKey(Crawl, on_delete=models.CASCADE, null=False, related_name="snapshot_set", db_index=True)  # type: ignore[assignment]
