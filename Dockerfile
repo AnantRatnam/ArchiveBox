@@ -82,7 +82,8 @@ ENV ARCHIVEBOX_USER="archivebox" \
     DEFAULT_PUID=911 \
     DEFAULT_PGID=911 \
     IN_DOCKER=True \
-    BIND_ADDR=0.0.0.0:8000        # docker has to listen on all interfaces, not just localhost
+    BIND_ADDR=0.0.0.0:8000
+# Docker has to listen on all interfaces, not just localhost.
 
 # ArchiveBox Source Code + Lib + Data paths
 ENV CODE_DIR=/app \
