@@ -73,7 +73,7 @@ jobs:
       - name: Install dependencies with uv
         run: |
           uv venv
-          uv pip install --group dev --all-extras -e ./abxpkg -e ./abx-plugins -e ./abx-dl -e .
+          uv pip install --group dev -e ./abxpkg -e ./abx-plugins -e ./abx-dl -e ".[all]"
 
       ### Run the tests
       - name: Directory listing for debugging

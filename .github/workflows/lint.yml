@@ -44,7 +44,7 @@ jobs:
       - name: Install dependencies with uv
         run: |
           uv venv
-          uv pip install --all-groups --extra sonic --extra debug -e ./abxpkg -e ./abx-plugins -e ./abx-dl -e .
+          uv pip install --all-groups -e ./abxpkg -e ./abx-plugins -e ./abx-dl -e ".[sonic,debug]"
 
       - name: Run prek
         run: uv run --no-sync --no-sources prek run --all-files
