@@ -1191,7 +1191,7 @@ async def _run_binary(binary_id: str) -> None:
     config = normalize_runtime_config(config)
     bus = create_bus(name=_bus_name("ArchiveBox_binary", str(binary.id)), total_timeout=1800.0)
     process_service = PersistedProcessService(bus)
-    ArchiveBoxBinaryService(bus)
+    binary_process_service = ArchiveBoxBinaryService(bus)
     BinaryCacheService(bus, backend=ArchiveBoxDBBinaryCacheBackend())
     BinaryService(bus)
     TagService(bus)
@@ -1233,6 +1233,7 @@ async def _run_binary(binary_id: str) -> None:
         ).now(first_result=True)
     finally:
         await bus.wait_until_idle()
+        await binary_process_service.flush_missing_finalizers()
         await process_service.flush_completed()
 
 
@@ -1432,11 +1433,11 @@ def run_due_snapshot(snapshot, *, lock_seconds: int, interactive_interrupts: boo
             if not selected_plugins:
                 # No targeted plugin rows remain, so put paused snapshots back
                 # behind the indefinite retry_at marker. If queued plugin rows
-                # do remain, run_snapshot_maintenance kept retry_at due so the
-                # next tick can process them and the finally block below will
-                # restore the paused marker after that targeted work completes.
+                # remain, continue into the targeted plugin path below and let
+                # its finally block restore the paused marker after completion.
                 snapshot.restore_paused_scheduler_marker()
-            return True
+                return True
+            snapshot.refresh_from_db()
         if not selected_plugins:
             # Paused is a real lifecycle state; retry_at=MAX is only the
             # orchestrator selection marker. If a direct maintenance/update

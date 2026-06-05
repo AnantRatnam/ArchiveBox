@@ -33,17 +33,19 @@ def _get_snapshot_crawl(snapshot: Snapshot) -> Crawl | None:
 
 
 def _get_search_indexing_plugins() -> list[str]:
-    from abx_dl.models import discover_plugins
+    from archivebox.config.common import get_config
+    from archivebox.plugins.hooks import discover_hooks
     from archivebox.plugins.discovery import get_search_backends
 
     available_backends = set(get_search_backends())
-    plugins = discover_plugins()
     return sorted(
         plugin_name
-        for plugin_name, plugin in plugins.items()
-        if plugin_name.startswith("search_backend_")
-        and plugin_name.removeprefix("search_backend_") in available_backends
-        and any("Snapshot" in hook.name and "index" in hook.name.lower() for hook in plugin.hooks)
+        for plugin_name in {
+            hook.parent.name
+            for hook in discover_hooks("Snapshot", config=get_config())
+            if hook.parent.name.startswith("search_backend_") and "index" in hook.name.lower()
+        }
+        if plugin_name.startswith("search_backend_") and plugin_name.removeprefix("search_backend_") in available_backends
     )
 
 

@@ -409,10 +409,14 @@ def run_snapshot_worker(snapshot_id: str) -> int:
     snapshot = None
     try:
         with foreground_shutdown_signals(), foreground_parent_watchdog():
-            snapshot = Snapshot.objects.select_related("crawl").get(id=snapshot_id)
-            if snapshot.retry_at is None:
-                snapshot.update_and_requeue(retry_at=timezone.now())
-            run_due_snapshot(snapshot, lock_seconds=60)
+            for _ in range(10):
+                snapshot = Snapshot.objects.select_related("crawl").get(id=snapshot_id)
+                if snapshot.retry_at is None:
+                    snapshot.update_and_requeue(retry_at=timezone.now())
+                elif snapshot.retry_at > timezone.now():
+                    break
+                if not run_due_snapshot(snapshot, lock_seconds=60):
+                    break
         return 0
     except KeyboardInterrupt:
         try:
