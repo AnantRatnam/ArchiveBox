@@ -243,6 +243,7 @@ def process_stdin_records() -> int:
                     crawl_id,
                     snapshot_ids=None if crawl_id in full_crawl_ids else sorted(snapshot_ids_by_crawl[crawl_id]),
                     selected_plugins=None if crawl_id in run_all_plugins_for_crawl else sorted(plugin_names_by_crawl[crawl_id]),
+                    selected_plugins_are_explicit=False,
                 )
     return 0
 
