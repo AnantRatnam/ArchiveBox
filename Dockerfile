@@ -38,7 +38,7 @@ ENV TZ=UTC \
     npm_config_loglevel=error
 
 ENV PYTHON_VERSION=3.13 \
-    NODE_VERSION=22.22.3
+    NODE_VERSION=24
 
 ENV ARCHIVEBOX_USER=archivebox \
     DEFAULT_PUID=911 \
@@ -168,6 +168,7 @@ COPY --from=archivebox-builder /app /app
 COPY --from=archivebox-builder /VERSION.txt /VERSION.txt
 
 RUN echo "[*] Setting up $ARCHIVEBOX_USER user uid=${DEFAULT_PUID}..." \
+    && ln -sf /venv/bin/archivebox /usr/local/bin/archivebox \
     && getent group "$ARCHIVEBOX_USER" >/dev/null || groupadd --system "$ARCHIVEBOX_USER" \
     && id -u "$ARCHIVEBOX_USER" >/dev/null 2>&1 || useradd --system --create-home --gid "$ARCHIVEBOX_USER" --groups audio,video "$ARCHIVEBOX_USER" \
     && usermod --append --groups audio,video "$ARCHIVEBOX_USER" \
