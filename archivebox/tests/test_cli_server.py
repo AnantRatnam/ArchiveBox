@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -96,6 +97,43 @@ def test_server_auth_secret_and_cookie_settings_are_restart_stable(tmp_path, mon
     assert first_lines[1] == "django.contrib.sessions.backends.db"
     assert first_lines[2].startswith("archivebox_sessionid_")
     assert first_lines[3:] == ["None", "False", "False"]
+
+
+def test_https_base_url_enables_proxy_ssl_header_and_secure_cookies(tmp_path):
+    (tmp_path / ".archivebox_id").write_text("testcoll")
+    env = os.environ.copy()
+    env["BASE_URL"] = "https://archive.example.com"
+    env["DJANGO_SETTINGS_MODULE"] = "archivebox.core.settings"
+    repo_root = Path(__file__).resolve().parents[2]
+    env["PYTHONPATH"] = f"{repo_root}{os.pathsep}{env.get('PYTHONPATH', '')}"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import django, json;"
+                "django.setup();"
+                "from django.conf import settings;"
+                "print(json.dumps({"
+                "'csrf_secure': settings.CSRF_COOKIE_SECURE,"
+                "'session_secure': settings.SESSION_COOKIE_SECURE,"
+                "'proxy_ssl_header': settings.SECURE_PROXY_SSL_HEADER,"
+                "}))"
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=env,
+        cwd=tmp_path,
+    )
+
+    assert json.loads(result.stdout) == {
+        "csrf_secure": True,
+        "session_secure": True,
+        "proxy_ssl_header": ["HTTP_X_FORWARDED_PROTO", "https"],
+    }
 
 
 def test_sqlite_connections_use_explicit_busy_timeout():
