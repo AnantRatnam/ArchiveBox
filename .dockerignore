@@ -3,8 +3,12 @@
 /.heartbeat.json
 /package.json
 /package-lock.json
+__pycache__
+**/__pycache__
 *.pyc
-__pycache__/
+*.pyo
+*.py[cod]
+*$py.class
 .mypy_cache/
 .pytest_cache/
 .github/

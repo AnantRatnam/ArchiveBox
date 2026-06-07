@@ -31,7 +31,9 @@ ENV TZ=UTC \
     APT_KEY_DONT_WARN_ON_DANGEROUS_USAGE=1 \
     PYTHONIOENCODING=UTF-8 \
     PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_COMPILE=1 \
     PIP_ONLY_BINARY=aiohttp \
     npm_config_loglevel=error
 
@@ -69,7 +71,7 @@ ENV HOME=/home/archivebox \
     ABXPKG_MIN_RELEASE_AGE=0 \
     TIMEOUT=600
 
-ENV UV_COMPILE_BYTECODE=0 \
+ENV UV_COMPILE_BYTECODE=false \
     UV_PYTHON_PREFERENCE=managed \
     UV_PYTHON_INSTALL_DIR=/opt/uv/python \
     ARCHIVEBOX_PYTHON_INSTALL_DIR=/opt/archivebox/python \
@@ -90,8 +92,6 @@ RUN cp /VERSION.txt /ABX-DL-VERSION.txt \
     && which node && node --version \
     && which uv && uv self version \
     ) | tee -a /VERSION.txt
-
-ENV PYTHONDONTWRITEBYTECODE=1
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$TARGETVARIANT \
     echo "[+] APT Installing ArchiveBox search dependency ripgrep for $TARGETPLATFORM..." \
@@ -126,8 +126,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$T
         --no-sources \
     && apt-get purge -y build-essential gcc libldap2-dev libsasl2-dev libssl-dev \
     && apt-get autoremove -y \
-    && find /venv -type d -name __pycache__ -prune -exec rm -rf {} + \
-    && find /venv -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --chown=root:root --chmod=755 "." "$CODE_DIR/"
@@ -146,8 +144,6 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked,id=uv-$TARGETARCH$T
     && if [[ "$COMMIT_HASH" =~ ^[0-9a-fA-F]{40}$ ]]; then echo "COMMIT_HASH=$COMMIT_HASH" | tee -a /VERSION.txt; fi \
     && /usr/bin/uv pip install --no-deps "$CODE_DIR" \
     && (/usr/bin/uv pip show archivebox && which archivebox) | tee -a /VERSION.txt \
-    && find /venv "$CODE_DIR" -type d -name __pycache__ -prune -exec rm -rf {} + \
-    && find /venv "$CODE_DIR" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
     && rm -rf "$CODE_DIR/.git"
 
 FROM archivebox-runtime-base
@@ -190,8 +186,6 @@ WORKDIR "$DATA_DIR"
 RUN echo "[+] Initializing image collection..." \
     && find "$DATA_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} + \
     && PUID=0 PGID=0 archivebox init \
-    && find "$DATA_DIR" -type d -name __pycache__ -prune -exec rm -rf {} + \
-    && find "$DATA_DIR" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
     && (chown "$DEFAULT_PUID:$DEFAULT_PGID" \
         "$DATA_DIR" "$DATA_DIR"/.archivebox_id "$DATA_DIR"/ArchiveBox.conf "$DATA_DIR"/index.sqlite3 \
         "$DATA_DIR"/logs "$DATA_DIR"/logs/* "$DATA_DIR"/sources \
@@ -213,8 +207,6 @@ RUN "$LIB_DIR/bin/chromium" --version | tee -a /VERSION.txt \
     && ! command -v make \
     && setpriv --reuid="$ARCHIVEBOX_USER" --regid="$ARCHIVEBOX_USER" --init-groups test -w "$LIB_DIR" \
     && setpriv --reuid="$ARCHIVEBOX_USER" --regid="$ARCHIVEBOX_USER" --init-groups archivebox version 2>&1 | tee -a /VERSION.txt \
-    && find /venv "$CODE_DIR" "$LIB_DIR" "$DATA_DIR" -type d -name __pycache__ -prune -exec rm -rf {} + \
-    && find /venv "$CODE_DIR" "$LIB_DIR" "$DATA_DIR" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
     && rm -rf /root/.cache /var/cache/apt/* /var/lib/apt/lists/*
 
 RUN (echo -e "\n\n[√] Finished ArchiveBox multistage Docker build successfully." \
