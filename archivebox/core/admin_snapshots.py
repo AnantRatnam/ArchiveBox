@@ -274,13 +274,7 @@ class SnapshotChangeList(SearchResultsChangeList):
         super().get_results(request)
         if request.GET.get("_embedded") == "crawl":
             self.full_result_count = self.result_count
-        else:
-            self.full_result_count = self.model_admin.get_paginator(
-                request,
-                self.model._default_manager.all().order_by("-id"),
-                self.list_per_page,
-            ).count
-        self.show_full_result_count = True
+            self.show_full_result_count = True
         self._attach_archiveresult_summaries()
 
 
@@ -350,7 +344,7 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
     list_select_related = ()
     list_display = (
         "permissions_badge",
-        "created_at",
+        "created_at_display",
         "preview_icon",
         "title_str",
         "tags_inline",
@@ -358,7 +352,7 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         "files",
         "size_with_stats",
     )
-    list_display_links = ("created_at",)
+    list_display_links = ("created_at_display",)
     sort_fields = ("title_str", "created_at", "status", "crawl")
     readonly_fields = (
         "admin_actions",
@@ -459,7 +453,7 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         ),
     )
 
-    ordering = ["-created_at"]
+    ordering = ["-id"]
     actions = [
         "add_tags",
         "remove_tags",
@@ -485,6 +479,10 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         if request.GET.get("o"):
             return []
         return super().get_ordering(request)
+
+    @admin.display(description="Created", ordering="id")
+    def created_at_display(self, obj):
+        return obj.created_at
 
     def change_view(self, request, object_id, form_url="", extra_context=None):
         self.request = request

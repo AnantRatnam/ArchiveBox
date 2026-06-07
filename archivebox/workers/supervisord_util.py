@@ -296,7 +296,17 @@ def _sonic_worker_bind_target(worker: dict[str, str]) -> tuple[str, int] | None:
 
 @cache
 def get_sock_file():
-    """Get the path to the supervisord socket file, symlinking to a shorter path if needed due to unix path length limits"""
+    """Get the path to the supervisord socket file.
+
+    Supervisord-managed workers inherit SUPERVISOR_SERVER_URL from their parent
+    supervisord. They must keep using that socket even when crawl hooks override
+    TMP_DIR, otherwise a hook can accidentally start a nested supervisord for a
+    crawl-scoped temp dir.
+    """
+    server_url = os.environ.get("SUPERVISOR_SERVER_URL", "")
+    if server_url.startswith("unix://"):
+        return Path(server_url.removeprefix("unix://"))
+
     TMP_DIR = get_or_create_working_tmp_dir(autofix=True, quiet=False)
     assert TMP_DIR, "Failed to find or create a writable TMP_DIR!"
     socket_file = TMP_DIR / "supervisord.sock"
@@ -769,6 +779,9 @@ def reap_foreground_supervisord_process() -> None:
 
 
 def start_new_supervisord_process(daemonize=False):
+    if os.environ.get("SUPERVISOR_SERVER_URL"):
+        raise RuntimeError("Refusing to start a nested supervisord from inside a supervisord-managed worker")
+
     SOCK_FILE = get_sock_file()
     WORKERS_DIR = SOCK_FILE.parent / WORKERS_DIR_NAME
     LOG_FILE = CONSTANTS.LOGS_DIR / LOG_FILE_NAME
@@ -853,6 +866,8 @@ def get_or_create_supervisord_process(daemonize=False):
 
     supervisor = get_existing_supervisord_process()
     if supervisor is None:
+        if os.environ.get("SUPERVISOR_SERVER_URL"):
+            raise RuntimeError(f"Refusing to start a nested supervisord; inherited supervisor is unavailable at unix://{SOCK_FILE}")
         stop_existing_supervisord_process()
         supervisor = start_new_supervisord_process(daemonize=daemonize)
 

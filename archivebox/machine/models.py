@@ -1544,9 +1544,11 @@ class Process(ModelWithDeleteAfter, models.Model):
         avoids any race window where the row briefly exists as ADD before a
         higher-level demotion.
         """
-        argv_str = " ".join(sys.argv).lower()
+        argv = [str(arg) for arg in sys.argv]
+        argv_str = " ".join(argv).lower()
+        executable = Path(argv[0]).name.lower() if argv else ""
 
-        if "supervisord" in argv_str:
+        if executable == "supervisord" or any(arg.startswith("--configuration=") for arg in argv[1:]):
             return cls.TypeChoices.SUPERVISORD
         elif "runner_watch" in argv_str:
             return cls.TypeChoices.WORKER
