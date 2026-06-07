@@ -299,12 +299,14 @@ See <a href="#%EF%B8%8F-cli-usage">below</a> for more usage examples using the C
 <pre lang="bash"><code style="white-space: pre-line">echo 'deb [trusted=yes] https://archivebox.github.io/debian-archivebox dev main' | sudo tee /etc/apt/sources.list.d/archivebox.list
 sudo apt update
 sudo apt install archivebox
-archivebox version                         # make sure all dependencies are installed
+archivebox version                         # make sure the package is installed
 </code></pre>
 </li>
 <li>Create a new empty directory and initialize your collection (can be anywhere).
-<pre lang="bash"><code style="white-space: pre-line">mkdir -p ~/archivebox/data && cd ~/archivebox/data
-archivebox init --install
+<pre lang="bash"><code style="white-space: pre-line">mkdir ~/archivebox/data && cd ~/archivebox/data
+archivebox init
+sudo archivebox install
+archivebox add 'https://example.com'
 </code></pre>
 <br/>
 </li>
@@ -510,10 +512,12 @@ archivebox persona create --import=chrome personal
 # make sure you have pip-installed ArchiveBox and it's available in your $PATH first  
 <br/>
 # archivebox [subcommand] [--help]
-archivebox init --install      # safe to run init multiple times (also how you update versions)
+mkdir ~/archivebox/data && cd ~/archivebox/data
+archivebox init
+sudo archivebox install
+archivebox add 'https://example.com'
 archivebox version           # get archivebox version info + check dependencies
 archivebox help              # get list of archivebox subcommands that can be run
-archivebox add --depth=1 'https://news.ycombinator.com'
 </code></pre>
 <i>For more info, see our <a href="https://github.com/ArchiveBox/ArchiveBox/wiki/Usage#cli-usage">Usage: CLI Usage</a> wiki. ➡️</i>
 </details>
@@ -527,10 +531,11 @@ archivebox add --depth=1 'https://news.ycombinator.com'
 # make sure you have `docker-compose.yml` from the Quickstart instructions first
 <br/>
 # docker compose run archivebox [subcommand] [--help]
-docker compose run archivebox init --install
+docker compose run archivebox init
+docker compose run archivebox install
 docker compose run archivebox version
 docker compose run archivebox help
-docker compose run archivebox add --depth=1 'https://news.ycombinator.com'
+docker compose run archivebox add 'https://example.com'
 # to start webserver: docker compose up
 </code></pre>
 <i>For more info, see our <a href="https://github.com/ArchiveBox/ArchiveBox/wiki/Docker#usage">Usage: Docker Compose CLI</a> wiki. ➡️</i>
@@ -545,10 +550,11 @@ docker compose run archivebox add --depth=1 'https://news.ycombinator.com'
 # make sure you create and cd into in a new empty directory first  
 <br/>
 # docker run -it -v $PWD:/data archivebox/archivebox [subcommand] [--help]
-docker run -v $PWD:/data -it archivebox/archivebox init --install
+docker run -v $PWD:/data -it archivebox/archivebox init
+docker run -v $PWD:/data -it archivebox/archivebox install
 docker run -v $PWD:/data -it archivebox/archivebox version
 docker run -v $PWD:/data -it archivebox/archivebox help
-docker run -v $PWD:/data -it archivebox/archivebox add --depth=1 'https://news.ycombinator.com'
+docker run -v $PWD:/data -it archivebox/archivebox add 'https://example.com'
 # to start webserver: docker run -v $PWD:/data -it -p 8000:8000 archivebox/archivebox
 </code></pre>
 <i>For more info, see our <a href="https://github.com/ArchiveBox/ArchiveBox/wiki/Docker#usage-1">Usage: Docker CLI</a> wiki. ➡️</i>

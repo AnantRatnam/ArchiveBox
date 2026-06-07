@@ -110,7 +110,7 @@ a bug in versions `<=1.19.1_1` that caused wget to fail for perfectly valid site
 
 ### NPM Dependencies
 
-NPM packages like `readability`, `singlefile`, etc. are auto-installed by `archivebox setup` into `data/node_modules`.
+NPM packages like `readability`, `singlefile`, etc. are auto-installed by `archivebox install`.
 
 Make sure you have installed NodeJS + NPM first, here are their [official install docs](https://nodejs.org/en/download/package-manager/).
 
@@ -119,7 +119,7 @@ node --version         # make sure you have node >=19 installed
 npm --version          # make sure you have npm installed
 
 cd ~/archivebox/data   # go into your data directory
-archivebox setup       # auto-installs all JS dependencies into ./node_modules
+sudo archivebox install # auto-installs runtime dependencies
 # equivalent to:
 # curl -fsSL 'https://raw.githubusercontent.com/ArchiveBox/ArchiveBox/stable/archivebox/package.json' > package.json
 # npm install

@@ -101,11 +101,13 @@ killall archivebox     # stop the currently running archivebox version
 # upgrade ArchiveBox using the package manager you originally used to install it
 pip install --upgrade --ignore-installed archivebox
 # or
-apt install --upgrade archivebox
+sudo apt update
+sudo apt install --only-upgrade archivebox
 # or with the optional auto-installer script
 curl -sSL 'https://get.archivebox.io' | sh
 
 archivebox init        # run init to upgrade the collection to the latest version
+sudo archivebox install # refresh runtime dependencies if needed
 
 archivebox update --index-only  # optionally force an update of the snapshot index files (normally done lazily, see issue #962 for more info)
 

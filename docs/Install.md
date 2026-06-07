@@ -142,22 +142,22 @@ archivebox install
 
 #### Ubuntu/Debian-based Systems
 
-Make sure `apt` and `dpkg` are available on your system.
+Use the third-party ArchiveBox apt repo for the simplest bare-metal install:
 
 ```bash
-# add the nodejs sources to your apt lists (optional, otherwise may use older node)
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+echo 'deb [trusted=yes] https://archivebox.github.io/debian-archivebox dev main' | sudo tee /etc/apt/sources.list.d/archivebox.list
+sudo apt update
+sudo apt install archivebox
 
-# Install base system dependencies manually (check ArchiveBox/Dockerfile for more if needed)
-sudo apt install python3 python3-pip python3-minimal nodejs libatomic1 zlib1g-dev libssl-dev libldap2-dev libsasl2-dev python3-ldap python3-msgpack python3-mutagen python3-regex python3-pycryptodome procps dnsutils wget curl git yt-dlp ffmpeg ripgrep
-sudo apt install python3-setuptools  # or: python3-distutils on older systems
-
-# Optional: get Chromium with pip (skip if you already have chromium-browser/google-chrome installed and in your $PATH)
-# pip install --upgrade playwright
-# playwright install --with-deps chromium
-# OR: get chromium and manually with apt (not recommended, often out-of-date)
-# sudo apt install chromium fontconfig fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-kacst fonts-symbola fonts-noto fonts-freefont-ttf
+mkdir ~/archivebox/data && cd ~/archivebox/data
+archivebox init
+sudo archivebox install
+archivebox add 'https://example.com'
 ```
+
+The apt package installs the ArchiveBox Python application. Runtime extractor
+dependencies such as Chromium, yt-dlp, SingleFile, and other plugin-managed
+tools are installed by `sudo archivebox install`.
 
 <img src="https://cdn0.iconfinder.com/data/icons/flat-round-system/512/freebsd-512.png" width="30px" align="right"/>
 
@@ -189,7 +189,7 @@ See the [Quickstart](https://github.com/ArchiveBox/ArchiveBox#-package-manager-s
 
 ### 2. Install the Python dependencies using `pip`
 
-It's recommended to `pip`-install ArchiveBox even if you already installed `archivebox` with one of our official `apt`/`pkg` packages above (sometimes the `pip` version is newer). This step also ensures you have the latest `yt-dlp` and `playwright` versions.
+If you are not using the apt package above, install ArchiveBox with `pip`.
 
 ```bash
 # get the latest version of archivebox from PyPI
@@ -201,23 +201,21 @@ pip install --upgrade --ignore-installed archivebox[ldap,sonic]
 
 <br/>
 
-### 3. Install the JS dependencies using `archivebox setup`
+### 3. Install runtime dependencies using `archivebox install`
 
-Finish installing the runtime JS dependencies that live inside your collection data dir (e.g. readability, singlefile, mercury).
+Finish installing runtime dependencies for the enabled ArchiveBox plugins.
 ```bash
 # create a new empty folder anywhere to hold your collection, and cd into it
-mkdir -p ~/archivebox/data && cd ~/archivebox/data
+mkdir ~/archivebox/data && cd ~/archivebox/data
 
 # instantiate the directory as an archivebox collection dir
 archivebox init
 
-# auto-install all the runtime JS dependencies inside ./node_modules
-archivebox setup
-# under the hood, this does:
-# - installs npm dependencies: singlefile, readability, puppeteer, etc.
-# - installs pip dependencies: yt-dlp, playwright, etc.
-# - checks for / installs system dependencies: curl, wget, etc
-# if you see "permission denied" errors, run 'sudo archivebox setup'
+# auto-install runtime dependencies such as Chromium, yt-dlp, SingleFile, etc.
+sudo archivebox install
+
+# archive a first URL
+archivebox add 'https://example.com'
 
 # ✅ see a final detailed breakdown of all the installed dependencies and commands available
 archivebox version
@@ -287,8 +285,8 @@ pip install --upgrade --ignore-installed archivebox
 
 # run init inside any data directories to migrate the index to the latest version
 cd ~/archivebox/data
-archivebox setup         # update runtime dependencies to latest versions
 archivebox init          # update collection index & apply any migrations 
+sudo archivebox install  # update runtime dependencies to latest versions
 ```
 
 Check our more detailed [Upgrading](https://github.com/ArchiveBox/ArchiveBox/wiki/Upgrading-or-Merging-Archives) documentation and [Release Notes](https://github.com/ArchiveBox/ArchiveBox/releases) if you run into any problems. ➡️
