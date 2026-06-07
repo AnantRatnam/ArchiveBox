@@ -479,7 +479,7 @@ def update(
                         pass
                     elif not runner_work_queued:
                         pass
-                    elif touched_snapshot_ids:
+                    elif touched_snapshot_ids and is_filtered_update:
                         if not touched_snapshot_ids:
                             print("[*] No matching snapshots queued work for the runner.")
                         for snapshot_id in sorted(touched_snapshot_ids):

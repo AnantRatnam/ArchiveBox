@@ -4,6 +4,8 @@ import sys
 import time
 import socket
 import os
+import csv
+import json
 import psutil
 import shutil
 import subprocess
@@ -344,10 +346,36 @@ files = {WORKERS_DIR}/*.conf
     (WORKERS_DIR / "initial_startup.conf").write_text("")  # hides error about "no files found to include" when supervisord starts
 
 
+def _worker_environment_value(daemon: dict[str, str], key: str) -> str | None:
+    environment = daemon.get("environment")
+    if not environment:
+        return None
+
+    try:
+        fields = next(csv.reader([environment], skipinitialspace=True))
+    except csv.Error:
+        fields = str(environment).split(",")
+
+    for field in fields:
+        name, separator, value = field.partition("=")
+        if separator and name == key:
+            try:
+                return str(json.loads(value))
+            except json.JSONDecodeError:
+                return value.strip('"')
+    return None
+
+
+def _worker_log_base_dir(daemon: dict[str, str]) -> Path:
+    data_dir = _worker_environment_value(daemon, "DATA_DIR")
+    return Path(data_dir) if data_dir else CONSTANTS.DATA_DIR
+
+
 def create_worker_config(daemon):
     """Create a supervisord worker config file for a given daemon"""
     SOCK_FILE = get_sock_file()
     WORKERS_DIR = SOCK_FILE.parent / WORKERS_DIR_NAME
+    log_base_dir = _worker_log_base_dir(daemon)
 
     Path.mkdir(WORKERS_DIR, exist_ok=True, parents=True)
     for logfile_key in ("stdout_logfile", "stderr_logfile"):
@@ -356,7 +384,7 @@ def create_worker_config(daemon):
             continue
         logfile_path = Path(logfile)
         if not logfile_path.is_absolute():
-            logfile_path = CONSTANTS.DATA_DIR / logfile_path
+            logfile_path = log_base_dir / logfile_path
         logfile_path.parent.mkdir(parents=True, exist_ok=True)
 
     name = daemon["name"]
@@ -371,7 +399,7 @@ def create_worker_config(daemon):
         if key in ("stdout_logfile", "stderr_logfile"):
             logfile_path = Path(value)
             if not logfile_path.is_absolute():
-                value = str(CONSTANTS.DATA_DIR / logfile_path)
+                value = str(log_base_dir / logfile_path)
         worker_str += f"{key}={value}\n"
     worker_str += "\n"
 
@@ -850,6 +878,9 @@ def get_or_create_supervisord_process(daemonize=False):
 
 
 def start_worker(supervisor, daemon, lazy=False):
+    existing = get_worker(supervisor, daemon["name"])
+    if isinstance(existing, dict) and existing.get("statename") in ("STARTING", "RUNNING"):
+        return existing
     return sync_supervisord_workers(supervisor, [(daemon, lazy)], prune=False).get(daemon["name"])
 
 

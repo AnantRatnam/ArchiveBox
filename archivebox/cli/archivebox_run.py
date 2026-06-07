@@ -431,10 +431,18 @@ def main(
 
 
 def run_snapshot_worker(snapshot_id: str) -> int:
+    from archivebox.config import CONSTANTS
+    from archivebox.core.takeover_util import enter_single_runner_gate
     from archivebox.core.shutdown_util import foreground_parent_watchdog, foreground_shutdown_signals
+    from archivebox.machine.models import Process
     from archivebox.core.models import Snapshot
     from archivebox.services.runner import run_due_snapshot
     from django.utils import timezone
+
+    current = Process.current()
+    if not enter_single_runner_gate(current, data_dir=CONSTANTS.DATA_DIR):
+        current.mark_exited()
+        return 0
 
     snapshot = None
     try:
@@ -465,6 +473,10 @@ def run_snapshot_worker(snapshot_id: str) -> int:
 
         traceback.print_exc()
         return 1
+    finally:
+        current.refresh_from_db()
+        if current.status != Process.StatusChoices.EXITED:
+            current.mark_exited()
 
 
 if __name__ == "__main__":
