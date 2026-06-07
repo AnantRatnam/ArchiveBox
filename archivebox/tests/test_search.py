@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import shutil
@@ -781,7 +782,7 @@ class TestSearchBackendsE2E:
             sonic_port = get_free_port()
             env = cli_env(
                 live=True,
-                PLUGINS="title,wget,search_backend_ripgrep,search_backend_sqlite,search_backend_sonic",
+                PLUGINS="wget,search_backend_ripgrep,search_backend_sqlite,search_backend_sonic",
                 SAVE_TITLE="True",
                 SAVE_WGET="True",
                 SAVE_WARC="False",
@@ -804,7 +805,7 @@ class TestSearchBackendsE2E:
             )
             create_admin_and_token(initialized_archive)
 
-            bulk_wget_urls = [*matrix_urls, url_only_url, url_contains_order_url]
+            bulk_wget_urls = [*matrix_urls]
             add_result = run_archivebox_cmd(
                 [
                     "add",
@@ -822,43 +823,73 @@ class TestSearchBackendsE2E:
             )
             assert add_result.returncode == 0, add_result.stderr or add_result.stdout
 
-            title_add_result = run_archivebox_cmd(
-                [
-                    "add",
-                    "--depth=0",
-                    "--crawl-max-concurrent-snapshots=3",
-                    "--parser=url_list",
-                    "--plugins=title,wget",
-                    "--tag=search-matrix",
-                    title_only_url,
-                    title_prefix_order_url,
-                    title_contains_order_url,
-                ],
+            metadata_snapshot_records = [
+                {
+                    "type": "Snapshot",
+                    "url": url_only_url,
+                    "title": "URL Only Precision Page",
+                    "tags": "search-matrix",
+                    "depth": 0,
+                },
+                {
+                    "type": "Snapshot",
+                    "url": title_only_url,
+                    "title": title_only_needle,
+                    "tags": "search-matrix",
+                    "depth": 0,
+                },
+                {
+                    "type": "Snapshot",
+                    "url": tag_only_url,
+                    "title": "Tag Only Precision Page",
+                    "tags": f"search-matrix,{tag_only_needle}",
+                    "depth": 0,
+                },
+                {
+                    "type": "Snapshot",
+                    "url": title_prefix_order_url,
+                    "title": title_prefix_order_title,
+                    "tags": "search-matrix",
+                    "depth": 0,
+                },
+                {
+                    "type": "Snapshot",
+                    "url": url_contains_order_url,
+                    "title": "URL Contains Ordering Page",
+                    "tags": "search-matrix",
+                    "depth": 0,
+                },
+                {
+                    "type": "Snapshot",
+                    "url": title_contains_order_url,
+                    "title": title_contains_order_title,
+                    "tags": "search-matrix",
+                    "depth": 0,
+                },
+                {
+                    "type": "Snapshot",
+                    "url": tag_order_url,
+                    "title": "Tag Ordering Page",
+                    "tags": f"search-matrix,{order_needle}",
+                    "depth": 0,
+                },
+            ]
+            metadata_create_result = run_archivebox_cmd(
+                ["snapshot", "create"],
                 cwd=initialized_archive,
                 env=env,
-                timeout=120,
+                input="\n".join(json.dumps(record) for record in metadata_snapshot_records) + "\n",
+                timeout=60,
             )
-            assert title_add_result.returncode == 0, title_add_result.stderr or title_add_result.stdout
-
-            precision_adds = (
-                (tag_only_url, f"search-matrix,{tag_only_needle}", "wget"),
-                (tag_order_url, f"search-matrix,{order_needle}", "wget"),
+            assert metadata_create_result.returncode == 0, metadata_create_result.stderr or metadata_create_result.stdout
+            metadata_seal_result = run_archivebox_cmd(
+                ["snapshot", "update", "--status=sealed"],
+                cwd=initialized_archive,
+                env=env,
+                input=metadata_create_result.stdout,
+                timeout=60,
             )
-            for precision_url, precision_tags, precision_plugins in precision_adds:
-                precision_add_result = run_archivebox_cmd(
-                    [
-                        "add",
-                        "--depth=0",
-                        "--parser=url_list",
-                        f"--plugins={precision_plugins}",
-                        f"--tag={precision_tags}",
-                        precision_url,
-                    ],
-                    cwd=initialized_archive,
-                    env=env,
-                    timeout=60,
-                )
-                assert precision_add_result.returncode == 0, precision_add_result.stderr or precision_add_result.stdout
+            assert metadata_seal_result.returncode == 0, metadata_seal_result.stderr or metadata_seal_result.stdout
 
             list_result = run_archivebox_cmd(
                 ["list", "--url__icontains", f"127.0.0.1:{fixture_port}", "--csv=url"],

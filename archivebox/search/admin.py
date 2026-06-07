@@ -2,6 +2,7 @@ __package__ = "archivebox.search"
 
 from django.contrib import admin
 from django.contrib.admin.views.main import ChangeList
+from django.db.models import Case, IntegerField, Value, When
 
 from archivebox.search.config import (
     get_default_search_mode,
@@ -71,7 +72,13 @@ class SearchResultsAdminMixin(admin.ModelAdmin):
         if queryset.model._meta.label_lower == "core.snapshot" and request.GET.get("_embedded") != "crawl":
             cached_ids = get_cached_admin_search_ids(request)
             if cached_ids is not None:
-                return queryset.filter(pk__in=cached_ids) if cached_ids else queryset.none(), False
+                if not cached_ids:
+                    return queryset.none(), False
+                search_rank = Case(
+                    *(When(pk=snapshot_id, then=Value(index)) for index, snapshot_id in enumerate(cached_ids)),
+                    output_field=IntegerField(),
+                )
+                return queryset.filter(pk__in=cached_ids).annotate(search_rank=search_rank).order_by("search_rank"), False
             return queryset.none(), False
 
         if get_search_mode_base(search_mode, config=request.archivebox_config) == "meta":
