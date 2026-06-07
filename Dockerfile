@@ -168,6 +168,7 @@ COPY --from=archivebox-builder /app /app
 COPY --from=archivebox-builder /VERSION.txt /VERSION.txt
 
 RUN echo "[*] Setting up $ARCHIVEBOX_USER user uid=${DEFAULT_PUID}..." \
+    && printf 'export PATH="/venv/bin:/opt/node/bin:/opt/archivebox/lib/bin:$PATH"\n' > /etc/profile.d/archivebox-path.sh \
     && ln -sf /venv/bin/archivebox /usr/local/bin/archivebox \
     && ln -sf /venv/bin/daphne /usr/local/bin/daphne \
     && ln -sf /venv/bin/supervisord /usr/local/bin/supervisord \
