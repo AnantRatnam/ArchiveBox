@@ -303,7 +303,7 @@ archivebox version                         # make sure the package is installed
 </code></pre>
 </li>
 <li>Create a new empty directory and initialize your collection (can be anywhere).
-<pre lang="bash"><code style="white-space: pre-line">mkdir ~/archivebox/data && cd ~/archivebox/data
+<pre lang="bash"><code style="white-space: pre-line">mkdir -p ~/archivebox/data && cd ~/archivebox/data
 archivebox init
 sudo archivebox install
 archivebox add 'https://example.com'
@@ -512,7 +512,7 @@ archivebox persona create --import=chrome personal
 # make sure you have pip-installed ArchiveBox and it's available in your $PATH first  
 <br/>
 # archivebox [subcommand] [--help]
-mkdir ~/archivebox/data && cd ~/archivebox/data
+mkdir -p ~/archivebox/data && cd ~/archivebox/data
 archivebox init
 sudo archivebox install
 archivebox add 'https://example.com'

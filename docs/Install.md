@@ -149,7 +149,7 @@ echo 'deb [trusted=yes] https://archivebox.github.io/debian-archivebox dev main'
 sudo apt update
 sudo apt install archivebox
 
-mkdir ~/archivebox/data && cd ~/archivebox/data
+mkdir -p ~/archivebox/data && cd ~/archivebox/data
 archivebox init
 sudo archivebox install
 archivebox add 'https://example.com'
@@ -206,7 +206,7 @@ pip install --upgrade --ignore-installed archivebox[ldap,sonic]
 Finish installing runtime dependencies for the enabled ArchiveBox plugins.
 ```bash
 # create a new empty folder anywhere to hold your collection, and cd into it
-mkdir ~/archivebox/data && cd ~/archivebox/data
+mkdir -p ~/archivebox/data && cd ~/archivebox/data
 
 # instantiate the directory as an archivebox collection dir
 archivebox init
