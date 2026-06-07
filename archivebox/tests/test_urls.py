@@ -1002,6 +1002,33 @@ class TestUrlRouting:
             assert resp.status_code == 200
             assert resp["Content-Type"].startswith("text/html")
 
+            mhtml_dir = Path(snapshot.output_dir) / "chrome_mhtml"
+            mhtml_dir.mkdir(parents=True, exist_ok=True)
+            (mhtml_dir / "snapshot.mhtml").write_text(
+                "From: <Saved by Blink>\\n"
+                "MIME-Version: 1.0\\n"
+                "Content-Type: multipart/related; type=\\"text/html\\"; boundary=\\"----abx-test\\"\\n"
+                "\\n"
+                "------abx-test\\n"
+                "Content-Type: text/html\\n"
+                "Content-Location: https://example.com/\\n"
+                "\\n"
+                "<!doctype html><html><head><link rel=\\"stylesheet\\" href=\\"cid:style-1\\"></head><body>Styled MHTML</body></html>\\n"
+                "------abx-test\\n"
+                "Content-Type: text/css\\n"
+                "Content-Location: cid:style-1\\n"
+                "\\n"
+                "body { color: red; }\\n"
+                "------abx-test--\\n",
+                encoding="utf-8",
+            )
+            resp = client.get("/chrome_mhtml/snapshot.mhtml?preview=1", HTTP_HOST=snapshot_host)
+            assert resp.status_code == 200
+            assert resp["Content-Type"].startswith("text/html")
+            assert "style-src 'unsafe-inline' data: blob:" in resp["Content-Security-Policy"]
+            preview_html = response_body(resp).decode("utf-8", "ignore")
+            assert "MHTML Preview" in preview_html
+
             print("OK")
             """,
         )

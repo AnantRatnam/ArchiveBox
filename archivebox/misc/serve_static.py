@@ -914,7 +914,7 @@ def serve_static_with_byterange_support(request, path, document_root=None, show_
             response.headers["Content-Security-Policy"] = (
                 "default-src 'self' data: blob:; "
                 "script-src 'unsafe-inline'; "
-                "style-src 'unsafe-inline'; "
+                "style-src 'unsafe-inline' data: blob:; "
                 "connect-src 'self'; "
                 "frame-src 'self' data: blob:; "
                 "object-src 'none'; "

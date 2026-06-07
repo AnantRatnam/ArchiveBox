@@ -4,15 +4,14 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('core', '0048_remove_archiveresult_config'),
+        ("core", "0048_remove_archiveresult_config"),
     ]
 
     operations = [
         migrations.AlterField(
-            model_name='snapshot',
-            name='url',
+            model_name="snapshot",
+            name="url",
             field=models.TextField(db_index=True),
         ),
     ]
