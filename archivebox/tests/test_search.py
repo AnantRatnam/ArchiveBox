@@ -678,15 +678,16 @@ class TestSearchBackendsE2E:
 
         page_count = 93
         total_snapshot_count = 100
-        url_only_path = "/url-only-meta-needle.html"
+        url_only_path = "/urlonlymetaprecisionunique.html"
         title_only_path = "/title-only.html"
         tag_only_path = "/tag-only.html"
         title_prefix_order_path = "/title-prefix-order.html"
         url_contains_order_path = "/url-orderneedle.html"
         title_contains_order_path = "/title-contains-order.html"
         tag_order_path = "/tag-order.html"
-        title_only_needle = "Live Matrix Title Needle"
-        tag_only_needle = "live-matrix-tag-needle"
+        url_only_needle = "urlonlymetaprecisionunique"
+        title_only_needle = "livematrixtitleprecisionunique"
+        tag_only_needle = "livematrixtagprecisionunique"
         order_needle = "orderneedle"
         title_prefix_order_title = "Orderneedle Title Prefix Page"
         title_contains_order_title = "Contains Orderneedle Later Page"
@@ -1037,7 +1038,7 @@ class TestSearchBackendsE2E:
                     assert "127.0.0.1" in cleared_page.text
 
                 for query, expected_url, absent_urls in (
-                    ("url-only-meta-needle", url_only_url, (title_only_url, tag_only_url)),
+                    (url_only_needle, url_only_url, (title_only_url, tag_only_url)),
                     (title_only_needle, title_only_url, (url_only_url, tag_only_url)),
                     (tag_only_needle, tag_only_url, (url_only_url, title_only_url)),
                 ):

@@ -1844,6 +1844,7 @@ def _run_due_queued_plugin_result(
     lock_seconds: int,
     interactive_interrupts: bool,
     runtime_config,
+    batch_size: int = QUEUED_PLUGIN_RESULT_BATCH_SIZE,
 ) -> bool:
     from archivebox.core.models import ArchiveResult, Snapshot
     from django.db.models import Exists, OuterRef
@@ -1885,7 +1886,7 @@ def _run_due_queued_plugin_result(
         # sibling order is irrelevant; the crawl_id/status index can fetch this
         # small local batch directly while EXISTS proves the enabled queued
         # plugin rows via the existing ArchiveResult unique index.
-        due_snapshots.filter(crawl_id=root_crawl_id).order_by()[:QUEUED_PLUGIN_RESULT_BATCH_SIZE],
+        due_snapshots.filter(crawl_id=root_crawl_id).order_by()[:batch_size],
     )
     if not batch_candidates:
         return False
@@ -1919,7 +1920,7 @@ def _run_due_queued_plugin_result(
         return True
 
     config_overrides = {
-        "CRAWL_MAX_CONCURRENT_SNAPSHOTS": QUEUED_PLUGIN_RESULT_BATCH_SIZE,
+        "CRAWL_MAX_CONCURRENT_SNAPSHOTS": batch_size,
     }
     for plugin_name in selected_plugins:
         if plugin_name.startswith("search_backend_"):
@@ -2026,6 +2027,7 @@ def run_pending_crawls(
     crawl_id: str | None = None,
     maintenance_only: bool = False,
     interactive_interrupts: bool = False,
+    maintenance_batch_size: int = QUEUED_PLUGIN_RESULT_BATCH_SIZE,
 ) -> int:
     from archivebox.config.common import get_config
     from archivebox.crawls.models import Crawl, CrawlSchedule
@@ -2078,6 +2080,7 @@ def run_pending_crawls(
             lock_seconds=60,
             interactive_interrupts=interactive_interrupts,
             runtime_config=runtime_config,
+            batch_size=maintenance_batch_size,
         ):
             continue
 
@@ -2189,6 +2192,7 @@ def run_pending_crawls(
             lock_seconds=60,
             interactive_interrupts=interactive_interrupts,
             runtime_config=runtime_config,
+            batch_size=maintenance_batch_size,
         ):
             continue
 

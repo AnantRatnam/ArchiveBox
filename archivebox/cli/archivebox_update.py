@@ -374,7 +374,7 @@ def update(
                             for snapshot_id in sorted(touched_snapshot_ids):
                                 run_scoped_runner("--snapshot-id", snapshot_id)
                         else:
-                            run_scoped_runner("--maintenance-only")
+                            run_scoped_runner("--maintenance-only", "--maintenance-batch-size", str(batch_size))
                         ran_post_migrate_runner = True
 
                 if do_index:
@@ -486,7 +486,7 @@ def update(
                             run_scoped_runner("--snapshot-id", snapshot_id)
                     else:
                         run_scoped_runner(
-                            *(["--maintenance-only"] if index_only or migrate_only else []),
+                            *(["--maintenance-only", "--maintenance-batch-size", str(batch_size)] if index_only or migrate_only else []),
                             ensure_daemon_reason="search indexing" if do_index else None,
                         )
 

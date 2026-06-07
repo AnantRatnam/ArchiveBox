@@ -173,13 +173,18 @@ def iter_admin_meta_search_ids(query, queryset):
         Q(url__icontains=query),
         Q(title__icontains=query),
         Q(tags__name__icontains=query),
-        Q(notes__icontains=query) | Q(crawl__notes__icontains=query) | Q(crawl__label__icontains=query),
-        Q(crawl__created_by__username=query),
+        Q(notes__icontains=query),
     ]
     for wave in waves:
         for pk in queryset.filter(wave).values_list("pk", flat=True).distinct().iterator(chunk_size=500):
             if pk in seen:
                 continue
+            seen.add(pk)
+            yield pk
+
+    crawl_metadata_wave = Q(crawl__notes__icontains=query) | Q(crawl__label__icontains=query) | Q(crawl__created_by__username=query)
+    if not seen:
+        for pk in queryset.filter(crawl_metadata_wave).values_list("pk", flat=True).distinct().iterator(chunk_size=500):
             seen.add(pk)
             yield pk
 
