@@ -206,7 +206,7 @@ def test_delete_after_real_add_page_and_rest_create_paths(client):
             "depth": "0",
             "max_urls": "1",
             "crawl_max_size": "0",
-            "crawl_timeout": "0",
+            "crawl_timeout": "60",
             "snapshot_max_size": "0",
             "delete_after": "2h",
             "crawl_max_concurrent_snapshots": "1",

@@ -1089,12 +1089,7 @@ class CrawlRunner:
                     return
                 snapshot_selected_plugins = remaining_queued_plugins
                 plugins = filter_plugins(self.plugins, snapshot_selected_plugins, include_providers=True)
-                # Queued ArchiveResult rows select plugin work, not a mid-plugin
-                # resume cursor. Rerun the full selected plugin lifecycle so
-                # ordered prerequisite hooks like chrome_tab run before barriers
-                # like chrome_wait, while search_backend_* maintenance remains
-                # targeted to only those selected plugins.
-                selected_hooks_by_plugin = None
+                selected_hooks_by_plugin = include_background_prerequisite_hooks(selected_hooks_by_plugin, plugins)
             abx_snapshot = AbxSnapshot(
                 id=snapshot["id"],
                 url=snapshot["url"],
@@ -1361,6 +1356,35 @@ def fail_unavailable_queued_hooks(
             end_ts=now,
             output_str="Queued hook is no longer available in the installed plugin",
         )
+
+
+def include_background_prerequisite_hooks(
+    selected_hooks_by_plugin: dict[str, set[str] | None],
+    plugins: dict[str, Plugin],
+) -> dict[str, set[str] | None]:
+    expanded: dict[str, set[str] | None] = {}
+    for plugin_name, selected_hook_names in selected_hooks_by_plugin.items():
+        if selected_hook_names is None or plugin_name not in plugins:
+            expanded[plugin_name] = selected_hook_names
+            continue
+        plugin_hooks = sorted(plugins[plugin_name].filter_hooks("Snapshot"), key=lambda hook: hook.sort_key)
+        selected_sort_keys = [
+            hook.sort_key for hook in plugin_hooks if hook.name in selected_hook_names or Path(hook.name).stem in selected_hook_names
+        ]
+        if not selected_sort_keys:
+            expanded[plugin_name] = set(selected_hook_names)
+            continue
+        first_selected_sort_key = min(selected_sort_keys)
+        expanded_hook_names = set(selected_hook_names)
+        # Earlier background hooks publish live resources (e.g. Chrome tabs)
+        # needed by later foreground hooks, but completed foreground hooks stay
+        # final and are not rerun during hook-level resume.
+        for hook in plugin_hooks:
+            if hook.is_background and hook.sort_key < first_selected_sort_key:
+                expanded_hook_names.add(hook.name)
+                expanded_hook_names.add(Path(hook.name).stem)
+        expanded[plugin_name] = expanded_hook_names
+    return expanded
 
 
 def snapshot_hooks_for_pending_archiveresults(snapshot) -> list[tuple[str, str]]:

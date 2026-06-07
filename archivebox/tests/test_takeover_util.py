@@ -345,7 +345,7 @@ def test_live_server_keeps_http_runtime_while_update_runs_real_sqlite_indexer(tm
 
     env = cli_env(
         live=True,
-        PLUGINS="wget,parse_html_urls,search_backend_sqlite",
+        PLUGINS="wget,parse_html_urls,search_backend_sqlite,search_backend_sonic",
         SEARCH_BACKEND_ENGINE="sqlite",
         SEARCH_BACKEND_SONIC_PORT=str(get_free_port()),
     )
@@ -435,7 +435,7 @@ def test_live_update_yields_to_server_then_reclaims_real_sqlite_indexing(tmp_pat
 
     env = cli_env(
         live=True,
-        PLUGINS="wget,parse_html_urls,search_backend_sqlite",
+        PLUGINS="wget,parse_html_urls,search_backend_sqlite,search_backend_sonic",
         SEARCH_BACKEND_ENGINE="sqlite",
         SEARCH_BACKEND_SONIC_PORT=str(get_free_port()),
     )

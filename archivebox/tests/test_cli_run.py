@@ -1468,7 +1468,7 @@ class TestRecoverOrchestratorState:
     @pytest.mark.django_db(transaction=True)
     @pytest.mark.timeout(300)
     @pytest.mark.parametrize("chrome_isolation", ["crawl", "snapshot"])
-    def test_resume_queued_chrome_wait_reruns_full_chrome_plugin_lifecycle(
+    def test_resume_queued_chrome_wait_reruns_background_prerequisites(
         self,
         initialized_archive,
         recursive_test_site,

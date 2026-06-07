@@ -235,6 +235,14 @@ def update(
 
     command = current_command(Process.TypeChoices.UPDATE, data_dir=CONSTANTS.DATA_DIR)
 
+    def still_owns_foreground_runner() -> bool:
+        from django.db import connections
+
+        try:
+            return command_owns_foreground_runner(command, data_dir=CONSTANTS.DATA_DIR)
+        finally:
+            connections.close_all()
+
     def wait_for_turn() -> None:
         raise_if_shutdown_requested()
         standby_until_foreground_runner_needed(command, data_dir=CONSTANTS.DATA_DIR)
@@ -245,7 +253,11 @@ def update(
             wait_for_turn()
             if ensure_daemon_reason:
                 ensure_daemon_stack(reason=ensure_daemon_reason)
-            exit_code = run_runner_worker(list(args), name=f"worker_runner_update_{os.getpid()}")
+            exit_code = run_runner_worker(
+                list(args),
+                name=f"worker_runner_update_{os.getpid()}",
+                keep_running=still_owns_foreground_runner,
+            )
             if exit_code == 0:
                 return
             if not command_owns_foreground_runner(command, data_dir=CONSTANTS.DATA_DIR):
@@ -479,7 +491,7 @@ def update(
                         pass
                     elif not runner_work_queued:
                         pass
-                    elif touched_snapshot_ids:
+                    elif touched_snapshot_ids and is_filtered_update:
                         if not touched_snapshot_ids:
                             print("[*] No matching snapshots queued work for the runner.")
                         for snapshot_id in sorted(touched_snapshot_ids):
