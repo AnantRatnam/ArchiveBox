@@ -204,7 +204,7 @@ RUN echo "[+] Initializing image collection..." \
 RUN chmod +x "$CODE_DIR"/bin/*.sh \
     && chmod g+w "$TMP_DIR" "$LIB_DIR" "$PLAYWRIGHT_BROWSERS_PATH"
 
-RUN "$LIB_DIR/playwright/bin/chrome" --version | tee -a /VERSION.txt \
+RUN "$LIB_DIR/playwright/bin/chromium" --version | tee -a /VERSION.txt \
     && "$LIB_DIR/uv/packages/papers-dl/venv/bin/papers-dl" --version | tee -a /VERSION.txt \
     && /usr/bin/rg --version | head -1 | tee -a /VERSION.txt \
     && /usr/local/bin/sonic --version | tee -a /VERSION.txt \
