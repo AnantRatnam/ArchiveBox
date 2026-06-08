@@ -679,15 +679,18 @@ def test_process_started_uses_node_binary_for_js_hooks_without_plugin_binary(tmp
 def test_binary_event_reuses_existing_installed_binary_row():
     from archivebox.machine.models import Binary, Machine
     from archivebox.services.binary_service import ArchiveBoxDBBinaryCacheBackend
+    from abxpkg import PROVIDER_CLASS_BY_NAME
     from abxpkg.binary_service import BinaryCacheService, BinaryService
     import asyncio
 
     machine = Machine.current()
+    wget_path = PROVIDER_CLASS_BY_NAME["env"]().get_abspath("wget", quiet=True, no_cache=True)
+    assert wget_path
 
     binary = Binary.objects.create(
         machine=machine,
         name="wget",
-        abspath="/bin/sh",
+        abspath=str(wget_path),
         version="9.9.9",
         binprovider="env",
         binproviders="env,apt,brew",
@@ -715,7 +718,7 @@ def test_binary_event_reuses_existing_installed_binary_row():
     binary.refresh_from_db()
     assert Binary.objects.filter(machine=machine, name="wget").count() == 1
     assert binary.status == Binary.StatusChoices.INSTALLED
-    assert binary.abspath == "/bin/sh"
+    assert binary.abspath == str(wget_path)
     assert binary.version == "9.9.9"
     assert binary.binprovider == "env"
     assert binary.binproviders == "env,apt,brew"

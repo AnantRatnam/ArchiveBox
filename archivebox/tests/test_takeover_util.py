@@ -473,7 +473,7 @@ def test_live_update_yields_to_server_then_reclaims_real_sqlite_indexing(tmp_pat
         assert update_proc.poll() is None
         assert server.poll() is None
         server_text = server_log.read_text(encoding="utf-8", errors="replace")
-        assert "Taking over sonic from older existing archivebox process" in server_text
+        assert "Taking over orchestrator, sonic from older existing archivebox process" in server_text
         assert "worker_daphne" in server_text
         assert "worker_sonic" in server_text
         server_daphne_pid = worker_pid_from_log(server_log, "worker_daphne")

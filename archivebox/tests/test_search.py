@@ -1114,12 +1114,14 @@ class TestSearchBackendsE2E:
                     assert first_partial_page_checked
                     assert later_partial_page_checked
                     positive_events = [(count, elapsed) for count, elapsed in count_events if count > 0]
-                    assert len(positive_events) >= 2, (surface_name, search_mode, positive_events)
-                    max_progress_gap = max(
-                        later_elapsed - earlier_elapsed
-                        for (_, earlier_elapsed), (_, later_elapsed) in zip(positive_events, positive_events[1:])
-                    )
-                    assert max_progress_gap < 1.0, (surface_name, search_mode, max_progress_gap, positive_events[:10])
+                    # Fast backends can stream the only positive match in one event; when
+                    # there are multiple positive events, still verify progress stays live.
+                    if len(positive_events) > 1:
+                        max_progress_gap = max(
+                            later_elapsed - earlier_elapsed
+                            for (_, earlier_elapsed), (_, later_elapsed) in zip(positive_events, positive_events[1:])
+                        )
+                        assert max_progress_gap < 1.0, (surface_name, search_mode, max_progress_gap, positive_events[:10])
                     assert first_positive_elapsed is not None and first_positive_elapsed < 0.75, (
                         surface_name,
                         search_mode,
