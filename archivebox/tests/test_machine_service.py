@@ -38,7 +38,6 @@ def _runtime_env(data_dir: Path, bin_dir: Path) -> dict[str, str]:
     ]
     return {
         "LIB_DIR": str(data_dir / "lib"),
-        "LIB_BIN_DIR": str(data_dir / "lib" / "bin"),
         "ABXPKG_LIB_DIR": str(data_dir / "lib"),
         "LITEPARSE_ENABLED": "True",
         "TIMEOUT": "180",
@@ -75,10 +74,8 @@ def test_install_persists_machine_binary_config_and_recovers_stale_path(initiali
         process = Process.objects.filter(process_type=Process.TypeChoices.BINARY).latest("created_at")
 
     installed_liteparse_path = Path(liteparse_binary.abspath)
-    lib_bin_path = initialized_archive / "lib" / "bin" / installed_liteparse_path.name
     assert installed_liteparse_path.exists()
     assert installed_liteparse_path.is_relative_to(initialized_archive / "lib")
-    assert lib_bin_path.exists()
     assert binaries
     assert process.status == Process.StatusChoices.EXITED
     assert process.exit_code == 0
@@ -152,7 +149,6 @@ def test_install_persists_machine_binary_config_and_recovers_stale_path(initiali
     assert "lit" in version_stdout
 
     installed_liteparse_path.unlink()
-    (initialized_archive / "lib" / "bin" / installed_liteparse_path.name).unlink(missing_ok=True)
 
     _cmd_result = run_archivebox_cmd(
         ["version"],

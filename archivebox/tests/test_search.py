@@ -5,7 +5,6 @@ import shutil
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
-from types import SimpleNamespace
 from datetime import timedelta
 from urllib.parse import urlencode
 
@@ -33,7 +32,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 User = get_user_model()
 ADMIN_HOST = "admin.archivebox.localhost:8000"
-PUBLIC_HOST = "public.archivebox.localhost:8000"
+WEB_HOST = "web.archivebox.localhost:8000"
 
 
 @pytest.fixture
@@ -86,16 +85,6 @@ def consume_streaming_response(response):
 
         return async_to_sync(consume)()
     return b"".join(response.streaming_content)
-
-
-def collect_streaming_response_chunks(response):
-    if response.is_async:
-
-        async def consume():
-            return [chunk async for chunk in response.streaming_content]
-
-        return async_to_sync(consume)()
-    return list(response.streaming_content)
 
 
 def populate_admin_search_cache(client, path, params):
@@ -285,11 +274,8 @@ class TestAdminSnapshotSearch:
         response = populate_admin_search_cache(client, path, params)
 
         assert response.status_code == 200
-        from archivebox.search.views import get_admin_search_cache_key
-
-        cached = cache.get(get_admin_search_cache_key(SimpleNamespace(user=admin_user), f"{path}?{urlencode(params)}"))
-        assert cached["ids"][:3] == [str(prefix_snapshot.pk), str(title_snapshot.pk), str(contains_snapshot.pk)]
         result_ids = list(response.context["cl"].queryset.values_list("pk", flat=True))
+        assert result_ids[:3] == [prefix_snapshot.pk, title_snapshot.pk, contains_snapshot.pk]
         assert {title_snapshot.pk, contains_snapshot.pk, prefix_snapshot.pk}.issubset(result_ids)
 
     def test_admin_contents_search_stream_uses_real_backend_results(self, client, admin_user, crawl, monkeypatch):
@@ -398,7 +384,7 @@ class TestPublicIndexSearch:
     @override_settings(PUBLIC_INDEX=True)
     def test_public_search_by_url(self, client, public_snapshot):
         cache.clear()
-        response = client.get("/public/", {"q": "public-example.com"}, HTTP_HOST=PUBLIC_HOST)
+        response = client.get("/public/", {"q": "public-example.com"}, HTTP_HOST=WEB_HOST)
 
         assert response.status_code == 200
         assert b"matching snapshots..." in response.content
@@ -408,7 +394,7 @@ class TestPublicIndexSearch:
     def test_public_search_mode_selector_defaults_to_configured_deep_backend_for_ripgrep(self, client, monkeypatch):
         monkeypatch.setenv("SEARCH_BACKEND_ENGINE", "ripgrep")
 
-        response = client.get("/public/", HTTP_HOST=PUBLIC_HOST)
+        response = client.get("/public/", HTTP_HOST=WEB_HOST)
 
         assert response.status_code == 200
         assert response.context["search_mode"] == "deep:ripgrep"
@@ -444,20 +430,19 @@ class TestPublicIndexSearch:
         stream_response = client.get(
             "/public/search-stream/",
             {**search_params, "search_url": search_url},
-            HTTP_HOST=PUBLIC_HOST,
+            HTTP_HOST=WEB_HOST,
         )
         assert stream_response.status_code == 200
         assert consume_streaming_response(stream_response)
 
-        response = client.get("/public/", search_params, HTTP_HOST=PUBLIC_HOST)
+        response = client.get("/public/", search_params, HTTP_HOST=WEB_HOST)
 
         content = response.content.decode()
         assert content.index(str(metadata_snapshot.url)) < content.index(str(fulltext_snapshot.url))
 
     @override_settings(PUBLIC_INDEX=True)
-    def test_public_metadata_search_prioritizes_common_url_prefixes(self, crawl):
+    def test_public_metadata_search_prioritizes_common_url_prefixes(self, client, crawl):
         from archivebox.core.models import Snapshot
-        from archivebox.search.views import iter_admin_meta_search_ids
 
         broad_match = Snapshot.objects.create(
             url="https://late.example.com/path/to/iana",
@@ -472,44 +457,24 @@ class TestPublicIndexSearch:
             status=Snapshot.StatusChoices.SEALED,
         )
 
-        ids = list(iter_admin_meta_search_ids("iana", Snapshot.objects.order_by("created_at")))
-
-        assert str(ids[0]) == str(prefix_match.pk)
-        assert str(broad_match.pk) in {str(snapshot_id) for snapshot_id in ids}
-
-    @override_settings(PUBLIC_INDEX=True)
-    def test_public_search_stream_flushes_first_result_and_small_batches(self, client, crawl):
-        from archivebox.core.models import Snapshot
-
-        Snapshot.objects.bulk_create(
-            [
-                Snapshot(
-                    url=f"https://www.fast-stream-{index}.example.com",
-                    title=f"Fast Stream {index}",
-                    crawl=crawl,
-                    status=Snapshot.StatusChoices.SEALED,
-                    timestamp=str(2_000_000_000 + index),
-                )
-                for index in range(6)
-            ],
-        )
-        search_params = {"q": "fast-stream", "search_mode": "meta"}
+        search_params = {"q": "iana", "search_mode": "meta"}
         search_url = f"/public/?{urlencode(search_params)}"
-
-        response = client.get(
+        stream_response = client.get(
             "/public/search-stream/",
             {**search_params, "search_url": search_url},
-            HTTP_HOST=PUBLIC_HOST,
+            HTTP_HOST=WEB_HOST,
         )
+        assert stream_response.status_code == 200
+        assert consume_streaming_response(stream_response)
 
-        assert response.status_code == 200
-        chunks = collect_streaming_response_chunks(response)
-        counts = [int(chunk.strip() or b"0") for chunk in chunks if chunk.strip()]
-        assert counts[:4] == [0, 1, 4, 6]
+        response = client.get("/public/", search_params, HTTP_HOST=WEB_HOST)
+        content = response.content.decode()
+
+        assert content.index(str(prefix_match.url)) < content.index(str(broad_match.url))
 
     @override_settings(PUBLIC_INDEX=True)
     def test_public_search_by_title(self, client, public_snapshot):
-        response = client.get("/public/", {"q": "Public Example"}, HTTP_HOST=PUBLIC_HOST)
+        response = client.get("/public/", {"q": "Public Example"}, HTTP_HOST=WEB_HOST)
 
         assert response.status_code == 200
         assert b"archivebox-search-stream-status" in response.content
@@ -522,14 +487,14 @@ class TestPublicIndexSearch:
         response = client.get(
             "/public/search-stream/",
             {**search_params, "search_url": search_url},
-            HTTP_HOST=PUBLIC_HOST,
+            HTTP_HOST=WEB_HOST,
         )
 
         assert response.status_code == 200
         assert response["X-Accel-Buffering"] == "no"
         assert consume_streaming_response(response)
 
-        response = client.get("/public/", search_params, HTTP_HOST=PUBLIC_HOST)
+        response = client.get("/public/", search_params, HTTP_HOST=WEB_HOST)
 
         assert response.status_code == 200
         assert b"Public Example Website" in response.content
@@ -570,7 +535,7 @@ class TestPublicIndexSearch:
             ],
         )
 
-        response = client.get("/public/", HTTP_HOST=PUBLIC_HOST)
+        response = client.get("/public/", HTTP_HOST=WEB_HOST)
 
         assert response.status_code == 200
         assert response.context["paginator"].count == 125
@@ -584,7 +549,7 @@ class TestPublicIndexSearch:
         assert "last &raquo;" in content
         assert "private-page-test" not in content
 
-        last_response = client.get("/public/", {"page": 3}, HTTP_HOST=PUBLIC_HOST)
+        last_response = client.get("/public/", {"page": 3}, HTTP_HOST=WEB_HOST)
 
         assert last_response.status_code == 200
         assert last_response.context["paginator"].count == 125
@@ -612,7 +577,7 @@ class TestPublicIndexSearch:
             },
         )
 
-        response = client.get("/public/", HTTP_HOST=PUBLIC_HOST)
+        response = client.get("/public/", HTTP_HOST=WEB_HOST)
 
         assert response.status_code == 200
         content = response.content.decode()
@@ -633,7 +598,7 @@ class TestPublicIndexSearch:
             status=Snapshot.StatusChoices.STARTED,
         )
 
-        response = client.get("/public/", HTTP_HOST=PUBLIC_HOST)
+        response = client.get("/public/", HTTP_HOST=WEB_HOST)
 
         assert response.status_code == 200
         content = response.content.decode()
@@ -645,7 +610,7 @@ class TestPublicIndexSearch:
         public_snapshot.title = ""
         public_snapshot.save(update_fields=["title"])
 
-        response = client.get("/public/", HTTP_HOST=PUBLIC_HOST)
+        response = client.get("/public/", HTTP_HOST=WEB_HOST)
 
         assert response.status_code == 200
         content = response.content.decode()
@@ -654,19 +619,19 @@ class TestPublicIndexSearch:
 
     @override_settings(PUBLIC_INDEX=True)
     def test_public_search_query_type_meta(self, client, public_snapshot):
-        response = client.get("/public/", {"q": "example", "query_type": "meta"}, HTTP_HOST=PUBLIC_HOST)
+        response = client.get("/public/", {"q": "example", "query_type": "meta"}, HTTP_HOST=WEB_HOST)
 
         assert response.status_code == 200
 
     @override_settings(PUBLIC_INDEX=True)
     def test_public_search_query_type_url(self, client, public_snapshot):
-        response = client.get("/public/", {"q": "public-example.com", "query_type": "url"}, HTTP_HOST=PUBLIC_HOST)
+        response = client.get("/public/", {"q": "public-example.com", "query_type": "url"}, HTTP_HOST=WEB_HOST)
 
         assert response.status_code == 200
 
     @override_settings(PUBLIC_INDEX=True)
     def test_public_search_query_type_title(self, client, public_snapshot):
-        response = client.get("/public/", {"q": "Website", "query_type": "title"}, HTTP_HOST=PUBLIC_HOST)
+        response = client.get("/public/", {"q": "Website", "query_type": "title"}, HTTP_HOST=WEB_HOST)
 
         assert response.status_code == 200
 
@@ -690,6 +655,10 @@ class TestSearchBackendsE2E:
         title_only_needle = "livematrixtitleprecisionunique"
         tag_only_needle = "livematrixtagprecisionunique"
         order_needle = "orderneedle"
+        first_batch_content_needle = "firstbatchcontentonlyneedle"
+        second_batch_content_needle = "secondbatchcontentonlyneedle"
+        shared_content_needle = "sharedcontentneedle"
+        overlapping_content_needle = "overlappingcontentneedle"
         title_prefix_order_title = "Orderneedle Title Prefix Page"
         title_contains_order_title = "Contains Orderneedle Later Page"
         pages = {
@@ -698,7 +667,10 @@ class TestSearchBackendsE2E:
                 f"<title>Search Matrix Page {index:03d}</title>"
                 "</head><body>"
                 f"archivebox-ui-stream-needle page-{index:03d} "
-                "real wget output for public admin search matrix"
+                "real mercury output for public admin search matrix "
+                f"{shared_content_needle} "
+                f"{first_batch_content_needle if index < 50 else second_batch_content_needle} "
+                f"{overlapping_content_needle if index in (0, 1, 2, 50, 51) else ''}"
                 "</body></html>"
             ).encode()
             for index in range(page_count)
@@ -782,13 +754,9 @@ class TestSearchBackendsE2E:
             sonic_port = get_free_port()
             env = cli_env(
                 live=True,
-                PLUGINS="wget,search_backend_ripgrep,search_backend_sqlite,search_backend_sonic",
+                PLUGINS="mercury,search_backend_ripgrep,search_backend_sqlite,search_backend_sonic",
                 SAVE_TITLE="True",
-                SAVE_WGET="True",
-                SAVE_WARC="False",
-                WGET_WARC_ENABLED="False",
-                SAVE_WGET_REQUISITES="False",
-                WGET_TIMEOUT="20",
+                MERCURY_ENABLED="True",
                 TIMEOUT="20",
                 PUBLIC_INDEX="True",
                 PUBLIC_ADD_VIEW="True",
@@ -805,23 +773,46 @@ class TestSearchBackendsE2E:
             )
             create_admin_and_token(initialized_archive)
 
-            bulk_wget_urls = [*matrix_urls]
-            add_result = run_archivebox_cmd(
+            mercury_capture_urls = [*matrix_urls]
+            first_mercury_urls = mercury_capture_urls[:50]
+            second_mercury_urls = mercury_capture_urls[50:]
+            first_add_result = run_archivebox_cmd(
                 [
                     "add",
                     "--depth=0",
-                    f"--max-urls={len(bulk_wget_urls)}",
+                    f"--max-urls={len(first_mercury_urls)}",
                     "--crawl-max-concurrent-snapshots=4",
                     "--parser=url_list",
-                    "--plugins=wget",
+                    "--plugins=mercury",
                     "--tag=search-matrix",
-                    *bulk_wget_urls,
+                    *first_mercury_urls,
+                ],
+                cwd=initialized_archive,
+                env={
+                    **env,
+                    "SEARCH_BACKEND_SONIC_ENABLED": "False",
+                    "SEARCH_BACKEND_SQLITE_ENABLED": "False",
+                },
+                timeout=120,
+            )
+            assert first_add_result.returncode == 0, first_add_result.stderr or first_add_result.stdout
+
+            second_add_result = run_archivebox_cmd(
+                [
+                    "add",
+                    "--depth=0",
+                    f"--max-urls={len(second_mercury_urls)}",
+                    "--crawl-max-concurrent-snapshots=4",
+                    "--parser=url_list",
+                    "--plugins=mercury",
+                    "--tag=search-matrix",
+                    *second_mercury_urls,
                 ],
                 cwd=initialized_archive,
                 env=env,
-                timeout=180,
+                timeout=120,
             )
-            assert add_result.returncode == 0, add_result.stderr or add_result.stdout
+            assert second_add_result.returncode == 0, second_add_result.stderr or second_add_result.stdout
 
             metadata_snapshot_records = [
                 {
@@ -918,7 +909,7 @@ class TestSearchBackendsE2E:
             )
             wait_for_http(
                 archivebox_port,
-                host=f"public.archivebox.localhost:{archivebox_port}",
+                host=f"web.archivebox.localhost:{archivebox_port}",
                 path="/public/",
                 process=archivebox_server,
             )
@@ -929,16 +920,23 @@ class TestSearchBackendsE2E:
                 process=archivebox_server,
             )
 
+            backend_expectations = (
+                (shared_content_needle, matrix_urls),
+                (first_batch_content_needle, first_mercury_urls),
+                (second_batch_content_needle, second_mercury_urls),
+                (overlapping_content_needle, [*first_mercury_urls[:3], *second_mercury_urls[:2]]),
+            )
             for backend_name in ("ripgrep", "sqlite", "sonic"):
-                backend_result = run_archivebox_cmd(
-                    ["list", "--search=contents", "--csv=url", "public admin search matrix"],
-                    cwd=initialized_archive,
-                    env={**env, "SEARCH_BACKEND_ENGINE": backend_name},
-                    timeout=60,
-                )
-                assert backend_result.returncode == 0, backend_result.stderr or backend_result.stdout
-                backend_urls = [line.strip().strip('"') for line in backend_result.stdout.splitlines() if line.strip()]
-                assert set(backend_urls) == set(matrix_urls), (backend_name, backend_result.stdout)
+                for query, expected_urls in backend_expectations:
+                    backend_result = run_archivebox_cmd(
+                        ["list", "--search=contents", "--csv=url", query],
+                        cwd=initialized_archive,
+                        env={**env, "SEARCH_BACKEND_ENGINE": backend_name},
+                        timeout=60,
+                    )
+                    assert backend_result.returncode == 0, backend_result.stderr or backend_result.stdout
+                    backend_urls = [line.strip().strip('"') for line in backend_result.stdout.splitlines() if line.strip()]
+                    assert set(backend_urls) == set(expected_urls), (backend_name, query, backend_result.stdout)
 
             session = requests.Session()
             login_page = session.get(
@@ -968,7 +966,7 @@ class TestSearchBackendsE2E:
 
             public_default = requests.get(
                 f"http://127.0.0.1:{archivebox_port}/public/",
-                headers={"Host": f"public.archivebox.localhost:{archivebox_port}"},
+                headers={"Host": f"web.archivebox.localhost:{archivebox_port}"},
                 timeout=10,
             )
             assert public_default.status_code == 200
@@ -990,7 +988,7 @@ class TestSearchBackendsE2E:
             for surface_name, host, stream_path, list_path, requester in (
                 (
                     "public",
-                    f"public.archivebox.localhost:{archivebox_port}",
+                    f"web.archivebox.localhost:{archivebox_port}",
                     "/public/search-stream/",
                     "/public/",
                     requests,
@@ -1003,14 +1001,40 @@ class TestSearchBackendsE2E:
                     session,
                 ),
             ):
-                for search_mode, query in (
-                    ("meta", "search-matrix"),
-                    ("deep:ripgrep", "public admin search matrix"),
-                    ("deep:sqlite", "public admin search matrix"),
-                    ("deep:sonic", "public admin search matrix"),
+                for search_mode, query, expected_urls in (
+                    ("meta", "search-matrix", urls),
+                    ("deep:ripgrep", first_batch_content_needle, first_mercury_urls),
+                    ("deep:ripgrep", second_batch_content_needle, second_mercury_urls),
+                    ("deep:ripgrep", shared_content_needle, matrix_urls),
+                    ("deep:ripgrep", overlapping_content_needle, [*first_mercury_urls[:3], *second_mercury_urls[:2]]),
+                    ("deep:sqlite", first_batch_content_needle, first_mercury_urls),
+                    ("deep:sqlite", second_batch_content_needle, second_mercury_urls),
+                    ("deep:sqlite", shared_content_needle, matrix_urls),
+                    ("deep:sqlite", overlapping_content_needle, [*first_mercury_urls[:3], *second_mercury_urls[:2]]),
+                    ("deep:sonic", first_batch_content_needle, first_mercury_urls),
+                    ("deep:sonic", second_batch_content_needle, second_mercury_urls),
+                    ("deep:sonic", shared_content_needle, matrix_urls),
+                    ("deep:sonic", overlapping_content_needle, [*first_mercury_urls[:3], *second_mercury_urls[:2]]),
                 ):
                     params = {"q": query, "search_mode": search_mode}
                     search_url = f"{list_path}?{urlencode(params)}"
+                    expected_count = len(expected_urls)
+                    partial_count = min(10, expected_count)
+
+                    initial_page_started = time.monotonic()
+                    initial_page = requester.get(
+                        f"http://127.0.0.1:{archivebox_port}{list_path}",
+                        headers={"Host": host},
+                        params=params,
+                        timeout=10,
+                    )
+                    initial_page_elapsed = time.monotonic() - initial_page_started
+                    assert initial_page.status_code == 200
+                    assert "archivebox-search-stream-status" in initial_page.text
+                    assert query in initial_page.text
+                    assert f'value="{search_mode}" selected' in initial_page.text
+                    assert initial_page_elapsed < 1.0, (surface_name, search_mode, initial_page_elapsed)
+
                     stream_started = time.monotonic()
                     stream_response = requester.get(
                         f"http://127.0.0.1:{archivebox_port}{stream_path}",
@@ -1023,30 +1047,68 @@ class TestSearchBackendsE2E:
                     assert stream_response.headers.get("X-Accel-Buffering") == "no"
 
                     counts = []
+                    count_events = []
                     first_positive_elapsed = None
+                    first_partial_page_checked = False
+                    later_partial_page_checked = False
                     for line in stream_response.iter_lines(decode_unicode=True):
                         if not line:
                             continue
+                        now = time.monotonic()
                         count = int(line.strip())
                         counts.append(count)
+                        count_events.append((count, now - stream_started))
                         if count > 0 and first_positive_elapsed is None:
-                            first_positive_elapsed = time.monotonic() - stream_started
+                            first_positive_elapsed = now - stream_started
+
+                        if count > 0 and not first_partial_page_checked:
+                            first_partial_page_checked = True
+                            partial_page_started = time.monotonic()
+                            partial_page = requester.get(
+                                f"http://127.0.0.1:{archivebox_port}{list_path}",
+                                headers={"Host": host},
+                                params=params,
+                                timeout=10,
+                            )
+                            partial_page_elapsed = time.monotonic() - partial_page_started
+                            assert partial_page.status_code == 200
+                            assert "No snapshots found." not in partial_page.text
+                            assert "127.0.0.1" in partial_page.text
+                            assert partial_page_elapsed < 1.0, (surface_name, search_mode, count, partial_page_elapsed)
+
+                        if count >= partial_count and not later_partial_page_checked:
+                            later_partial_page_checked = True
+                            partial_page = requester.get(
+                                f"http://127.0.0.1:{archivebox_port}{list_path}",
+                                headers={"Host": host},
+                                params=params,
+                                timeout=10,
+                            )
+                            assert partial_page.status_code == 200
+                            assert "No snapshots found." not in partial_page.text
+                            assert "127.0.0.1" in partial_page.text
 
                     total_elapsed = time.monotonic() - stream_started
                     assert counts[0] == 0, (surface_name, search_mode, counts[:10])
                     assert counts[1] == 1, (surface_name, search_mode, counts[:10])
-                    expected_count = total_snapshot_count if search_mode == "meta" else page_count
-                    expected_elapsed = 2.0 if expected_count == total_snapshot_count else 1.0
                     assert counts[-1] == expected_count, (surface_name, search_mode, counts[-10:])
                     assert counts == sorted(counts), (surface_name, search_mode, counts[:20])
-                    assert any(1 < count < page_count for count in counts), (surface_name, search_mode, counts)
-                    assert first_positive_elapsed is not None and first_positive_elapsed < 1.0, (
+                    assert first_partial_page_checked
+                    assert later_partial_page_checked
+                    positive_events = [(count, elapsed) for count, elapsed in count_events if count > 0]
+                    assert len(positive_events) >= 2, (surface_name, search_mode, positive_events)
+                    max_progress_gap = max(
+                        later_elapsed - earlier_elapsed
+                        for (_, earlier_elapsed), (_, later_elapsed) in zip(positive_events, positive_events[1:])
+                    )
+                    assert max_progress_gap < 1.0, (surface_name, search_mode, max_progress_gap, positive_events[:10])
+                    assert first_positive_elapsed is not None and first_positive_elapsed < 0.75, (
                         surface_name,
                         search_mode,
                         first_positive_elapsed,
                         counts[:10],
                     )
-                    assert total_elapsed < expected_elapsed, (surface_name, search_mode, total_elapsed, counts[-10:])
+                    assert total_elapsed < 2.0, (surface_name, search_mode, total_elapsed, counts[-10:])
 
                     rendered_page = requester.get(
                         f"http://127.0.0.1:{archivebox_port}{list_path}",
@@ -1056,7 +1118,7 @@ class TestSearchBackendsE2E:
                     )
                     assert rendered_page.status_code == 200
                     assert "No snapshots found." not in rendered_page.text
-                    assert "127.0.0.1" in rendered_page.text
+                    assert any(expected_url in rendered_page.text for expected_url in expected_urls)
                     assert search_mode in rendered_page.text
 
                     cleared_page = requester.get(

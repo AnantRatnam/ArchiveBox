@@ -21,7 +21,7 @@ from xmlrpc.client import Fault, ServerProxy
 
 from archivebox.config import CONSTANTS
 from archivebox.config.common import rprint as print
-from archivebox.config.paths import get_or_create_working_tmp_dir
+from archivebox.config.paths import SUPERVISORD_SOCKET_FILENAME, get_or_create_working_tmp_dir
 from archivebox.config.permissions import ARCHIVEBOX_USER
 from archivebox.core.shutdown_util import (
     configured_stopwaitsecs,
@@ -299,9 +299,8 @@ def get_sock_file():
     """Get the path to the supervisord socket file.
 
     Supervisord-managed workers inherit SUPERVISOR_SERVER_URL from their parent
-    supervisord. They must keep using that socket even when crawl hooks override
-    TMP_DIR, otherwise a hook can accidentally start a nested supervisord for a
-    crawl-scoped temp dir.
+    supervisord. They must keep using that socket so worker code cannot
+    accidentally start a nested supervisord.
     """
     server_url = os.environ.get("SUPERVISOR_SERVER_URL", "")
     if server_url.startswith("unix://"):
@@ -309,9 +308,7 @@ def get_sock_file():
 
     TMP_DIR = get_or_create_working_tmp_dir(autofix=True, quiet=False)
     assert TMP_DIR, "Failed to find or create a writable TMP_DIR!"
-    socket_file = TMP_DIR / "supervisord.sock"
-
-    return socket_file
+    return TMP_DIR / SUPERVISORD_SOCKET_FILENAME
 
 
 def create_supervisord_config():
@@ -320,12 +317,21 @@ def create_supervisord_config():
     CONFIG_FILE = SOCK_FILE.parent / CONFIG_FILE_NAME
     PID_FILE = SOCK_FILE.parent / PID_FILE_NAME
     LOG_FILE = CONSTANTS.LOGS_DIR / LOG_FILE_NAME
+    environment = ",".join(
+        f"{key}={json.dumps(str(value))}"
+        for key, value in {
+            "IS_SUPERVISORD_PARENT": "true",
+            "COLUMNS": "200",
+            "DATA_DIR": CONSTANTS.DATA_DIR,
+            "TMP_DIR": SOCK_FILE.parent,
+        }.items()
+    )
 
     CONSTANTS.LOGS_DIR.mkdir(parents=True, exist_ok=True)
     config_content = f"""
 [supervisord]
 nodaemon = true
-environment = IS_SUPERVISORD_PARENT="true",COLUMNS="200"
+environment = {environment}
 pidfile = {PID_FILE}
 logfile = {LOG_FILE}
 childlogdir = {CONSTANTS.LOGS_DIR}

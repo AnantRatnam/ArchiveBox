@@ -588,22 +588,29 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
         except re.error:
             return False
 
+    def get_current_config(self, *, refresh: bool = False) -> dict[str, Any]:
+        if refresh and self.pk:
+            config = type(self).objects.filter(pk=self.pk).values_list("config", flat=True).first()
+            if config is not None:
+                self.config = config
+        return dict(self.config or {})
+
     def get_url_allowlist(self, *, use_effective_config: bool = False, snapshot=None) -> list[str]:
         if use_effective_config:
-            from archivebox.config.common import get_config
-
-            config = get_config(crawl=self, snapshot=snapshot)
+            config = self.get_current_config(refresh=True)
         else:
-            config = self.config or {}
+            config = self.get_current_config()
+        if snapshot is not None and snapshot.config:
+            config.update(snapshot.config)
         return self.split_filter_patterns(config.get("URL_ALLOWLIST", ""))
 
     def get_url_denylist(self, *, use_effective_config: bool = False, snapshot=None) -> list[str]:
         if use_effective_config:
-            from archivebox.config.common import get_config
-
-            config = get_config(crawl=self, snapshot=snapshot)
+            config = self.get_current_config(refresh=True)
         else:
-            config = self.config or {}
+            config = self.get_current_config()
+        if snapshot is not None and snapshot.config:
+            config.update(snapshot.config)
         return self.split_filter_patterns(config.get("URL_DENYLIST", ""))
 
     def url_passes_filters(self, url: str, *, snapshot=None, use_effective_config: bool = True) -> bool:
@@ -704,9 +711,7 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
         return len(urls)
 
     def remaining_url_capacity(self) -> int | None:
-        from archivebox.config.common import get_config
-
-        max_urls = int(get_config(crawl=self).CRAWL_MAX_URLS or 0)
+        max_urls = int(self._config_value(self.get_current_config(refresh=True), "CRAWL_MAX_URLS", 0) or 0)
         if max_urls <= 0:
             return None
         return max(max_urls - self.count_urls_for_limit(), 0)
@@ -716,9 +721,7 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
         return remaining is None or remaining > 0
 
     def remaining_snapshot_capacity(self) -> int | None:
-        from archivebox.config.common import get_config
-
-        max_urls = int(get_config(crawl=self).CRAWL_MAX_URLS or 0)
+        max_urls = int(self._config_value(self.get_current_config(refresh=True), "CRAWL_MAX_URLS", 0) or 0)
         if max_urls <= 0:
             return None
         return max(max_urls - self.snapshot_set.count(), 0)
@@ -948,7 +951,6 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
             List of newly created Snapshot objects
         """
         from archivebox.core.models import Snapshot, Tag
-        from archivebox.config.common import get_config
         from archivebox.misc.util import fix_url_from_markdown, sanitize_extracted_url
 
         if self.status == self.StatusChoices.SEALED:
@@ -957,12 +959,12 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
         created_snapshots = []
         crawl_tag_names = self.current_tag_names()
         tags_by_name: dict[str, Tag] = {}
-        config = get_config(crawl=self)
-        only_new_urls = bool(config.ONLY_NEW)
 
         for line in self.urls.splitlines():
             if not line.strip():
                 continue
+            config = self.get_current_config(refresh=True)
+            only_new_urls = bool(self._config_value(config, "ONLY_NEW", True))
 
             # Parse JSONL or plain URL
             try:
@@ -988,10 +990,10 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
             except ValueError as err:
                 print(f"[yellow][!] Skipping invalid snapshot URL: {url[:120]}... ({err})[/yellow]")
                 continue
-            if Snapshot.is_archivebox_internal_url(url):
+            if Snapshot.is_archivebox_internal_url(url, config=config):
                 print(f"[yellow][!] Skipping internal ArchiveBox snapshot URL: {url}[/yellow]")
                 continue
-            if not self.url_passes_filters(url):
+            if not self.url_passes_filters(url, use_effective_config=False):
                 continue
             if only_new_urls and Snapshot.objects.filter(url=url).exists():
                 continue
@@ -1099,7 +1101,6 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
     ) -> list["Snapshot"]:
         """Create child snapshots from discovered URL records after filtering and deduping once."""
         from archivebox.core.models import Snapshot, SnapshotTag, Tag
-        from archivebox.config.common import get_config
         from archivebox.misc.util import fix_url_from_markdown, sanitize_extracted_url
 
         if self.status == self.StatusChoices.SEALED:
@@ -1109,7 +1110,9 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
             return []
 
         crawl_tag_names = self.current_tag_names()
-        config = get_config(crawl=self, snapshot=parent_snapshot)
+        config = self.get_current_config(refresh=True)
+        if parent_snapshot is not None and parent_snapshot.config:
+            config.update(parent_snapshot.config)
         allowlist = self.split_filter_patterns(config.get("URL_ALLOWLIST", ""))
         denylist = self.split_filter_patterns(config.get("URL_DENYLIST", ""))
 
@@ -1123,7 +1126,7 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
             except ValueError as err:
                 print(f"[yellow][!] Skipping invalid discovered snapshot URL: {url[:120]}... ({err})[/yellow]")
                 continue
-            if Snapshot.is_archivebox_internal_url(url):
+            if Snapshot.is_archivebox_internal_url(url, config=config):
                 print(f"[yellow][!] Skipping internal ArchiveBox discovered snapshot URL: {url}[/yellow]")
                 continue
             if self.url_passes_compiled_filters(url, allowlist=allowlist, denylist=denylist):
@@ -1132,7 +1135,7 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
         if not deduped_records:
             return []
 
-        existing_scope = Snapshot.objects if bool(config.ONLY_NEW) else self.snapshot_set
+        existing_scope = Snapshot.objects if bool(self._config_value(config, "ONLY_NEW", True)) else self.snapshot_set
         existing_urls = set(existing_scope.filter(url__in=deduped_records.keys()).values_list("url", flat=True))
         urls = [url for url in deduped_records.keys() if url not in existing_urls]
         remaining = self.remaining_snapshot_capacity()
@@ -1162,7 +1165,7 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
             for index, url in enumerate(urls)
         ]
         for snapshot in snapshots:
-            snapshot.set_delete_at_from_config(config.DELETE_AFTER)
+            snapshot.set_delete_at_from_config(self._config_value(config, "DELETE_AFTER", "0"))
 
         created_snapshots = []
         for snapshot in snapshots:
@@ -1189,7 +1192,10 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
         for snapshot in created_snapshots:
             tag_names = {
                 *crawl_tag_names,
-                *self.parse_tag_names(str(deduped_records[snapshot.url].get("tags") or ""), pattern=config.TAG_SEPARATOR_PATTERN),
+                *self.parse_tag_names(
+                    str(deduped_records[snapshot.url].get("tags") or ""),
+                    pattern=self._config_value(config, "TAG_SEPARATOR_PATTERN", r"[,]"),
+                ),
             }
             if tag_names:
                 tag_names_by_url[snapshot.url] = tag_names
@@ -1312,7 +1318,7 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
             The root Snapshot for this crawl, or None for system crawls that don't create snapshots
         """
         import time
-        from archivebox.plugins.hooks import run_hook, discover_hooks, process_hook_records, is_finite_background_hook
+        from archivebox.plugins.hooks import run_hook, discover_hooks, process_hook_records
         from archivebox.config.common import get_config
         from archivebox.machine.models import Binary, Machine
 
@@ -1370,19 +1376,15 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
                 print(f"[yellow]⏱️  Hook {hook.name} took {hook_elapsed:.2f}s[/yellow]")
 
             if process.status == process.StatusChoices.RUNNING:
-                if not is_finite_background_hook(hook.name):
-                    return set()
-                try:
-                    process.wait(timeout=process.timeout)
-                except Exception:
+                if process.poll() is None:
                     return set()
 
             from archivebox.plugins.hooks import extract_records_from_process
 
             records = []
-            # Finite background hooks can exit before their completed Process
-            # metadata is visible. Give successful hooks a brief chance to
-            # flush JSONL stdout into the Process row before downstream hooks.
+            # A hook can exit before its completed Process metadata is visible.
+            # Give successful hooks a brief chance to flush JSONL stdout into
+            # the Process row before downstream hooks.
             for delay in (0.0, 0.05, 0.1, 0.25, 0.5):
                 if delay:
                     time.sleep(delay)

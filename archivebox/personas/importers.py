@@ -378,7 +378,6 @@ def discover_persona_template_profiles(personas_dir: Path | None = None) -> list
         candidate_roots.extend(
             [
                 CONSTANTS.PERSONAS_DIR.expanduser(),
-                Path.home() / ".config" / "abx" / "personas",
             ],
         )
 

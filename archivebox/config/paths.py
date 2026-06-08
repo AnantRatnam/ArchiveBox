@@ -20,6 +20,8 @@ if TYPE_CHECKING:
 
 PACKAGE_DIR: Path = Path(__file__).resolve().parent.parent  # archivebox source code dir
 DATA_DIR: Path = Path(os.getcwd()).resolve()  # archivebox user data dir
+MAX_TMP_SOCKET_URL_LENGTH = 90
+SUPERVISORD_SOCKET_FILENAME = "supervisord.sock"
 
 
 def _env_path(key: str, default: Path) -> Path:
@@ -176,33 +178,45 @@ def create_and_chown_dir(dir_path: Path) -> None:
 
 
 def tmp_dir_socket_path_is_short_enough(dir_path: Path) -> bool:
-    socket_file = dir_path.absolute().resolve() / "supervisord.sock"
-    return len(f"file://{socket_file}") <= 96
+    socket_file = dir_path.absolute().resolve() / SUPERVISORD_SOCKET_FILENAME
+    return len(f"file://{socket_file}") < MAX_TMP_SOCKET_URL_LENGTH
+
+
+def tmp_dir_candidates(config: "ArchiveBoxConfig") -> list[Path]:
+    from archivebox.config.constants import CONSTANTS
+
+    collection_id = get_collection_id()
+    collection_id_short = collection_id[:4]
+    system_tmp_dir = Path(tempfile.gettempdir())
+    candidates = [
+        config.TMP_DIR,  # <user-specified>
+        CONSTANTS.DEFAULT_TMP_DIR,  # ./data/tmp/<machine_id>
+        Path("/var/run/archivebox") / collection_id,
+        Path("/tmp") / "archivebox" / collection_id,
+        Path("~/.tmp/archivebox").expanduser() / collection_id,
+        system_tmp_dir / "archivebox" / collection_id,
+        system_tmp_dir / "archivebox" / collection_id_short,
+        system_tmp_dir / "abx" / collection_id_short,
+    ]
+    seen = set()
+    unique_candidates = []
+    for path in candidates:
+        path_key = str(path.expanduser().absolute())
+        if path_key in seen:
+            continue
+        seen.add(path_key)
+        unique_candidates.append(path)
+    return unique_candidates
 
 
 def get_or_create_working_tmp_dir(autofix=True, quiet=True, config: "ArchiveBoxConfig | None" = None, **config_kwargs):
-    from archivebox.config.constants import CONSTANTS
     from archivebox.config.common import get_config
     from archivebox.misc.checks import check_tmp_dir
 
     config = config or get_config(**config_kwargs)
-    # try a few potential directories in order of preference
-    CANDIDATES = [
-        config.TMP_DIR,  # <user-specified>
-        CONSTANTS.DEFAULT_TMP_DIR,  # ./data/tmp/<machine_id>
-        Path("/var/run/archivebox") / get_collection_id(),  # /var/run/archivebox/abc5d8512
-        Path("/tmp") / "archivebox" / get_collection_id(),  # /tmp/archivebox/abc5d8512
-        Path("~/.tmp/archivebox").expanduser() / get_collection_id(),  # ~/.tmp/archivebox/abc5d8512
-        Path(tempfile.gettempdir())
-        / "archivebox"
-        / get_collection_id(),  # /var/folders/qy/6tpfrpx100j1t4l312nz683m0000gn/T/archivebox/abc5d8512
-        Path(tempfile.gettempdir())
-        / "archivebox"
-        / get_collection_id()[:4],  # /var/folders/qy/6tpfrpx100j1t4l312nz683m0000gn/T/archivebox/abc5d
-        Path(tempfile.gettempdir()) / "abx" / get_collection_id()[:4],  # /var/folders/qy/6tpfrpx100j1t4l312nz683m0000gn/T/abx/abc5
-    ]
+    candidates = tmp_dir_candidates(config)
     fallback_candidate = None
-    for candidate in CANDIDATES:
+    for candidate in candidates:
         try:
             create_and_chown_dir(candidate)
         except Exception:
@@ -231,7 +245,7 @@ def get_or_create_working_tmp_dir(autofix=True, quiet=True, config: "ArchiveBoxC
         return fallback_candidate
 
     if not quiet:
-        raise OSError(f"ArchiveBox is unable to find a writable TMP_DIR, tried {CANDIDATES}!")
+        raise OSError(f"ArchiveBox is unable to find a writable TMP_DIR, tried {candidates}!")
 
 
 def get_or_create_working_lib_dir(autofix=True, quiet=False, config: "ArchiveBoxConfig | None" = None, **config_kwargs):
@@ -329,7 +343,10 @@ def get_data_locations(config: "ArchiveBoxConfig | None" = None, **config_kwargs
             "TMP_DIR": {
                 "path": tmp_dir.resolve(),
                 "enabled": True,
-                "is_valid": os.path.isdir(tmp_dir) and os.access(tmp_dir, os.R_OK) and os.access(tmp_dir, os.W_OK),  # read + write
+                "is_valid": os.path.isdir(tmp_dir)
+                and os.access(tmp_dir, os.R_OK)
+                and os.access(tmp_dir, os.W_OK)
+                and tmp_dir_socket_path_is_short_enough(tmp_dir),
             },
             # "CACHE_DIR": {
             #     "path": CACHE_DIR.resolve(),
@@ -350,8 +367,6 @@ def get_code_locations(config: "ArchiveBoxConfig | None" = None, **config_kwargs
         lib_dir = get_or_create_working_lib_dir(autofix=True, quiet=True, config=config) or config.LIB_DIR
     except Exception:
         lib_dir = config.LIB_DIR
-
-    lib_bin_dir = lib_dir / "bin"
 
     return AttrDict(
         {
@@ -379,13 +394,6 @@ def get_code_locations(config: "ArchiveBoxConfig | None" = None, **config_kwargs
                 "path": lib_dir.resolve(),
                 "enabled": True,
                 "is_valid": os.path.isdir(lib_dir) and os.access(lib_dir, os.R_OK) and os.access(lib_dir, os.W_OK),  # read + write
-            },
-            "LIB_BIN_DIR": {
-                "path": lib_bin_dir.resolve(),
-                "enabled": True,
-                "is_valid": os.path.isdir(lib_bin_dir)
-                and os.access(lib_bin_dir, os.R_OK)
-                and os.access(lib_bin_dir, os.W_OK),  # read + write
             },
         },
     )

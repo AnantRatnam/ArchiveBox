@@ -91,10 +91,6 @@
   - ```{autodoc2-docstring} archivebox.core.host_util.get_api_host
     :summary:
     ```
-* - {py:obj}`get_public_host <archivebox.core.host_util.get_public_host>`
-  - ```{autodoc2-docstring} archivebox.core.host_util.get_public_host
-    :summary:
-    ```
 * - {py:obj}`get_snapshot_subdomain <archivebox.core.host_util.get_snapshot_subdomain>`
   - ```{autodoc2-docstring} archivebox.core.host_util.get_snapshot_subdomain
     :summary:
@@ -141,10 +137,6 @@
     ```
 * - {py:obj}`get_api_base_url <archivebox.core.host_util.get_api_base_url>`
   - ```{autodoc2-docstring} archivebox.core.host_util.get_api_base_url
-    :summary:
-    ```
-* - {py:obj}`get_public_base_url <archivebox.core.host_util.get_public_base_url>`
-  - ```{autodoc2-docstring} archivebox.core.host_util.get_public_base_url
     :summary:
     ```
 * - {py:obj}`get_snapshot_base_url <archivebox.core.host_util.get_snapshot_base_url>`
@@ -362,13 +354,6 @@
 ```
 ````
 
-````{py:function} get_public_host(config: dict[str, typing.Any] | None = None, **config_kwargs: typing.Any) -> str
-:canonical: archivebox.core.host_util.get_public_host
-
-```{autodoc2-docstring} archivebox.core.host_util.get_public_host
-```
-````
-
 ````{py:function} get_snapshot_subdomain(snapshot_id: str) -> str
 :canonical: archivebox.core.host_util.get_snapshot_subdomain
 
@@ -450,13 +435,6 @@
 :canonical: archivebox.core.host_util.get_api_base_url
 
 ```{autodoc2-docstring} archivebox.core.host_util.get_api_base_url
-```
-````
-
-````{py:function} get_public_base_url(request=None, config: dict[str, typing.Any] | None = None, **config_kwargs: typing.Any) -> str
-:canonical: archivebox.core.host_util.get_public_base_url
-
-```{autodoc2-docstring} archivebox.core.host_util.get_public_base_url
 ```
 ````
 

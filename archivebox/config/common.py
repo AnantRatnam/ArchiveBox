@@ -176,6 +176,10 @@ def build_crawl_config_snapshot(
     plugin_owned_keys = set(_plugin_config_properties(PLUGIN_CONFIG_SCHEMAS)) - set(ArchiveBoxBaseConfig.model_fields)
     effective = get_config(persona=persona, base_config=base_config)
     frozen = effective.for_crawl_frozen(persona=persona)
+    for key in ("BIND_ADDR", "BASE_URL", "CSRF_TRUSTED_ORIGINS", "SERVER_SECURITY_MODE"):
+        value = getattr(effective, key, None)
+        if value is not None:
+            frozen[key] = value
     if persona is not None:
         persona_config = persona.get_derived_config()
         for key in plugin_owned_keys - explicit_overrides:
@@ -185,6 +189,10 @@ def build_crawl_config_snapshot(
         resolved = get_config(base_config=frozen, overrides=overrides, include_machine=False)
         resolved_payload = normalize_runtime_config(resolved)
         frozen = resolved.for_crawl_frozen(persona=persona)
+        for key in ("BIND_ADDR", "BASE_URL", "CSRF_TRUSTED_ORIGINS", "SERVER_SECURITY_MODE"):
+            value = getattr(resolved, key, None)
+            if value is not None:
+                frozen[key] = value
         for key in plugin_owned_keys & explicit_overrides:
             if ArchiveBoxConfig.scope_for_key(key) == _SCOPE_CRAWL_FROZEN and key in resolved_payload:
                 frozen[key] = resolved_payload[key]
@@ -238,7 +246,7 @@ class StorageConfig(BaseConfigSet):
     _scope: str = PrivateAttr(default=_SCOPE_SERVER)
 
     # TMP_DIR must be a local, fast, readable/writable dir by archivebox user,
-    # must be a short path due to unix path length restrictions for socket files (<100 chars)
+    # must be a short path due to unix path length restrictions for socket files (<90 chars)
     # must be a local SSD/tmpfs for speed and because bind mounts/network mounts/FUSE dont support unix sockets
     TMP_DIR: Path = Field(default=CONSTANTS.DEFAULT_TMP_DIR, json_schema_extra={"scope": _SCOPE_CRAWL_EXECUTION})
 
@@ -246,10 +254,6 @@ class StorageConfig(BaseConfigSet):
     # must be able to contain executable binaries (up to 5GB size)
     # should not be a remote/network/FUSE mount for speed reasons, otherwise extractors will be slow
     LIB_DIR: Path = Field(default=CONSTANTS.DEFAULT_LIB_DIR, json_schema_extra={"scope": _SCOPE_CRAWL_EXECUTION})
-
-    # LIB_BIN_DIR is an optional human-facing symlink convenience directory.
-    # Runtime lookup must use provider-specific paths under LIB_DIR instead.
-    LIB_BIN_DIR: Path = Field(default=CONSTANTS.DEFAULT_LIB_BIN_DIR, json_schema_extra={"scope": _SCOPE_CRAWL_EXECUTION})
 
     OUTPUT_PERMISSIONS: str = Field(default="644")
     ENFORCE_ATOMIC_WRITES: bool = Field(default=True)
@@ -736,13 +740,6 @@ class ArchiveBoxBaseConfig(
             lib_dir = CONSTANTS.DATA_DIR / lib_dir
         self.LIB_DIR = lib_dir.resolve()
 
-        lib_bin_dir = self.LIB_BIN_DIR.expanduser()
-        if lib_bin_dir == CONSTANTS.DEFAULT_LIB_BIN_DIR and self.LIB_DIR != CONSTANTS.DEFAULT_LIB_DIR:
-            lib_bin_dir = self.LIB_DIR / "bin"
-        elif not lib_bin_dir.is_absolute():
-            lib_bin_dir = CONSTANTS.DATA_DIR / lib_bin_dir
-        self.LIB_BIN_DIR = lib_bin_dir.resolve()
-
         return self
 
     @model_validator(mode="after")
@@ -1137,7 +1134,6 @@ def get_config(
             if is_sensitive_config_key(key) and value not in (None, ""):
                 setattr(config, key, SENSITIVE_CONFIG_VALUE_REDACTED)
     os.environ["LIB_DIR"] = str(config.LIB_DIR)
-    os.environ["LIB_BIN_DIR"] = str(config.LIB_BIN_DIR)
     os.environ["ABXPKG_LIB_DIR"] = str(config.LIB_DIR)
     archiving_warning_key = (config.TIMEOUT, config.USE_COLOR)
     if archiving_warning_key not in _WARNED_ARCHIVING_CONFIGS:

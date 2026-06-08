@@ -1,7 +1,7 @@
 __package__ = "archivebox.core"
 
 from typing import TYPE_CHECKING, Optional, Any
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 import uuid
 from archivebox.uuid_compat import CompactUUIDField, uuid7
 from datetime import datetime, timedelta
@@ -782,7 +782,7 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         )
 
     @classmethod
-    def is_archivebox_internal_url(cls, url: str) -> bool:
+    def is_archivebox_internal_url(cls, url: str, *, config: Mapping[str, Any] | Any | None = None) -> bool:
         parsed = urlparse((url or "").strip())
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
             return False
@@ -792,15 +792,29 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
             get_api_host,
             get_base_host,
             get_listen_host,
-            get_public_host,
             get_web_host,
             split_host_port,
         )
 
-        config = get_config()
+        if config is None:
+            config = get_config()
+        elif isinstance(config, Mapping):
+            route_config = config
+
+            class RouteConfig:
+                BIND_ADDR = str(route_config.get("BIND_ADDR") or "")
+                BASE_URL = str(route_config.get("BASE_URL") or "")
+                CSRF_TRUSTED_ORIGINS = str(route_config.get("CSRF_TRUSTED_ORIGINS") or "")
+                SERVER_SECURITY_MODE = str(route_config.get("SERVER_SECURITY_MODE") or "")
+
+                @property
+                def USES_SUBDOMAIN_ROUTING(self) -> bool:
+                    return self.SERVER_SECURITY_MODE == "safe-subdomains-fullreplay"
+
+            config = RouteConfig()
         host = parsed.hostname.lower().strip(".")
         port = str(parsed.port) if parsed.port else None
-        protected_subdomains = {"admin", "web", "api", "public"}
+        protected_subdomains = {"admin", "web", "api"}
         protected_hosts: set[tuple[str, str | None]] = set()
         protected_roots: set[tuple[str, str | None]] = set()
         for host_value in (
@@ -809,7 +823,6 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
             get_admin_host(config=config),
             get_web_host(config=config),
             get_api_host(config=config),
-            get_public_host(config=config),
         ):
             if not host_value:
                 continue
@@ -865,17 +878,15 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
     def ensure_permissions_config(self, crawl_permissions: str | None = None) -> bool:
         config = dict(self.config or {})
         permission = str(config.get("PERMISSIONS") or "").strip().lower()
-        from archivebox.core.permissions import PERMISSIONS_VALUES, normalize_permissions
+        from archivebox.core.permissions import PERMISSIONS_PUBLIC, PERMISSIONS_VALUES, normalize_permissions
 
         if permission not in PERMISSIONS_VALUES:
             if self.crawl_id:
-                crawl = getattr(self, "crawl", None)
-                crawl_permissions = crawl_permissions or getattr(crawl, "permissions", None)
                 if not crawl_permissions:
                     crawl_permissions = Crawl.objects.filter(pk=self.crawl_id).values_list("permissions", flat=True).first()
             config["PERMISSIONS"] = normalize_permissions(
                 crawl_permissions,
-                default=normalize_permissions(get_config(include_machine=True).PERMISSIONS),
+                default=PERMISSIONS_PUBLIC,
             )
             self.config = config
             return True
@@ -888,7 +899,15 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
     def save(self, *args, **kwargs):
         update_fields = kwargs.get("update_fields")
         validate_url_field = self._state.adding or update_fields is None or "url" in update_fields
-        if self.ensure_permissions_config():
+        crawl_config_for_save = None
+        crawl_permissions_for_save = None
+        if self.crawl_id and validate_url_field:
+            crawl_row = Crawl.objects.filter(pk=self.crawl_id).values("config", "permissions").first()
+            if crawl_row:
+                crawl_config_for_save = crawl_row.get("config") or {}
+                crawl_permissions_for_save = crawl_row.get("permissions")
+
+        if self.ensure_permissions_config(crawl_permissions=crawl_permissions_for_save):
             if update_fields is not None:
                 kwargs["update_fields"] = tuple(dict.fromkeys([*update_fields, "config"]))
 
@@ -898,7 +917,7 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
             except ValueError as err:
                 raise ValidationError({"url": str(err)}) from err
 
-            if self.is_archivebox_internal_url(self.url):
+            if self.is_archivebox_internal_url(self.url, config=crawl_config_for_save if self.crawl_id else None):
                 raise ValidationError({"url": "ArchiveBox cannot archive its own admin, web, api, or snapshot URLs."})
 
         if not self.bookmarked_at:
@@ -910,12 +929,13 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
             self.title = self._normalize_title_candidate(self.title, snapshot_url=self.url or "") or None
 
         # Migrate filesystem if needed (happens automatically on save)
-        if self.pk and self.fs_migration_needed:
+        existing_snapshot = self.pk and not self._state.adding
+        if existing_snapshot and self.fs_migration_needed:
             self.migrate_filesystem_to_current_version()
             update_fields = kwargs.get("update_fields")
             if update_fields is not None:
                 kwargs["update_fields"] = tuple(dict.fromkeys([*update_fields, "fs_version", "modified_at"]))
-        elif self.pk:
+        elif existing_snapshot:
             current_dir = self.get_storage_path_for_version(self._fs_current_version())
             source_dir = Path(self.output_dir)
             if source_dir.exists() and source_dir != current_dir and not source_dir.is_symlink():
@@ -928,8 +948,10 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         def finish_snapshot_save():
             self.ensure_legacy_archive_symlink()
             self.ensure_crawl_symlink()
-            crawl = self.crawl
-            if not crawl.url_passes_filters(self.url, snapshot=self):
+            crawl = Crawl.objects.filter(pk=self.crawl_id).first()
+            if crawl is None:
+                return
+            if not crawl.url_passes_filters(self.url, snapshot=self, use_effective_config=False):
                 return
             # Best-effort skip if our URL is already recorded on the crawl;
             # the atomic UPDATE below is what actually prevents clobbering.

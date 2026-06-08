@@ -149,7 +149,7 @@ def iter_url_prefix_search_ids(prefix: str, queryset):
             yield snapshot_id
 
 
-def iter_admin_meta_search_ids(query, queryset):
+def iter_meta_search_ids(query, queryset):
     """Yield metadata search matches from a filtered Snapshot queryset."""
     seen = set()
     try:
@@ -195,28 +195,61 @@ def iter_admin_meta_search_ids(query, queryset):
             yield pk
 
 
-def iter_admin_backend_search_ids(iterator, queryset):
-    """Yield backend search IDs that still match the filtered queryset."""
+def normalize_search_result_id(snapshot_id) -> str | None:
+    """Return a compact Snapshot ID string from a search provider result."""
+    snapshot_id = str(snapshot_id).strip().lower().replace("-", "")
+    if len(snapshot_id) != 32:
+        return None
+    return snapshot_id
+
+
+def iter_filtered_search_result_ids(iterator, queryset, *, flush_max_delay=0.05):
+    """Yield provider IDs that still match the filtered queryset.
+
+    This is the single intersection/dedupe path used for metadata and every
+    search backend. It flushes by elapsed time so sparse providers stream rows
+    as soon as IDs are found instead of waiting for a fixed batch size.
+    """
     batch = []
     seen = set()
+    queued = set()
+    last_flush_at = 0.0
 
     def flush_batch():
-        valid = {str(pk) for pk in queryset.filter(pk__in=batch).values_list("pk", flat=True)}
-        for snapshot_id in batch:
+        nonlocal batch, queued, last_flush_at
+        if not batch:
+            return
+        batch_ids = batch
+        batch = []
+        queued = set()
+        last_flush_at = time.monotonic()
+        valid = {str(pk).replace("-", "") for pk in queryset.filter(pk__in=batch_ids).values_list("pk", flat=True)}
+        for snapshot_id in batch_ids:
             if snapshot_id in valid and snapshot_id not in seen:
                 seen.add(snapshot_id)
                 yield snapshot_id
 
     for snapshot_id in iterator:
-        snapshot_id = str(snapshot_id).strip().lower().replace("-", "")
-        if len(snapshot_id) != 32:
+        snapshot_id = normalize_search_result_id(snapshot_id)
+        if not snapshot_id or snapshot_id in seen or snapshot_id in queued:
             continue
         batch.append(snapshot_id)
-        if len(batch) >= (1 if not seen else 200):
+        queued.add(snapshot_id)
+        if not seen or time.monotonic() - last_flush_at >= flush_max_delay:
             yield from flush_batch()
-            batch = []
     if batch:
         yield from flush_batch()
+
+
+def iter_search_result_ids(query, base_queryset, *, search_mode, config):
+    """Yield filtered Snapshot IDs from the selected search provider."""
+    search_mode_base = get_search_mode_base(search_mode, config=config)
+    provider = (
+        iter_meta_search_ids(query, base_queryset)
+        if search_mode_base == "meta"
+        else iter_query_search_ids(query, search_mode=search_mode, config=config)
+    )
+    yield from iter_filtered_search_result_ids(provider, base_queryset)
 
 
 def snapshot_search_stream_response(query, base_queryset, *, search_mode, config, cache_key, thread_name):
@@ -229,7 +262,6 @@ def snapshot_search_stream_response(query, base_queryset, *, search_mode, config
         ids = []
         last_sent = 0
         last_sent_at = time.monotonic()
-        stream_batch_size = 3
         stream_max_delay = 0.05
         stream_padding = " " * 4096
         cache.set(cache_key, {"ids": [], "done": False}, SEARCH_RESULT_CACHE_TTL)
@@ -246,8 +278,7 @@ def snapshot_search_stream_response(query, base_queryset, *, search_mode, config
 
         def publish_count(done=False):
             nonlocal last_sent, last_sent_at
-            if done:
-                cache.set(cache_key, {"ids": list(ids), "done": True}, SEARCH_RESULT_CACHE_TTL)
+            cache.set(cache_key, {"ids": list(ids), "done": done}, SEARCH_RESULT_CACHE_TTL)
             last_sent = len(ids)
             last_sent_at = time.monotonic()
             emit(f"{last_sent}{stream_padding}\n")
@@ -255,24 +286,16 @@ def snapshot_search_stream_response(query, base_queryset, *, search_mode, config
         def run_search():
             iterator = None
             try:
-                search_mode_base = get_search_mode_base(search_mode, config=config)
-                iterator = (
-                    iter_admin_meta_search_ids(query, base_queryset)
-                    if search_mode_base == "meta"
-                    else iter_admin_backend_search_ids(
-                        iter_query_search_ids(query, search_mode=search_mode, config=config),
-                        base_queryset,
-                    )
-                )
+                iterator = iter_search_result_ids(query, base_queryset, search_mode=search_mode, config=config)
                 for snapshot_id in iterator:
                     if stop_event.is_set():
                         break
-                    snapshot_id = str(snapshot_id).strip().lower().replace("-", "")
-                    if len(snapshot_id) != 32 or snapshot_id in seen:
+                    snapshot_id = normalize_search_result_id(snapshot_id)
+                    if not snapshot_id or snapshot_id in seen:
                         continue
                     seen.add(snapshot_id)
                     ids.append(snapshot_id)
-                    if len(ids) == 1 or len(ids) - last_sent >= stream_batch_size or time.monotonic() - last_sent_at >= stream_max_delay:
+                    if len(ids) == 1 or time.monotonic() - last_sent_at >= stream_max_delay:
                         publish_count()
                 if not stop_event.is_set() and len(ids) != last_sent:
                     publish_count(done=True)

@@ -9,7 +9,7 @@ from archivebox.config.common import get_config
 
 _SNAPSHOT_ID_RE = re.compile(r"^[0-9a-fA-F-]{8,36}$")
 _SNAPSHOT_SUBDOMAIN_RE = re.compile(r"^snap-(?P<suffix>[0-9a-fA-F]{12})$")
-_ROLE_SUBDOMAIN_LABELS = ("admin", "web", "api", "public")
+_ROLE_SUBDOMAIN_LABELS = ("admin", "web", "api")
 
 
 def split_host_port(host: str) -> tuple[str, str | None]:
@@ -102,7 +102,7 @@ def _with_port(host: str, port: str | None) -> str:
 
 
 def strip_role_subdomain(host: str) -> str:
-    """Strip leading ``admin.`` / ``web.`` / ``api.`` / ``public.`` / ``snap-*.``
+    """Strip leading ``admin.`` / ``web.`` / ``api.`` / ``snap-*.``
     labels from a host (preserving the port). Strips repeatedly so an
     already-compounded host like ``snap-X.snap-X.<base>`` reduces all the
     way down to ``<base>``.
@@ -172,13 +172,12 @@ def get_base_url(request=None, config: dict[str, Any] | None = None, **config_kw
             return f"{scheme}://{_with_port('archivebox.localhost', req_port)}"
         # C) Per-request fallback: when ``BASE_URL`` is unset and CSRF didn't
         # give us a single origin, trust the request's Host header — but first
-        # peel off any ``admin.`` / ``web.`` / ``api.`` / ``public.`` /
-        # ``snap-*.`` label. Otherwise the URL builders below prepend their own
-        # role label onto a host that already carries one, producing the
-        # ``snap-X.snap-X.snap-X.<base>`` compounding bug. Django has already
-        # admitted the host via ALLOWED_HOSTS; the misconfig banner surfaces
-        # the case where the resulting URL doesn't match what the operator
-        # probably intended.
+        # peel off any ``admin.`` / ``web.`` / ``api.`` / ``snap-*.`` label.
+        # Otherwise the URL builders below prepend their own role label onto a
+        # host that already carries one, producing the ``snap-X.snap-X.snap-X``
+        # compounding bug. Django has already admitted the host via
+        # ALLOWED_HOSTS; the misconfig banner surfaces the case where the
+        # resulting URL doesn't match what the operator probably intended.
         canonical_host = strip_role_subdomain(request.get_host())
         return f"{scheme}://{canonical_host}"
 
@@ -218,13 +217,6 @@ def get_api_host(config: dict[str, Any] | None = None, **config_kwargs: Any) -> 
     if not config.USES_SUBDOMAIN_ROUTING:
         return get_base_host(config=config)
     return _build_base_host("api", config=config)
-
-
-def get_public_host(config: dict[str, Any] | None = None, **config_kwargs: Any) -> str:
-    config = config or get_config(**config_kwargs)
-    if not config.USES_SUBDOMAIN_ROUTING:
-        return get_base_host(config=config)
-    return _build_base_host("public", config=config)
 
 
 def get_snapshot_subdomain(snapshot_id: str) -> str:
@@ -328,13 +320,6 @@ def get_api_base_url(request=None, config: dict[str, Any] | None = None, **confi
     if not config.USES_SUBDOMAIN_ROUTING:
         return get_base_url(request=request, config=config)
     return _build_base_url_for_host(_build_base_host("api", request=request, config=config), request=request, config=config)
-
-
-def get_public_base_url(request=None, config: dict[str, Any] | None = None, **config_kwargs: Any) -> str:
-    config = config or get_config(**config_kwargs)
-    if not config.USES_SUBDOMAIN_ROUTING:
-        return get_base_url(request=request, config=config)
-    return _build_base_url_for_host(_build_base_host("public", request=request, config=config), request=request, config=config)
 
 
 def get_snapshot_base_url(snapshot_id: str, request=None, config: dict[str, Any] | None = None, **config_kwargs: Any) -> str:

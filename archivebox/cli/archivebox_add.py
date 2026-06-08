@@ -128,7 +128,7 @@ def add(
     admitted_urls: list[str] = []
     admitted_snapshot_ids: list[str] | None = [] if snapshot_ids else None
     for index, url in enumerate(url_list):
-        if Snapshot.is_archivebox_internal_url(url):
+        if Snapshot.is_archivebox_internal_url(url, config=runtime_config):
             print(f"[yellow][!] Skipping internal ArchiveBox URL: {url}[/yellow]")
             continue
         admitted_urls.append(url)

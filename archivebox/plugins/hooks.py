@@ -32,7 +32,7 @@ Execution order:
     - After all foreground hooks complete, background hooks receive SIGTERM and must finalize
 
 Hook naming convention:
-    on_{EventFamily}__{run_order}_{description}[.finite.bg|.daemon.bg].{ext}
+    on_{EventFamily}__{run_order}_{description}[.bg].{ext}
 
 API:
     discover_hooks(event)     -> List[Path]     Find hook scripts for a hook-backed event family
@@ -102,11 +102,6 @@ def is_background_hook(hook_name: str) -> bool:
         is_background_hook('on_Snapshot__63_media.finite.bg.py') -> True
     """
     return ".bg." in hook_name or "__background" in hook_name
-
-
-def is_finite_background_hook(hook_name: str) -> bool:
-    """Check if a background hook is finite-lived and should be awaited."""
-    return ".finite.bg." in hook_name
 
 
 def normalize_hook_event_name(event_name: str) -> str | None:
@@ -410,7 +405,6 @@ def run_hook(
         "PATH",
         "LIB_DIR",
         "ABXPKG_LIB_DIR",
-        "LIB_BIN_DIR",
         "NODE_PATH",
         "NODE_MODULES_DIR",
         "NODE_MODULE_DIR",
@@ -434,8 +428,8 @@ def run_hook(
     # Create output directory if needed
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Detect if this is a background hook (long-running daemon)
-    # Background hooks use the .daemon.bg. or .finite.bg. filename convention.
+    # Detect if this is a background hook.
+    # Background hooks use the .bg. filename marker.
     # Old convention: __background in stem (for backwards compatibility)
     is_background = ".bg." in script.name or "__background" in script.stem
 

@@ -29,7 +29,6 @@ def _runtime_env(data_dir: Path, bin_dir: Path) -> dict[str, str]:
     assert archivebox_bin, "archivebox console script must be available for CLI tests"
     return {
         "LIB_DIR": str(data_dir / "lib"),
-        "LIB_BIN_DIR": str(data_dir / "lib" / "bin"),
         "ABXPKG_LIB_DIR": str(data_dir / "lib"),
         "PATH": os.pathsep.join([str(bin_dir), str(Path(archivebox_bin).parent), "/usr/bin", "/bin", "/usr/sbin", "/sbin"]),
     }
@@ -129,7 +128,6 @@ def test_binary_request_installs_env_binary_and_recovers_stale_cache(initialized
     assert first_abspath.resolve() == Path(shutil.which("rg") or "").resolve()
     assert first_abspath.is_relative_to(initialized_archive / "lib")
     assert (initialized_archive / "lib" / "env" / "bin" / name).exists()
-    assert (initialized_archive / "lib" / "bin" / name).exists()
     assert (initialized_archive / "machines" / machine_id / "binaries" / name / "index.jsonl").exists()
     assert binary_processes
     assert binary_processes[-1].status == Process.StatusChoices.EXITED
@@ -152,7 +150,6 @@ def test_binary_request_installs_env_binary_and_recovers_stale_cache(initialized
     assert binary.version in version_stdout
 
     first_abspath.unlink()
-    (initialized_archive / "lib" / "bin" / name).unlink(missing_ok=True)
     _link_real_binary(bootstrap_bin_dir, name, source="rg")
 
     _cmd_result = run_archivebox_cmd(

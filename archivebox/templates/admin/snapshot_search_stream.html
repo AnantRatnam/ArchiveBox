@@ -40,6 +40,33 @@
       }
     }
 
+    function setChangelistSearchingState(controller) {
+      if (activeSearch !== controller) return;
+      var changelist = document.getElementById("changelist");
+      if (!changelist) return;
+
+      var results = changelist.querySelector(".results");
+      if (!results) {
+        results = document.createElement("div");
+        var toolbar = changelist.querySelector("#toolbar");
+        if (toolbar && toolbar.nextSibling) {
+          toolbar.parentNode.insertBefore(results, toolbar.nextSibling);
+        } else {
+          changelist.appendChild(results);
+        }
+      }
+      results.className = "results search-empty-state";
+      while (results.firstChild) results.removeChild(results.firstChild);
+      var message = document.createElement("p");
+      message.textContent = "Searching matching snapshots...";
+      results.appendChild(message);
+
+      var paginator = changelist.querySelector(".paginator");
+      if (paginator) paginator.hidden = true;
+      var actions = changelist.querySelector(".actions");
+      if (actions) actions.hidden = true;
+    }
+
     function streamSnapshotSearch(eventOrForm) {
       var form = eventOrForm && eventOrForm.target ? eventOrForm.target : eventOrForm;
       if (!form || form.id !== "changelist-search") return;
@@ -55,6 +82,7 @@
       var controller = new AbortController();
       activeSearch = controller;
       setSearchLoading(controller, "Searching...");
+      setChangelistSearchingState(controller);
       var resultVersion = 0;
       var pendingRender = null;
       var renderInFlight = false;

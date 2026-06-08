@@ -119,10 +119,6 @@
   - ```{autodoc2-docstring} archivebox.core.templatetags.core_tags.web_base_url
     :summary:
     ```
-* - {py:obj}`public_base_url <archivebox.core.templatetags.core_tags.public_base_url>`
-  - ```{autodoc2-docstring} archivebox.core.templatetags.core_tags.public_base_url
-    :summary:
-    ```
 * - {py:obj}`snapshot_base_url <archivebox.core.templatetags.core_tags.snapshot_base_url>`
   - ```{autodoc2-docstring} archivebox.core.templatetags.core_tags.snapshot_base_url
     :summary:
@@ -505,13 +501,6 @@
 :canonical: archivebox.core.templatetags.core_tags.web_base_url
 
 ```{autodoc2-docstring} archivebox.core.templatetags.core_tags.web_base_url
-```
-````
-
-````{py:function} public_base_url(context) -> str
-:canonical: archivebox.core.templatetags.core_tags.public_base_url
-
-```{autodoc2-docstring} archivebox.core.templatetags.core_tags.public_base_url
 ```
 ````
 

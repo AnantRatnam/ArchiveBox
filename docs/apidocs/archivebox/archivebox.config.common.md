@@ -462,17 +462,6 @@ Bases: {py:obj}`archivebox.config.configset.BaseConfigSet`
 
 ````
 
-````{py:attribute} LIB_BIN_DIR
-:canonical: archivebox.config.common.StorageConfig.LIB_BIN_DIR
-:type: pathlib.Path
-:value: >
-   'Field(...)'
-
-```{autodoc2-docstring} archivebox.config.common.StorageConfig.LIB_BIN_DIR
-```
-
-````
-
 ````{py:attribute} CUSTOM_TEMPLATES_DIR
 :canonical: archivebox.config.common.StorageConfig.CUSTOM_TEMPLATES_DIR
 :type: pathlib.Path

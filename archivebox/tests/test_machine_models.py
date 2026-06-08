@@ -451,7 +451,7 @@ class TestBinaryModel:
 
     @pytest.mark.django_db(transaction=True)
     def test_binary_lib_bin_symlink_waits_for_outer_transaction_commit(self, tmp_path):
-        """Binary DB projection writes can be direct, but LIB_BIN_DIR writes must run after commit."""
+        """Binary DB projection writes can be direct, but convenience symlinks must run after commit."""
         source = tmp_path / "provider" / "bin" / "abx-test-binary"
         source.parent.mkdir(parents=True)
         source.write_text("#!/bin/sh\nexit 0\n")

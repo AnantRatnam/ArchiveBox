@@ -163,7 +163,6 @@ def init(force: bool = False, quick: bool = False, install: bool = False) -> Non
     working_lib_dir = get_or_create_working_lib_dir(autofix=True, quiet=True)
     if working_lib_dir:
         working_lib_dir.mkdir(parents=True, exist_ok=True)
-        (working_lib_dir / "bin").mkdir(parents=True, exist_ok=True)
 
     if install:
         from archivebox.cli.archivebox_install import install as install_method

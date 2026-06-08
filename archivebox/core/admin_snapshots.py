@@ -30,6 +30,7 @@ from archivebox.plugins.discovery import get_plugin_icon, get_plugin_name, get_p
 from archivebox.base_models.admin import BaseModelAdmin, ConfigEditorMixin
 
 from archivebox.core.models import Tag, Snapshot, ArchiveResult
+from archivebox.crawls.models import Crawl
 from archivebox.core.admin_archiveresults import render_archiveresults_list
 from archivebox.core.preview_util import EXTENSION_SCREENSHOT_PLUGIN
 from archivebox.progressmonitor.views import progress_endpoint
@@ -344,7 +345,7 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
     list_select_related = ()
     list_display = (
         "permissions_badge",
-        "created_at_display",
+        "created_at",
         "preview_icon",
         "title_str",
         "tags_inline",
@@ -352,7 +353,7 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         "files",
         "size_with_stats",
     )
-    list_display_links = ("created_at_display",)
+    list_display_links = ("created_at",)
     sort_fields = ("title_str", "created_at", "status", "crawl")
     readonly_fields = (
         "admin_actions",
@@ -453,7 +454,7 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         ),
     )
 
-    ordering = ["-id"]
+    ordering = ["-created_at"]
     actions = [
         "add_tags",
         "remove_tags",
@@ -470,7 +471,7 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
     paginator = AcceleratedPaginator
 
     save_on_top = True
-    show_full_result_count = False
+    show_full_result_count = True
 
     def get_changelist(self, request, **kwargs):
         return SnapshotChangeList
@@ -479,10 +480,6 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
         if request.GET.get("o"):
             return []
         return super().get_ordering(request)
-
-    @admin.display(description="Created", ordering="id")
-    def created_at_display(self, obj):
-        return obj.created_at
 
     def change_view(self, request, object_id, form_url="", extra_context=None):
         self.request = request
@@ -650,10 +647,22 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
                     ),
                 ),
             )
+        else:
+            prefetches.append(
+                Prefetch(
+                    "crawl",
+                    queryset=Crawl.objects.select_related("created_by").only(
+                        "id",
+                        "created_by_id",
+                        "created_by__id",
+                        "created_by__username",
+                    ),
+                ),
+            )
 
-        qs = super().get_queryset(request).select_related("crawl__created_by")
+        qs = super().get_queryset(request)
         if is_change_view:
-            qs = qs.defer("notes")
+            qs = qs.select_related("crawl__created_by").defer("notes")
         else:
             qs = qs.only(
                 "id",
@@ -667,12 +676,6 @@ class SnapshotAdmin(SearchResultsAdminMixin, ConfigEditorMixin, BaseModelAdmin):
                 "fs_version",
                 "output_size",
                 "permissions",
-                "crawl__id",
-                "crawl__persona_id",
-                "crawl__status",
-                "crawl__created_by_id",
-                "crawl__created_by__id",
-                "crawl__created_by__username",
             )
         qs = qs.prefetch_related(*prefetches)
         if needs_files_sort:

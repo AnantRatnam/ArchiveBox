@@ -84,6 +84,7 @@ DJANGO_OBJECT_ACTIONS_DEFAULT_HTTP_METHOD = "POST"
 MIDDLEWARE = [
     "archivebox.core.middleware.TimezoneMiddleware",
     "django.middleware.security.SecurityMiddleware",
+    "archivebox.core.middleware.AdminCookieIsolationMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "archivebox.api.middleware.ApiCorsMiddleware",
@@ -440,7 +441,7 @@ SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_NAME = f"archivebox_sessionid_{CONSTANTS.COLLECTION_ID}"
 CSRF_COOKIE_NAME = f"archivebox_csrftoken_{CONSTANTS.COLLECTION_ID}"
 # Auth cookies are intentionally scoped to the exact host that set them so
-# the admin session is NOT readable from public.* / web.* / api.* — that
+# the admin session is NOT readable from web.* / api.* — that
 # split is a security boundary, not a UX choice. Subdomains that need to
 # render an "is the user logged in?" indicator must use the single-bit
 # `archivebox_admin_logged_in` hint cookie set by core/middleware.py

@@ -74,7 +74,7 @@ services:
 
     ### TLS / HTTPS ingress (opt-in, everything below is driven by env vars only).
     #
-    # ArchiveBox serves the admin/web/api/public control plane AND every archived
+    # ArchiveBox serves the admin/web/api control plane AND every archived
     # snapshot on its own subdomain for security isolation, so a public deployment
     # needs wildcard DNS + TLS for *.your.domain. Pick ONE of the two ingress options
     # below by activating its profile (e.g. put COMPOSE_PROFILES=https or =tunnel in a

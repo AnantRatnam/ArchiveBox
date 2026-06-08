@@ -103,9 +103,9 @@ if grep -E "(/[[:alnum:]_.-]+/)?pip install|npm install|uv pip install" /tmp/arc
     exit 1
 fi
 archivebox version 2>&1 | tee /tmp/archivebox-version.log
-grep -Eq "/opt/archivebox/lib/(pip/venv/bin|env/bin)/trafilatura" /tmp/archivebox-version.log
-grep -Eq "/opt/archivebox/lib/(npm/node_modules/.bin|env/bin)/defuddle" /tmp/archivebox-version.log
-grep -Eq "/opt/archivebox/lib/env/bin/sonic" /tmp/archivebox-version.log
+grep -Eq "/home/archivebox/.config/abx/lib/(pip/venv/bin|env/bin)/trafilatura" /tmp/archivebox-version.log
+grep -Eq "/home/archivebox/.config/abx/lib/(npm/node_modules/.bin|env/bin)/defuddle" /tmp/archivebox-version.log
+grep -Eq "/home/archivebox/.config/abx/lib/env/bin/sonic" /tmp/archivebox-version.log
 archivebox add --depth=0 https://example.com/ 2>&1 | tee /tmp/archivebox-add.log
 archivebox update --index-only 2>&1 | tee /tmp/archivebox-update.log
 snapshot_dir="$(find /data/archive/users/system/snapshots -mindepth 3 -maxdepth 3 -type d | head -n 1)"

@@ -118,7 +118,6 @@ class ConstantsDict:
         "LIB_DIR",
         user_config_path("abx") / LIB_DIR_NAME,
     )
-    DEFAULT_LIB_BIN_DIR: Path = _env_path("LIB_BIN_DIR", DEFAULT_LIB_DIR / "bin")
 
     RESERVED_ARCHIVE_DIR_NAMES: frozenset[str] = frozenset(
         (

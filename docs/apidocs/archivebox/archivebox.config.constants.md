@@ -606,17 +606,6 @@
 
 ````
 
-````{py:attribute} DEFAULT_LIB_BIN_DIR
-:canonical: archivebox.config.constants.ConstantsDict.DEFAULT_LIB_BIN_DIR
-:type: pathlib.Path
-:value: >
-   '_env_path(...)'
-
-```{autodoc2-docstring} archivebox.config.constants.ConstantsDict.DEFAULT_LIB_BIN_DIR
-```
-
-````
-
 ````{py:attribute} RESERVED_ARCHIVE_DIR_NAMES
 :canonical: archivebox.config.constants.ConstantsDict.RESERVED_ARCHIVE_DIR_NAMES
 :type: frozenset[str]

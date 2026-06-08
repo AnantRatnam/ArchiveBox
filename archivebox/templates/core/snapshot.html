@@ -1137,9 +1137,9 @@
             <div class="header-top">
                 <div class="header-nav">
                     <div class="header-col header-left" style="line-height: 58px; vertical-align: middle">
-                        {% public_base_url as public_base %}
-                        <a href="{% if public_base %}{{ public_base }}/public/{% else %}/{% endif %}" class="header-archivebox" title="Go to Public Index...">
-                            <img src="{% if public_base %}{{ public_base }}/static/archive.png{% else %}{% static 'archive.png' %}{% endif %}" alt="Archive Icon">
+                        {% web_base_url as web_base %}
+                        <a href="{% if web_base %}{{ web_base }}/public/{% else %}/{% endif %}" class="header-archivebox" title="Go to Public Index...">
+                            <img src="{% if web_base %}{{ web_base }}/static/archive.png{% else %}{% static 'archive.png' %}{% endif %}" alt="Archive Icon">
                             ArchiveBox
                         </a>
                     </div>

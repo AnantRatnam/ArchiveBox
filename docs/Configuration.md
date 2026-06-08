@@ -376,15 +376,15 @@ IPv6 literal addresses must be bracketed: `[::1]:8000`, not `::1:8000`.
 #### `BASE_URL`
 **Possible Values:** [`""`]/`https://archive.example.com`/`http://archivebox.localhost:8000`/...
 
-The canonical public URL of your ArchiveBox instance. Used to build absolute links in templates, redirects (`/admin/login/?next=...`), admin notification emails, OG/meta tags, and — in subdomain security mode — to derive the `admin.`, `web.`, `api.`, `public.`, and per-snapshot `snap-<id>.` subdomains.
+The canonical public URL of your ArchiveBox instance. Used to build absolute links in templates, redirects (`/admin/login/?next=...`), admin notification emails, OG/meta tags, and — in subdomain security mode — to derive the `admin.`, `web.`, `api.`, and per-snapshot `snap-<id>.` subdomains.
 
 **When `BASE_URL` is set explicitly**, ArchiveBox treats it as the source of truth and ignores the incoming `Host` header for URL building. In `safe-subdomains-fullreplay` mode setting it is **required for redirects to work correctly**.
 
-**When `BASE_URL` is empty**, the value is resolved at request time from the incoming request's `Host` header (with any leading `admin.` / `web.` / `api.` / `public.` / `snap-*.` label stripped to recover the canonical base). Loopback hostnames (`localhost`, `127.0.0.1`, `0.0.0.0`, `::`) are rewritten to `archivebox.localhost` so subdomain routing works without `/etc/hosts` edits. If there's no live request, [`BIND_ADDR`](#bind_addr) is used as a last resort.
+**When `BASE_URL` is empty**, the value is resolved at request time from the incoming request's `Host` header (with any leading `admin.` / `web.` / `api.` / `snap-*.` label stripped to recover the canonical base). Loopback hostnames (`localhost`, `127.0.0.1`, `0.0.0.0`, `::`) are rewritten to `archivebox.localhost` so subdomain routing works without `/etc/hosts` edits. If there's no live request, [`BIND_ADDR`](#bind_addr) is used as a last resort.
 
 The scheme is taken from the explicit `BASE_URL` if set, otherwise from the request (so put a reverse proxy in front for HTTPS and trust `X-Forwarded-Proto`).
 
-ArchiveBox automatically derives the underlying Django `ALLOWED_HOSTS` and `CSRF_TRUSTED_ORIGINS` settings from `BASE_URL` + [`SERVER_SECURITY_MODE`](#server_security_mode), so you do **not** set those directly — the system widens them as needed to admit the admin/web/api/public subdomains.
+ArchiveBox automatically derives the underlying Django `ALLOWED_HOSTS` and `CSRF_TRUSTED_ORIGINS` settings from `BASE_URL` + [`SERVER_SECURITY_MODE`](#server_security_mode), so you do **not** set those directly — the system widens them as needed to admit the admin/web/api subdomains.
 
 > [!NOTE]
 > **Pin `BASE_URL` explicitly on any deployment using `safe-subdomains-fullreplay` mode.** A misconfig banner will surface in the rendered UI until you do.
@@ -401,11 +401,11 @@ ArchiveBox automatically derives the underlying Django `ALLOWED_HOSTS` and `CSRF
 
 The top-level security posture of the server. Controls how archived content is served, whether the admin/API control plane is reachable, and which host(s) the UI is split across. **This is the most important security knob** — pick the most restrictive mode that still works for your use case.
 
-ArchiveBox splits its surfaces across four logical hosts: `admin.*` (Django admin + session cookies, the entire control plane), `web.*` (logged-in browsing UI), `api.*` (REST/JSON endpoints), and `public.*` (unauthenticated browsing of `PERMISSIONS=public` snapshots). In subdomain mode each gets its own host derived from [`BASE_URL`](#base_url); session/CSRF cookies are scoped to `admin.*` only, so a compromised replay page on `snap-<id>.*` can't read admin auth.
+ArchiveBox splits its surfaces across three logical hosts: `admin.*` (Django admin + session cookies, the entire control plane), `web.*` (anonymous public browsing UI, optional public add view, and public snapshot index), and `api.*` (REST/JSON endpoints). In subdomain mode each gets its own host derived from [`BASE_URL`](#base_url); session/CSRF cookies are scoped to `admin.*` only, so `web.*`, `api.*`, and compromised replay pages on `snap-<id>.*` can't read admin auth.
 
 | Mode | Host layout | JS replay | Control plane | Use when |
 |---|---|---|---|---|
-| **`safe-subdomains-fullreplay`** *(default, recommended)* | admin/web/api/public/snap-* on separate subdomains | Full JS replay enabled | Enabled on `admin.*` only | You have wildcard DNS (`*.archive.example.com`) and a TLS cert that covers it. Archived JS runs sandboxed away from the admin origin. |
+| **`safe-subdomains-fullreplay`** *(default, recommended)* | admin/web/api/snap-* on separate subdomains | Full JS replay enabled | Enabled on `admin.*` only | You have wildcard DNS (`*.archive.example.com`) and a TLS cert that covers it. Archived JS runs sandboxed away from the admin origin. |
 | **`safe-onedomain-nojsreplay`** | Everything on one host | JS in replays is neutered (served as `text/plain` or stripped) | Enabled | You can't get wildcard DNS. Trades replay fidelity for same-origin safety — archived pages won't execute scripts. |
 | **`unsafe-onedomain-noadmin`** | Everything on one host | Full JS replay enabled | **Disabled** — `/admin`, `/accounts`, `/api`, `/add`, `/web` return 403; only GET/HEAD/OPTIONS allowed | Read-only public archive on a single host. Operate the instance via CLI only; the web admin is unreachable. |
 | **`danger-onedomain-fullreplay`** | Everything on one host | Full JS replay enabled | Enabled | Local dev / trusted-network only. Archived JS runs on the **same origin as the admin UI** — a malicious archived page can call admin endpoints with your session. **Do not expose this mode to the internet.** |

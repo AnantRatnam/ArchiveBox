@@ -947,7 +947,6 @@ def run_python_cwd(
 
 API_TEST_HOST = "api.archivebox.localhost:8000"
 ADMIN_TEST_HOST = "admin.archivebox.localhost:8000"
-PUBLIC_TEST_HOST = "public.archivebox.localhost:8000"
 WEB_TEST_HOST = "web.archivebox.localhost:8000"
 
 

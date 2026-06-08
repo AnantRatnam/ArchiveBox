@@ -289,7 +289,14 @@ def check_data_dir_permissions(config=None, **config_kwargs):
 
 
 def check_tmp_dir(tmp_dir=None, throw=False, quiet=False, must_exist=True, config=None, **config_kwargs):
-    from archivebox.config.paths import assert_dir_can_contain_unix_sockets, dir_is_writable, get_or_create_working_tmp_dir
+    from archivebox.config.paths import (
+        MAX_TMP_SOCKET_URL_LENGTH,
+        SUPERVISORD_SOCKET_FILENAME,
+        assert_dir_can_contain_unix_sockets,
+        dir_is_writable,
+        get_or_create_working_tmp_dir,
+        tmp_dir_socket_path_is_short_enough,
+    )
     from archivebox.misc.logging import STDERR
     from archivebox.misc.logging_util import pretty_path
     from archivebox.config.permissions import ARCHIVEBOX_USER, ARCHIVEBOX_GROUP
@@ -297,11 +304,11 @@ def check_tmp_dir(tmp_dir=None, throw=False, quiet=False, must_exist=True, confi
 
     config = config or get_config(**config_kwargs)
     tmp_dir = tmp_dir or config.TMP_DIR
-    socket_file = tmp_dir.absolute().resolve() / "supervisord.sock"
+    socket_file = tmp_dir.absolute().resolve() / SUPERVISORD_SOCKET_FILENAME
 
     if not must_exist and not os.path.isdir(tmp_dir):
         # just check that its viable based on its length (because dir may not exist yet, we cant check if its writable)
-        return len(f"file://{socket_file}") <= 96
+        return tmp_dir_socket_path_is_short_enough(tmp_dir)
 
     tmp_is_valid = False
     try:
@@ -309,8 +316,10 @@ def check_tmp_dir(tmp_dir=None, throw=False, quiet=False, must_exist=True, confi
         if not config.ALLOW_NO_UNIX_SOCKETS:
             tmp_is_valid = tmp_is_valid and assert_dir_can_contain_unix_sockets(tmp_dir)
         assert tmp_is_valid, f"ArchiveBox user PUID={ARCHIVEBOX_USER} PGID={ARCHIVEBOX_GROUP} is unable to write to TMP_DIR={tmp_dir}"
-        assert len(f"file://{socket_file}") <= 96, (
-            f"ArchiveBox TMP_DIR={tmp_dir} is too long, dir containing unix socket files must be <90 chars."
+        socket_url_len = len(f"file://{socket_file}")
+        assert tmp_dir_socket_path_is_short_enough(tmp_dir), (
+            f"ArchiveBox TMP_DIR={tmp_dir} is too long, file://{socket_file} is {socket_url_len} chars "
+            f"and must be <{MAX_TMP_SOCKET_URL_LENGTH} chars."
         )
         return True
     except Exception as e:

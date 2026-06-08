@@ -18,7 +18,6 @@ from archivebox.misc.util import parse_date
 
 from archivebox.machine.models import Binary
 
-LIVE_CONFIG_BASE_URL = "/admin/environment/config/"
 ENVIRONMENT_BINARIES_BASE_URL = "/admin/environment/binaries/"
 INSTALLED_BINARIES_BASE_URL = "/admin/machine/binary/"
 
@@ -30,10 +29,6 @@ def is_superuser(request: HttpRequest) -> bool:
 def format_parsed_datetime(value: object) -> str:
     parsed = parse_date(value)
     return parsed.strftime("%Y-%m-%d %H:%M:%S") if parsed else ""
-
-
-def get_live_config_url(key: str) -> str:
-    return f"{LIVE_CONFIG_BASE_URL}{quote(key)}/"
 
 
 def get_environment_binary_url(name: str) -> str:

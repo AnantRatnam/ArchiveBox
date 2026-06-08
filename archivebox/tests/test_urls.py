@@ -60,7 +60,6 @@ def _build_script(body: str) -> str:
         get_api_host,
         get_web_host,
         get_web_base_url,
-        get_public_host,
         get_snapshot_subdomain,
         get_snapshot_host,
         get_original_host,
@@ -197,7 +196,7 @@ class TestUrlRouting:
         result = run_archivebox_cmd(["config", "--set", *settings], cwd=self.data_dir)
         assert result.returncode == 0, result.stderr
 
-    def test_routes_util_and_public_redirect(self) -> None:
+    def test_routes_util_and_web_public_redirect(self) -> None:
         self._run(
             """
             snapshot = get_snapshot()
@@ -207,7 +206,6 @@ class TestUrlRouting:
             web_host = get_web_host()
             admin_host = get_admin_host()
             api_host = get_api_host()
-            public_host = get_public_host()
             snapshot_subdomain = get_snapshot_subdomain(snapshot_id)
             snapshot_host = get_snapshot_host(snapshot_id)
             original_host = get_original_host(domain)
@@ -223,7 +221,6 @@ class TestUrlRouting:
             assert web_host == "web.archivebox.localhost:8000"
             assert admin_host == "admin.archivebox.localhost:8000"
             assert api_host == "api.archivebox.localhost:8000"
-            assert public_host == "public.archivebox.localhost:8000"
             assert snapshot_subdomain == f"snap-{snapshot_id[-12:].lower()}"
             assert snapshot_host == f"{snapshot_subdomain}.archivebox.localhost:8000"
             assert original_host == f"{domain}.archivebox.localhost:8000"
@@ -258,7 +255,7 @@ class TestUrlRouting:
             """,
         )
 
-    def test_api_archive_redirect_uses_public_web_base_url(self) -> None:
+    def test_api_archive_redirect_uses_web_base_url(self) -> None:
         try:
             config_result = run_archivebox_cmd(
                 ["config", "--set", "BASE_URL=https://archivebox.io"],
@@ -296,7 +293,6 @@ class TestUrlRouting:
             snapshot = get_snapshot()
             client = Client()
             web_host = get_web_host()
-            public_host = get_public_host()
             admin_host = get_admin_host()
             snapshot_host = get_snapshot_host(str(snapshot.id))
             original_host = get_original_host(snapshot.domain)
@@ -304,10 +300,6 @@ class TestUrlRouting:
             resp = client.get("/admin/login/", HTTP_HOST=web_host)
             assert resp.status_code in (301, 302)
             assert admin_host in resp["Location"]
-
-            resp = client.get("/admin/login/?next=/admin/", HTTP_HOST=public_host)
-            assert resp.status_code in (301, 302)
-            assert resp["Location"] == f"http://{admin_host}/admin/login/?next=/admin/"
 
             resp = client.get("/admin/login/?next=/admin/", HTTP_HOST=snapshot_host)
             assert resp.status_code in (301, 302)
@@ -869,7 +861,6 @@ class TestUrlRouting:
             snapshot_host = get_snapshot_host(snapshot_id)
             admin_host = get_admin_host()
             web_host = get_web_host()
-            public_host = get_public_host()
 
             client = Client()
 
@@ -880,6 +871,11 @@ class TestUrlRouting:
 
             ensure_admin_user()
             assert client.login(username="testadmin", password="testpassword")
+
+            resp = client.get("/public/", HTTP_HOST=web_host)
+            assert resp.status_code == 200
+            assert not getattr(resp.wsgi_request.user, "is_authenticated", False)
+
             resp = client.get("/admin/", HTTP_HOST=admin_host)
             assert resp.status_code == 200
             assert client.cookies[ADMIN_LOGIN_HINT_COOKIE].value == "1"
@@ -892,7 +888,7 @@ class TestUrlRouting:
             assert resp.status_code == 200
             live_html = response_body(resp).decode("utf-8", "ignore")
             assert f"http://{snapshot_host}/" in live_html
-            assert f"http://{public_host}/static/archive.png" in live_html
+            assert f"http://{web_host}/static/archive.png" in live_html
             assert "?preview=1" in live_html
             assert "function createMainFrame(previousFrame)" in live_html
             assert "function activateCardPreview(card, link, updateHash=true)" in live_html
@@ -918,7 +914,7 @@ class TestUrlRouting:
 
             static_html = Path(snapshot.output_dir, "index.html").read_text(encoding="utf-8", errors="ignore")
             assert f"http://{snapshot_host}/" in static_html
-            assert f"http://{public_host}/static/archive.png" in static_html
+            assert f"http://{web_host}/static/archive.png" in static_html
             assert "?preview=1" in static_html
             assert "function createMainFrame(previousFrame)" in static_html
             assert "function activateCardPreview(card, link, updateHash=true)" in static_html

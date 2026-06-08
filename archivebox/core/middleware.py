@@ -3,6 +3,7 @@ __package__ = "archivebox.core"
 import ipaddress
 import re
 from pathlib import Path
+from django.conf import settings
 from django.utils import timezone
 from django.contrib.auth.middleware import RemoteUserMiddleware
 from django.contrib.auth.models import AnonymousUser
@@ -24,7 +25,6 @@ from archivebox.core.routes_util import (
     get_base_host,
     get_listen_host,
     get_listen_subdomain,
-    get_public_host,
     get_web_host,
     host_matches,
     is_snapshot_subdomain,
@@ -42,7 +42,7 @@ def _admin_login_hint_cookie_domain(config) -> str | None:
     NOTE: this cookie carries only the single bit "user is logged in on
     admin somewhere"; it MUST NOT be confused with the session cookie,
     which stays admin-host-scoped (see core/settings.py
-    SESSION_COOKIE_DOMAIN comment — admin/public is a security boundary).
+    SESSION_COOKIE_DOMAIN comment — admin/web is a security boundary).
 
     Returns the hostname portion of ``get_base_host`` (which respects
     ``BASE_URL`` and falls back to the local-bind mapping). Strips the
@@ -81,6 +81,34 @@ def TimezoneMiddleware(get_response):
     def middleware(request):
         detect_timezone(request, activate=True)
         return get_response(request)
+
+    return middleware
+
+
+def AdminCookieIsolationMiddleware(get_response):
+    def middleware(request):
+        response = get_response(request)
+
+        config = request.__dict__.get("archivebox_config")
+        if config is None:
+            config = get_config(resolve_plugins=False)
+            request.archivebox_config = config
+        if not config.USES_SUBDOMAIN_ROUTING:
+            return response
+
+        request_host = (request.get_host() or "").lower()
+        if host_matches(request_host, get_admin_host(config=config)):
+            return response
+
+        if host_matches(request_host, get_web_host(config=config)):
+            for cookie_name in tuple(response.cookies.keys()):
+                if cookie_name != ADMIN_LOGIN_HINT_COOKIE:
+                    response.cookies.pop(cookie_name, None)
+            return response
+
+        response.cookies.pop(settings.SESSION_COOKIE_NAME, None)
+        response.cookies.pop(settings.CSRF_COOKIE_NAME, None)
+        return response
 
     return middleware
 
@@ -176,7 +204,6 @@ def HostRoutingMiddleware(get_response):
         admin_host = get_admin_host(config=config)
         web_host = get_web_host(config=config)
         api_host = get_api_host(config=config)
-        public_host = get_public_host(config=config)
         listen_host = get_listen_host(config=config)
         subdomain = get_listen_subdomain(request_host, config=config)
 
@@ -276,12 +303,6 @@ def HostRoutingMiddleware(get_response):
                 return redirect(target)
             request.user = AnonymousUser()
             request._cached_user = request.user
-            return get_response(request)
-
-        if host_matches(request_host, public_host):
-            if request.COOKIES.get(ADMIN_LOGIN_HINT_COOKIE) == "1" and (request.path == "/public" or request.path.startswith("/public/")):
-                target = build_admin_url("/admin/core/snapshot/", request=request)
-                return redirect(target)
             return get_response(request)
 
         if subdomain:

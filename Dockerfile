@@ -47,9 +47,10 @@ ENV ARCHIVEBOX_USER=archivebox \
 
 ENV CODE_DIR=/app \
     DATA_DIR=/data \
-    LIB_DIR=/opt/archivebox/lib \
-    ABXPKG_LIB_DIR=/opt/archivebox/lib \
-    PLAYWRIGHT_BROWSERS_PATH=/opt/archivebox/lib/playwright/cache \
+    CONFIG_DIR=/home/archivebox/.config/abx \
+    LIB_DIR=/home/archivebox/.config/abx/lib \
+    ABXPKG_LIB_DIR=/home/archivebox/.config/abx/lib \
+    PLAYWRIGHT_BROWSERS_PATH=/home/archivebox/.config/abx/lib/playwright/cache \
     PERSONAS_DIR=/data/personas \
     CHROME_USER_DATA_DIR=/data/personas/Default/chrome_profile \
     CHROME_HEADLESS=true \
@@ -77,7 +78,7 @@ ENV UV_COMPILE_BYTECODE=false \
     UV_LINK_MODE=copy \
     UV_PROJECT_ENVIRONMENT=/venv \
     VIRTUAL_ENV=/venv \
-    PATH="/venv/bin:/opt/node/bin:/opt/archivebox/lib/bin:$PATH"
+    PATH="/venv/bin:/opt/node/bin:$PATH"
 
 SHELL ["/bin/bash", "-o", "pipefail", "-o", "errexit", "-o", "errtrace", "-o", "nounset", "-c"]
 WORKDIR "$CODE_DIR"
@@ -168,7 +169,7 @@ COPY --from=archivebox-builder /app /app
 COPY --from=archivebox-builder /VERSION.txt /VERSION.txt
 
 RUN echo "[*] Setting up $ARCHIVEBOX_USER user uid=${DEFAULT_PUID}..." \
-    && printf 'export PATH="/venv/bin:/opt/node/bin:/opt/archivebox/lib/bin:$PATH"\n' > /etc/profile.d/archivebox-path.sh \
+    && printf 'export PATH="/venv/bin:/opt/node/bin:$PATH"\n' > /etc/profile.d/archivebox-path.sh \
     && ln -sf /venv/bin/archivebox /usr/local/bin/archivebox \
     && ln -sf /venv/bin/daphne /usr/local/bin/daphne \
     && ln -sf /venv/bin/supervisord /usr/local/bin/supervisord \

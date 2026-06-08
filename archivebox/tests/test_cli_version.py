@@ -8,6 +8,7 @@ import os
 import re
 import tempfile
 from pathlib import Path
+from archivebox.config.paths import tmp_dir_socket_path_is_short_enough
 from archivebox.tests.conftest import run_archivebox_cmd
 
 
@@ -123,7 +124,7 @@ def test_version_auto_selects_short_tmp_dir_for_deep_collection_path(tmp_path):
 
     assert reported_tmp_dir.exists()
     assert not reported_tmp_dir.is_relative_to(default_tmp_dir)
-    assert len(f"file://{reported_tmp_dir / 'supervisord.sock'}") <= 96
+    assert tmp_dir_socket_path_is_short_enough(reported_tmp_dir)
 
 
 def test_version_help_lists_quiet_flag(tmp_path):

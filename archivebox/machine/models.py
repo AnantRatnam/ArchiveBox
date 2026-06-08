@@ -681,7 +681,7 @@ class Binary(ModelWithHealthStats, ModelWithStateMachine):
             )
             from archivebox.config.common import get_config
 
-            binary.symlink_to_lib_bin_after_commit(get_config().LIB_BIN_DIR)
+            binary.symlink_to_lib_bin_after_commit(get_config().LIB_DIR / "bin")
             return binary
 
         # Case 2: From binaries.json - create queued binary (needs installation)
@@ -714,7 +714,7 @@ class Binary(ModelWithHealthStats, ModelWithStateMachine):
             )
             from archivebox.config.common import get_config
 
-            binary.symlink_to_lib_bin_after_commit(get_config().LIB_BIN_DIR)
+            binary.symlink_to_lib_bin_after_commit(get_config().LIB_DIR / "bin")
             return binary
 
         return None
@@ -750,7 +750,7 @@ class Binary(ModelWithHealthStats, ModelWithStateMachine):
 
     def symlink_to_lib_bin(self, lib_bin_dir: str | Path) -> Path | None:
         """
-        Symlink this binary into LIB_BIN_DIR for human-facing convenience.
+        Symlink this binary into a derived lib/bin directory for human-facing convenience.
 
         After a binary is installed by any binprovider (pip, npm, brew, apt, etc),
         we can optionally expose a flat convenience directory for shell users.
@@ -758,7 +758,7 @@ class Binary(ModelWithHealthStats, ModelWithStateMachine):
         paths, not this indirection.
 
         Args:
-            lib_bin_dir: Path to LIB_BIN_DIR (e.g., /data/lib/arm64-darwin/bin)
+            lib_bin_dir: Path to the derived convenience bin dir (e.g., /data/lib/bin)
 
         Returns:
             Path to the created symlink, or None if symlinking failed
@@ -782,14 +782,14 @@ class Binary(ModelWithHealthStats, ModelWithStateMachine):
         except StopIteration:
             app_index = -1
 
-        # Create LIB_BIN_DIR if it doesn't exist
+        # Create the derived convenience bin dir if it doesn't exist.
         try:
             lib_bin_dir.mkdir(parents=True, exist_ok=True)
         except (OSError, PermissionError) as e:
-            print(f"Failed to create LIB_BIN_DIR {lib_bin_dir}: {e}", file=sys.stderr)
+            print(f"Failed to create lib/bin convenience dir {lib_bin_dir}: {e}", file=sys.stderr)
             return None
 
-        # Expose the canonical Binary.name in LIB_BIN_DIR. Some providers point
+        # Expose the canonical Binary.name in the convenience bin dir. Some providers point
         # abspath at implementation files like cli.js or manifest.json; those
         # are valid targets, but they are not user-facing binary names.
         binary_name = _canonical_binary_name(self.name) or binary_abspath.name

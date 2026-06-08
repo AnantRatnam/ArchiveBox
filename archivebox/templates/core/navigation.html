@@ -27,10 +27,10 @@
     {% elif request.COOKIES.archivebox_admin_logged_in == "1" %}
         {% comment %}
         Authenticated on the admin host but the session cookie is admin-host-
-        scoped (security boundary — public.* must NEVER see the session).
+        scoped (security boundary — web.* must NEVER see the session).
         The hint cookie is the only signal that crosses, so we render the
         logged-out state's `Account` / `Log out` links pointing at admin host
-        so the user can still reach those pages from public.*/web.*.
+        so the user can still reach those pages from web.*.
         {% endcomment %}
         <a href="/admin/password_change/" title="Change your account password">Account</a> /
         <a href="/admin/logout/">{% trans 'Log out' %}</a>

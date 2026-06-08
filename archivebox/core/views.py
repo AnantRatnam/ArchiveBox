@@ -68,7 +68,9 @@ from archivebox.search.views import get_cached_public_search_state
 
 from archivebox.core.models import ArchiveResult, Snapshot, SnapshotTag
 from archivebox.core.permissions import (
+    PERMISSIONS_PRIVATE,
     PERMISSIONS_PUBLIC,
+    PERMISSIONS_UNLISTED,
     can_view_snapshot,
     direct_snapshots_queryset,
     filter_personas_by_permissions,
@@ -1128,7 +1130,7 @@ class PublicIndexView(ListView):
     model = Snapshot
     ordering = ["-bookmarked_at", "-created_at"]
     paginator_class = AcceleratedPaginator
-    public_page_scan_chunk_size = 500
+    public_page_scan_chunk_size = 50
 
     def get_paginate_by(self, queryset):
         runtime_config = self.__dict__.get("runtime_config")
@@ -1155,7 +1157,7 @@ class PublicIndexView(ListView):
         target_count = page_number * page_size
         public_snapshots: list[Snapshot] = []
         scanned = 0
-        chunk_size = max(self.public_page_scan_chunk_size, page_size * 4)
+        chunk_size = max(self.public_page_scan_chunk_size, page_size)
         ordered_snapshots = Snapshot.objects.order_by(*self.ordering).only(*self._base_public_snapshot_fields())
 
         while len(public_snapshots) < target_count:
@@ -1271,7 +1273,9 @@ class PublicIndexView(ListView):
         return context
 
     def get_exact_public_snapshot_count(self) -> int:
-        return Snapshot.objects.filter(permissions=PERMISSIONS_PUBLIC).count()
+        hidden_count = Snapshot.objects.filter(permissions=PERMISSIONS_PRIVATE).count()
+        hidden_count += Snapshot.objects.filter(permissions=PERMISSIONS_UNLISTED).count()
+        return Snapshot.objects.count() - hidden_count
 
     def get_queryset(self, **kwargs):
         qs = public_snapshots_queryset(super().get_queryset(**kwargs)).only(*self._base_public_snapshot_fields())

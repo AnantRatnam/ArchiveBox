@@ -20,7 +20,6 @@ from archivebox.plugins.discovery import (
 from archivebox.core.routes_util import (
     canonical_base_host_for_request,
     get_admin_base_url,
-    get_public_base_url,
     get_web_base_url,
     get_snapshot_base_url,
     build_snapshot_url,
@@ -499,11 +498,6 @@ def web_base_url(context) -> str:
 
 
 @register.simple_tag(takes_context=True)
-def public_base_url(context) -> str:
-    return get_public_base_url(request=context.get("request"), config=context.get("CONFIG"))
-
-
-@register.simple_tag(takes_context=True)
 def snapshot_base_url(context, snapshot) -> str:
     snapshot_id = _snapshot_id(snapshot)
     return get_snapshot_base_url(str(snapshot_id), request=context.get("request"), config=context.get("CONFIG"))
@@ -521,16 +515,11 @@ def snapshot_index_row(context, link) -> str:
     request = context.get("request")
     config = context.get("CONFIG")
     snapshot_base = get_snapshot_base_url(snapshot_id, request=request, config=config)
-    screenshot_plugin_url = build_snapshot_url(snapshot_id, "screenshot/screenshot.png", request=request, config=config)
-    extension_screenshot_1_url = build_snapshot_url(
-        snapshot_id,
-        "chrome_extension_screenshot/screenshot-1.png",
-        request=request,
-        config=config,
-    )
-    extension_screenshot_url = build_snapshot_url(snapshot_id, "chrome_extension_screenshot/screenshot.png", request=request, config=config)
-    favicon_plugin_url = build_snapshot_url(snapshot_id, "favicon/favicon.ico", request=request, config=config)
-    favicon_root_url = build_snapshot_url(snapshot_id, "favicon.ico", request=request, config=config)
+    screenshot_plugin_url = f"{snapshot_base}/screenshot/screenshot.png"
+    extension_screenshot_1_url = f"{snapshot_base}/chrome_extension_screenshot/screenshot-1.png"
+    extension_screenshot_url = f"{snapshot_base}/chrome_extension_screenshot/screenshot.png"
+    favicon_plugin_url = f"{snapshot_base}/favicon/favicon.ico"
+    favicon_root_url = f"{snapshot_base}/favicon.ico"
 
     status = getattr(link, "status", None) or "unknown"
     bookmarked_at = getattr(link, "bookmarked_at", None)
