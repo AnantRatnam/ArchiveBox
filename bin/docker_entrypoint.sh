@@ -36,6 +36,7 @@ export ABXPKG_LIB_DIR="${ABXPKG_LIB_DIR:-$LIB_DIR}"
 export ARCHIVEBOX_USER="${ARCHIVEBOX_USER:-archivebox}"
 export PERSONAS_DIR="${PERSONAS_DIR:-$DATA_DIR/personas}"
 export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$LIB_DIR/playwright/cache}"
+export ABXBUS_CACHE_DIR="${ABXBUS_CACHE_DIR:-${XDG_CACHE_HOME:-/home/archivebox/.cache}/abxbus}"
 
 # Global default PUID and PGID if data dir is empty and no intended PUID+PGID is set manually by user
 export DEFAULT_PUID=911
@@ -152,6 +153,16 @@ ensure_runtime_tmp_tree() {
     chmod_if_possible "$TMP_DIR"
 }
 
+ensure_small_runtime_tree() {
+    local path="$1"
+    mkdir -p "$path" 2>/dev/null || true
+    [[ -e "$path" ]] || return 0
+    if [[ "$(id -u)" == "0" ]]; then
+        chown -R "$PUID:$PGID" "$path" 2>/dev/null || true
+    fi
+    chmod -R u+rwX,g+rwX "$path" 2>/dev/null || true
+}
+
 run_as_archivebox() {
     if [[ "$(id -u)" == "0" ]]; then
         setpriv --reuid="$ARCHIVEBOX_USER" --regid="$ARCHIVEBOX_USER" --init-groups "$@"
@@ -213,9 +224,13 @@ find /tmp "$TMP_DIR" -maxdepth 1 -type d -name "archivebox-chrome-profile.*" -mm
     
 
 ensure_dir "/home/$ARCHIVEBOX_USER"
+ensure_small_runtime_tree "$ABXBUS_CACHE_DIR"
+ensure_small_runtime_tree "$ABXBUS_CACHE_DIR/semaphores"
 ensure_runtime_tree "$PLAYWRIGHT_BROWSERS_PATH"
 ensure_runtime_tmp_tree
 ensure_runtime_tree "$LIB_DIR"
+run_as_archivebox touch "$ABXBUS_CACHE_DIR/semaphores/.permissions_test_safe_to_delete" 2>/dev/null || permission_error "$ABXBUS_CACHE_DIR/semaphores"
+rm -f "$ABXBUS_CACHE_DIR/semaphores/.permissions_test_safe_to_delete"
 
 # (this check is written in blood in 2023, QEMU silently breaks things in ways that are not obvious)
 export IN_QEMU="$(pmap 1 | grep qemu >/dev/null && echo 'True' || echo 'False')"
