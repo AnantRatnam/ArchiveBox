@@ -66,9 +66,6 @@ def _should_import_as_source(raw_urls: str | list[str]) -> bool:
     return not bool(_direct_url_lines(raw_urls))
 
 
-SOURCE_PARSE_PLUGINS = "parse_html_urls,parse_jsonl_urls,parse_netscape_urls,parse_rss_urls,parse_txt_urls"
-
-
 @enforce_types
 def add(
     urls: str | list[str],
@@ -241,7 +238,6 @@ def add(
             crawl=crawl,
             depth=0,
             title=sources_file.name,
-            config={"PLUGINS": SOURCE_PARSE_PLUGINS},
         )
         crawl.urls = json.dumps({"type": "Snapshot", "url": root_snapshot.url, "id": str(root_snapshot.id), "depth": 0})
         crawl.save(update_fields=["urls", "modified_at"])
