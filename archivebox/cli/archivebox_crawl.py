@@ -65,6 +65,7 @@ def create_crawl(
         1: Failure
     """
     from archivebox.misc.jsonl import read_args_or_stdin, write_record, TYPE_CRAWL
+    from archivebox.misc.util import validate_url
     from archivebox.base_models.models import get_or_create_system_user_pk
     from archivebox.crawls.models import Crawl
 
@@ -98,7 +99,11 @@ def create_crawl(
         # Collect URLs
         url = record.get("url")
         if url:
-            url_list.append(url)
+            try:
+                url_list.append(validate_url(str(url)))
+            except ValueError as err:
+                rprint(f"[red]Invalid URL: {err}[/red]", file=sys.stderr)
+                return 1
 
         # Handle 'urls' field (newline-separated)
         urls_field = record.get("urls")
@@ -106,7 +111,11 @@ def create_crawl(
             for line in urls_field.split("\n"):
                 line = line.strip()
                 if line and not line.startswith("#"):
-                    url_list.append(line)
+                    try:
+                        url_list.append(validate_url(line))
+                    except ValueError as err:
+                        rprint(f"[red]Invalid URL: {err}[/red]", file=sys.stderr)
+                        return 1
 
     # Output pass-through records first
     if not is_tty:

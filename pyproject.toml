@@ -139,8 +139,11 @@ dev = [
     ### TESTING
     "pytest-django>=4.11.1",
     "pytest>=8.3.3",
+    "pytest-codeblocks>=0.17.0",
     "pytest-cov>=6.0.0",
+    "pytest-github-actions-annotate-failures>=0.3.0",
     "pytest-httpserver>=1.1.0",
+    "pytest-sugar>=1.0.0",
     "pytest-timeout>=2.3.1",
     "coverage[toml]>=7.6.0",
     "bottle>=0.13.1",
@@ -208,6 +211,8 @@ skip = "*.json,*.min.js,*.min.css,uv.lock,old/*,publicsite/*,docs/apidocs/*"
 [tool.pytest.ini_options]
 testpaths = [ "archivebox/tests" ]
 norecursedirs = ["archivebox/tests/data"]
+timeout = 600
+timeout_method = "thread"
 # Note: Plugin tests under abx_plugins/plugins/ must NOT load Django
 # They use a conftest.py to disable Django automatically
 

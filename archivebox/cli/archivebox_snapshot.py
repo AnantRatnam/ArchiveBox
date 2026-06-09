@@ -67,7 +67,7 @@ def create_snapshots(
         TYPE_SNAPSHOT,
         TYPE_CRAWL,
     )
-    from archivebox.misc.util import validate_url_length
+    from archivebox.misc.util import validate_url
     from archivebox.base_models.models import get_or_create_system_user_pk
     from archivebox.core.models import Snapshot
     from archivebox.crawls.models import Crawl
@@ -112,7 +112,7 @@ def create_snapshots(
                 # Create snapshots for each URL in the crawl
                 for url in crawl.get_urls_list():
                     try:
-                        validate_url_length(url)
+                        validate_url(url)
                     except ValueError as err:
                         rprint(f"[red]Error creating snapshot: {err}[/red]", file=sys.stderr)
                         continue
@@ -135,7 +135,7 @@ def create_snapshots(
             elif record_type == TYPE_SNAPSHOT or record.get("url"):
                 # Input is a Snapshot or plain URL
                 if record.get("url"):
-                    validate_url_length(str(record["url"]))
+                    validate_url(str(record["url"]))
                 if tag and not record.get("tags"):
                     record["tags"] = tag
                 if status:

@@ -476,6 +476,22 @@ For more discussion on managed and paid hosting options see here: <a href="https
 ArchiveBox commands can be run in a terminal [directly on your host](https://github.com/ArchiveBox/ArchiveBox/wiki/Usage#cli-usage), or via [Docker](https://github.com/ArchiveBox/ArchiveBox/wiki/Docker#usage-1)/[Docker Compose](https://github.com/ArchiveBox/ArchiveBox/wiki/Docker#usage).  
 <sup>(depending on how you chose to install it above)</sup>
 
+<!--
+```bash
+set -euo pipefail
+__archivebox_docs_home="$(mktemp -d)"
+export HOME="$__archivebox_docs_home"
+mkdir -p ~/archivebox/data
+cd ~/archivebox/data
+archivebox init
+archivebox version
+archivebox help
+test -f index.sqlite3
+test -d archive
+rm -rf "$__archivebox_docs_home"
+```
+-->
+<!--pytest.mark.skip(reason='Mixed host/Docker alternatives include interactive Docker commands')-->
 ```bash
 mkdir -p ~/archivebox/data   # create a new data dir anywhere
 cd ~/archivebox/data         # IMPORTANT: cd into the directory
@@ -680,10 +696,36 @@ docker run -it -v $PWD:/data archivebox/archivebox add --depth=1 'https://exampl
 <img src="https://github.com/ArchiveBox/ArchiveBox/assets/511499/e1e5bd78-b0b6-45dc-914c-e1046fee4bc4" width="330px" align="right" style="float: right"/>
 
 
+<!--
+```bash
+set -euo pipefail
+__archivebox_docs_home="$(mktemp -d)"
+export HOME="$__archivebox_docs_home"
+mkdir -p ~/archivebox/data ~/Downloads
+cd ~/archivebox/data
+archivebox init
+cat > ~/Downloads/some_feed.xml <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>ArchiveBox docs test feed</title>
+    <link>https://example.com/</link>
+    <description>ArchiveBox docs test feed</description>
+    <item>
+      <title>Feed item</title>
+      <link>https://example.com/from-feed</link>
+      <guid>https://example.com/from-feed</guid>
+    </item>
+  </channel>
+</rss>
+EOF
+```
+-->
+<!--pytest-codeblocks:cont-->
 ```bash
 # archivebox add --help
 archivebox add 'https://example.com/some/page'
-archivebox add --parser=generic_rss < ~/Downloads/some_feed.xml
+archivebox add --depth=1 --plugins=parse_rss_urls "file://$HOME/Downloads/some_feed.xml"
 archivebox add --depth=1 'https://news.ycombinator.com#2020-12-12'
 echo 'http://example.com' | archivebox add
 echo 'any text with <a href="https://example.com">urls</a> in it' | archivebox add
@@ -693,6 +735,19 @@ echo 'any text with <a href="https://example.com">urls</a> in it' | archivebox a
 # if using Docker Compose, add -T when piping stdin / stdout:
 # echo 'https://example.com' | docker compose run -T archivebox add
 ```
+<!--pytest-codeblocks:cont-->
+<!--
+```bash
+archivebox list --json > snapshots.json
+grep -q 'https://example.com/some/page' snapshots.json
+grep -q 'https://example.com/from-feed' snapshots.json
+grep -q 'https://news.ycombinator.com#2020-12-12' snapshots.json
+grep -q 'http://example.com' snapshots.json
+test -d archive
+test "$(find archive -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" -ge 4
+rm -rf "$__archivebox_docs_home"
+```
+-->
 
 See the [Usage: CLI](https://github.com/ArchiveBox/ArchiveBox/wiki/Usage#CLI-Usage) page for documentation and examples.
 
@@ -1352,6 +1407,7 @@ For low hanging fruit / easy first tickets, see: <a href="https://github.com/Arc
 
 First make sure you have `uv` installed: https://docs.astral.sh/uv/getting-started/installation/
 
+<!--pytest.mark.skip(reason='Development workflow snippets are not part of docs codeblock tests')-->
 ```bash
 git clone https://github.com/ArchiveBox/monorepo
 cd monorepo
@@ -1373,6 +1429,7 @@ Repos included in monorepo setup:
 
 #### 2. Option A: Install the Python, JS, and system dependencies directly on your machine
 
+<!--pytest.mark.skip(reason='Development workflow snippets are not part of docs codeblock tests')-->
 ```bash
 # Install ArchiveBox runtime dependencies
 mkdir -p data && cd data
@@ -1388,6 +1445,7 @@ archivebox server 0.0.0.0:8000
 
 #### 2. Option B: Build the docker container and use that for development instead
 
+<!--pytest.mark.skip(reason='Development workflow snippets are not part of docs codeblock tests')-->
 ```bash
 # Optional: develop via docker by mounting the code dir into the container
 # if you edit e.g. ./archivebox/core/models.py on the docker host, runserver
@@ -1417,6 +1475,7 @@ You can also run all these in Docker. For more examples see the GitHub Actions C
 
 <details><summary><i>Click to expand...</i></summary>
 
+<!--pytest.mark.skip(reason='Development workflow snippets are not part of docs codeblock tests')-->
 ```bash
 # set up persistent DEBUG=True for all runs
 archivebox config --set DEBUG=True
@@ -1441,6 +1500,7 @@ https://stackoverflow.com/questions/1074212/how-can-i-see-the-raw-sql-queries-dj
 
 If you're looking for the latest `dev` Docker image, it's often available pre-built on Docker Hub, simply pull and use `archivebox/archivebox:dev`.
 
+<!--pytest.mark.skip(reason='Development workflow snippets are not part of docs codeblock tests')-->
 ```bash
 docker pull archivebox/archivebox:dev
 docker run archivebox/archivebox:dev version
@@ -1448,9 +1508,10 @@ docker run archivebox/archivebox:dev version
 ```
 
 ##### Build Branch from Source
-  
+
 You can also build and run any branch yourself from source, for example to build & use `dev` locally:
 
+<!--pytest.mark.skip(reason='Development workflow snippets are not part of docs codeblock tests')-->
 ```bash
 # docker-compose.yml:
 services:
@@ -1475,6 +1536,7 @@ archivebox install
 
 <details><summary><i>Click to expand...</i></summary>
 
+<!--pytest.mark.skip(reason='Development workflow snippets are not part of docs codeblock tests')-->
 ```bash
 ./bin/lint.sh
 ./bin/test.sh
@@ -1488,6 +1550,7 @@ archivebox install
 
 <details><summary><i>Click to expand...</i></summary>
 
+<!--pytest.mark.skip(reason='Development workflow snippets are not part of docs codeblock tests')-->
 ```bash
 # generate the database migrations after changes to models.py
 cd archivebox/
@@ -1552,6 +1615,7 @@ Copy a similar plugin as a template to modify, then open a new PR to add it in t
 <details><summary><i>Click to expand...</i></summary>
 
 (Normally CI takes care of this, but these scripts can be run to do it manually)
+<!--pytest.mark.skip(reason='Development workflow snippets are not part of docs codeblock tests')-->
 ```bash
 ./bin/build.sh
 
@@ -1568,6 +1632,7 @@ Copy a similar plugin as a template to modify, then open a new PR to add it in t
 <details><summary><i>Click to expand...</i></summary>
 
 (Normally CI takes care of this, but these scripts can be run to do it manually)
+<!--pytest.mark.skip(reason='Development workflow snippets are not part of docs codeblock tests')-->
 ```bash
 ./bin/release.sh
 

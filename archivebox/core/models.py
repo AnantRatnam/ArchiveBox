@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 import os
 import json
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from statemachine import State, registry
 
@@ -38,7 +38,7 @@ from archivebox.misc.util import (
     urlencode,
     htmlencode,
     urldecode,
-    validate_url_length,
+    validate_url,
 )
 from archivebox.plugins.discovery import (
     get_plugins,
@@ -896,6 +896,30 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
             return True
         return False
 
+    def validate_url_for_archiving(self, *, config: Mapping[str, Any] | Any | None = None) -> None:
+        if self.is_crawl_source_file_url():
+            return
+
+        try:
+            validate_url(self.url or "")
+        except ValueError as err:
+            raise ValidationError({"url": str(err)}) from err
+
+        if self.is_archivebox_internal_url(self.url, config=config):
+            raise ValidationError({"url": "ArchiveBox cannot archive its own admin, web, api, or snapshot URLs."})
+
+    def is_crawl_source_file_url(self) -> bool:
+        parsed = urlparse((self.url or "").strip())
+        if parsed.scheme != "file" or self.depth != 0 or not self.crawl_id:
+            return False
+        try:
+            source_path = Path(unquote(parsed.path)).resolve()
+            sources_dir = CONSTANTS.SOURCES_DIR.resolve()
+            source_path.relative_to(sources_dir)
+        except (OSError, ValueError):
+            return False
+        return source_path.is_file() and source_path.name.startswith(f"{self.crawl_id.hex}_")
+
     def save(self, *args, **kwargs):
         update_fields = kwargs.get("update_fields")
         validate_url_field = self._state.adding or update_fields is None or "url" in update_fields
@@ -912,13 +936,7 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
                 kwargs["update_fields"] = tuple(dict.fromkeys([*update_fields, "config"]))
 
         if validate_url_field:
-            try:
-                validate_url_length(self.url or "")
-            except ValueError as err:
-                raise ValidationError({"url": str(err)}) from err
-
-            if self.is_archivebox_internal_url(self.url, config=crawl_config_for_save if self.crawl_id else None):
-                raise ValidationError({"url": "ArchiveBox cannot archive its own admin, web, api, or snapshot URLs."})
+            self.validate_url_for_archiving(config=crawl_config_for_save if self.crawl_id else None)
 
         if not self.bookmarked_at:
             self.bookmarked_at = self.created_at or timezone.now()
@@ -2827,6 +2845,12 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         Creates one ArchiveResult per hook (not per plugin), with hook_name set.
         This enables step-based execution where all hooks in a step can run in parallel.
         """
+        try:
+            self.validate_url_for_archiving()
+        except ValidationError as err:
+            rprint(f"[yellow][!] Skipping blocked snapshot URL: {(self.url or '')[:120]}... ({err})[/yellow]")
+            return []
+
         if hooks is None:
             from archivebox.plugins.hooks import discover_hooks
             from archivebox.config.common import get_config

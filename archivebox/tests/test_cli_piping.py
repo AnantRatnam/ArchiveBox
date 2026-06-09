@@ -55,8 +55,7 @@ def test_parse_line_accepts_supported_piping_inputs():
     plain_url = parse_line("https://example.com")
     assert plain_url == {"type": TYPE_SNAPSHOT, "url": "https://example.com"}
 
-    file_url = parse_line("file:///tmp/example.txt")
-    assert file_url == {"type": TYPE_SNAPSHOT, "url": "file:///tmp/example.txt"}
+    assert parse_line("file:///tmp/example.txt") is None
 
     snapshot_json = parse_line('{"type":"Snapshot","url":"https://example.com","tags":"tag1,tag2"}')
     assert snapshot_json is not None
@@ -78,12 +77,16 @@ def test_parse_line_accepts_supported_piping_inputs():
     assert compact_parsed_id == {"type": TYPE_SNAPSHOT, "id": compact_snapshot_id}
 
 
-def test_read_args_or_stdin_handles_args_stdin_and_mixed_jsonl():
+def test_read_args_or_stdin_handles_args_stdin_and_mixed_jsonl(tmp_path):
     """Piping helpers should consume args, structured JSONL, and pass-through records."""
     from archivebox.misc.jsonl import TYPE_CRAWL, read_args_or_stdin
 
     records = list(read_args_or_stdin(("https://example1.com", "https://example2.com")))
     assert [record["url"] for record in records] == ["https://example1.com", "https://example2.com"]
+
+    local_file = tmp_path / "urls.txt"
+    local_file.write_text("https://from-file-arg.example\n")
+    assert list(read_args_or_stdin((str(local_file),))) == []
 
     stdin_records = list(
         read_args_or_stdin(

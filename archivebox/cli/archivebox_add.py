@@ -23,23 +23,50 @@ if TYPE_CHECKING:
     from archivebox.core.models import Snapshot
 
 
-def _collect_input_urls(args: tuple[str, ...]) -> list[str]:
+def _collect_input_urls(args: tuple[str, ...], *, parser: str = "auto") -> list[str]:
     from archivebox.misc.jsonl import read_args_or_stdin
+    from archivebox.misc.util import validate_url
 
     urls: list[str] = []
     for record in read_args_or_stdin(args):
         url = record.get("url")
         if isinstance(url, str) and url:
-            urls.append(url)
+            try:
+                urls.append(validate_url(url))
+            except ValueError as err:
+                raise click.BadParameter(str(err), param_hint="URL") from err
 
         urls_field = record.get("urls")
         if isinstance(urls_field, str):
             for line in urls_field.splitlines():
                 line = line.strip()
                 if line and not line.startswith("#"):
-                    urls.append(line)
+                    try:
+                        urls.append(validate_url(line))
+                    except ValueError as err:
+                        raise click.BadParameter(str(err), param_hint="URL") from err
 
     return urls
+
+
+def _direct_url_lines(raw_urls: str | list[str]) -> list[str]:
+    from archivebox.misc.util import validate_url
+
+    lines = [line.strip() for line in raw_urls.splitlines() if line.strip()] if isinstance(raw_urls, str) else [str(url).strip() for url in raw_urls if str(url).strip()]
+    direct_urls = []
+    for line in lines:
+        try:
+            direct_urls.append(validate_url(line))
+        except ValueError:
+            return []
+    return direct_urls
+
+
+def _should_import_as_source(raw_urls: str | list[str]) -> bool:
+    return not bool(_direct_url_lines(raw_urls))
+
+
+SOURCE_PARSE_PLUGINS = "parse_html_urls,parse_jsonl_urls,parse_netscape_urls,parse_rss_urls,parse_txt_urls"
 
 
 @enforce_types
@@ -119,7 +146,11 @@ def add(
     created_by_id = created_by_id or get_or_create_system_user_pk()
     started_at = timezone.now()
 
-    if isinstance(urls, str):
+    import_as_source = _should_import_as_source(urls)
+    source_text = urls if isinstance(urls, str) else "\n".join(str(url) for url in urls)
+    if import_as_source:
+        url_list = []
+    elif isinstance(urls, str):
         url_list = [line.strip() for line in urls.splitlines() if line.strip()]
     else:
         url_list = [str(url).strip() for url in urls if str(url).strip()]
@@ -135,19 +166,6 @@ def add(
         if admitted_snapshot_ids is not None and snapshot_ids:
             admitted_snapshot_ids.append(snapshot_ids[index])
 
-    # 1. Save the provided URLs to sources/2024-11-05__23-59-59__cli_add.txt
-    sources_file = CONSTANTS.SOURCES_DIR / f"{timezone.now().strftime('%Y-%m-%d__%H-%M-%S')}__cli_add.txt"
-    sources_file.parent.mkdir(parents=True, exist_ok=True)
-    if admitted_snapshot_ids is not None:
-        sources_file.write_text(
-            "\n".join(
-                json.dumps({"url": url, "id": admitted_snapshot_ids[index], "tags": tag, "depth": 0})
-                for index, url in enumerate(admitted_urls)
-            ),
-        )
-    else:
-        sources_file.write_text("\n".join(admitted_urls))
-
     # 2. Create a new Crawl with inline URLs
     cli_args = [*sys.argv]
     if cli_args[0].lower().endswith("archivebox"):
@@ -156,7 +174,6 @@ def add(
 
     timestamp = timezone.now().strftime("%Y-%m-%d__%H-%M-%S")
 
-    urls_content = sources_file.read_text()
     persona_name = (persona or "Default").strip() or "Default"
     plugins = plugins or ""
     persona_obj, _ = Persona.objects.get_or_create(name=persona_name)
@@ -186,9 +203,26 @@ def add(
     # stripped by Crawl.save() and rederived when hooks run.
     crawl_config.update(config_overrides)
 
+    if import_as_source:
+        urls_content = ""
+    else:
+        # 1. Save the provided URLs to sources/2024-11-05__23-59-59__cli_add.txt
+        sources_file = CONSTANTS.SOURCES_DIR / f"{timezone.now().strftime('%Y-%m-%d__%H-%M-%S')}__cli_add.txt"
+        sources_file.parent.mkdir(parents=True, exist_ok=True)
+        if admitted_snapshot_ids is not None:
+            sources_file.write_text(
+                "\n".join(
+                    json.dumps({"url": url, "id": admitted_snapshot_ids[index], "tags": tag, "depth": 0})
+                    for index, url in enumerate(admitted_urls)
+                ),
+            )
+        else:
+            sources_file.write_text("\n".join(admitted_urls))
+        urls_content = sources_file.read_text()
+
     crawl = Crawl.objects.create(
         urls=urls_content,
-        max_depth=depth,
+        max_depth=depth + 1 if import_as_source else depth,
         tags_str=tag,
         persona_id=persona_obj.id,
         label=f"{USER}@{HOSTNAME} $ {cmd_str} [{timestamp}]",
@@ -197,6 +231,20 @@ def add(
         retry_at=None if index_only else timezone.now(),
         config=crawl_config,
     )
+
+    if import_as_source:
+        sources_file = CONSTANTS.SOURCES_DIR / f"{crawl.id.hex}_{timezone.now().strftime('%Y-%m-%d__%H-%M-%S')}__cli_add.txt"
+        sources_file.parent.mkdir(parents=True, exist_ok=True)
+        sources_file.write_text(source_text)
+        root_snapshot = Snapshot.objects.create(
+            url=sources_file.resolve().as_uri(),
+            crawl=crawl,
+            depth=0,
+            title=sources_file.name,
+            config={"PLUGINS": SOURCE_PARSE_PLUGINS},
+        )
+        crawl.urls = json.dumps({"type": "Snapshot", "url": root_snapshot.url, "id": str(root_snapshot.id), "depth": 0})
+        crawl.save(update_fields=["urls", "modified_at"])
 
     print(f"[green]\\[+] Created Crawl {crawl.id} with max_depth={depth}[/green]")
     first_url = crawl.get_urls_list()[0] if crawl.get_urls_list() else ""
@@ -357,7 +405,12 @@ def main(**kwargs):
 
     with foreground_shutdown_signals(), foreground_parent_watchdog():
         raw_urls = kwargs.pop("urls")
-        urls = _collect_input_urls(raw_urls)
+        if raw_urls:
+            urls = _collect_input_urls(raw_urls, parser=kwargs.get("parser", "auto"))
+        elif not sys.stdin.isatty():
+            urls = sys.stdin.read()
+        else:
+            urls = []
         if not urls:
             raise click.UsageError("No URLs provided. Pass URLs as arguments or via stdin.")
         if int(kwargs.get("max_urls") or 0) < 0:

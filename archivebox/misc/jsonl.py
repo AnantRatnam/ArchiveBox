@@ -18,6 +18,9 @@ Typed JSONL Format:
 Plain URLs (also supported):
     https://example.com
     https://foo.com
+
+Local filesystem paths and file:// URLs are intentionally not accepted here.
+Pipe file contents through stdin instead of passing a path/URI as a crawl URL.
 """
 
 __package__ = "archivebox.misc"
@@ -80,7 +83,7 @@ def parse_line(line: str) -> dict[str, Any] | None:
             pass
 
     # Treat as plain URL if it looks like one
-    if line.startswith("http://") or line.startswith("https://") or line.startswith("file://"):
+    if line.startswith("http://") or line.startswith("https://"):
         return {"type": TYPE_SNAPSHOT, "url": line}
 
     # Could be a snapshot ID (UUID with dashes or compact 32-char hex)
@@ -135,17 +138,13 @@ def read_args_or_stdin(args: Iterable[str], stream: TextIO | None = None) -> Ite
     Read from CLI arguments if provided, otherwise from stdin.
 
     Handles both URLs and JSONL from either source.
+    Does not expand local file path arguments; pipe file contents via stdin.
     """
     if args:
         for arg in args:
-            # Check if it's a file path
-            path = Path(arg)
-            if path.exists() and path.is_file():
-                yield from read_file(path)
-            else:
-                record = parse_line(arg)
-                if record:
-                    yield record
+            record = parse_line(arg)
+            if record:
+                yield record
     else:
         yield from read_stdin(stream)
 

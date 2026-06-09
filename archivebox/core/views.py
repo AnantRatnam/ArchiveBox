@@ -91,7 +91,6 @@ from archivebox.core.routes_util import (
 from archivebox.core.forms import AddLinkForm
 from archivebox.plugins.forms import get_plugin_config_binary_urls
 from archivebox.crawls.models import Crawl
-from archivebox.workers.models import RETRY_AT_MAX
 from archivebox.plugins.discovery import discover_plugin_configs
 from archivebox.plugins.views import get_config_definition_link
 from archivebox.progressmonitor.views import live_progress_view, progress_endpoint
@@ -1406,6 +1405,8 @@ class AddView(UserPassesTestMixin, FormView):
         }
 
     def _create_crawl_from_form(self, form, *, created_by_id=None) -> Crawl:
+        from archivebox.cli.archivebox_add import add
+
         urls = form.cleaned_data["url"]
         print(f"[+] Adding URL: {urls}")
 
@@ -1438,8 +1439,6 @@ class AddView(UserPassesTestMixin, FormView):
         if persona:
             persona.ensure_dirs()
 
-        from archivebox.config.permissions import HOSTNAME
-
         if created_by_id is None:
             if self.request.user.is_authenticated:
                 created_by_id = self.request.user.pk
@@ -1448,60 +1447,41 @@ class AddView(UserPassesTestMixin, FormView):
 
                 created_by_id = get_or_create_system_user_pk()
 
-        created_by_name = self.request.user.username if self.request.user.is_authenticated else "web"
-
-        # 1. save the provided urls to sources/2024-11-05__23-59-59__web_ui_add_by_user_<user_pk>.txt
-        sources_file = CONSTANTS.SOURCES_DIR / f"{timezone.now().strftime('%Y-%m-%d__%H-%M-%S')}__web_ui_add_by_user_{created_by_id}.txt"
-        sources_file.parent.mkdir(parents=True, exist_ok=True)
-        sources_file.write_text(urls if isinstance(urls, str) else "\n".join(urls))
-
-        # 2. create a new Crawl with the URLs from the file
-        timestamp = timezone.now().strftime("%Y-%m-%d__%H-%M-%S")
-        urls_content = sources_file.read_text()
-        # Store explicit crawl-scoped overrides; Crawl.save() freezes them
-        # over the resolved persona/user/machine defaults at creation time.
         config = {}
-        if plugins:
-            config["PLUGINS"] = plugins
         effective_config = get_config(persona=persona) if persona else get_config()
-        if crawl_max_concurrent_snapshots != int(effective_config.CRAWL_MAX_CONCURRENT_SNAPSHOTS):
-            config["CRAWL_MAX_CONCURRENT_SNAPSHOTS"] = crawl_max_concurrent_snapshots
         if delete_after != str(effective_config.DELETE_AFTER):
             config["DELETE_AFTER"] = delete_after
-        config["PERMISSIONS"] = permissions
-        if max_urls:
-            config["CRAWL_MAX_URLS"] = max_urls
-        if crawl_max_size:
-            config["CRAWL_MAX_SIZE"] = crawl_max_size
-        if crawl_timeout:
-            config["CRAWL_TIMEOUT"] = crawl_timeout
         if timeout is not None and int(timeout) != int(effective_config.TIMEOUT):
             config["TIMEOUT"] = int(timeout)
-        if snapshot_max_size:
-            config["SNAPSHOT_MAX_SIZE"] = snapshot_max_size
 
-        # Merge custom config overrides
         config.update(plugin_config)
         config.update(custom_config)
         if bool(url_filters.get("only_new")) != bool(effective_config.ONLY_NEW):
             config["ONLY_NEW"] = bool(url_filters.get("only_new"))
-        if url_filters.get("allowlist"):
-            config["URL_ALLOWLIST"] = url_filters["allowlist"]
-        if url_filters.get("denylist"):
-            config["URL_DENYLIST"] = url_filters["denylist"]
-
-        crawl = Crawl.create_scheduler_row(
-            urls=urls_content,
-            max_depth=depth,
-            tags_str=tag,
-            notes=notes,
-            label=f"{created_by_name}@{HOSTNAME}{self.request.path} {timestamp}",
+        crawl, _snapshots = add(
+            urls=urls,
+            depth=depth,
+            max_urls=max_urls,
+            crawl_max_size=crawl_max_size,
+            crawl_timeout=crawl_timeout,
+            snapshot_max_size=snapshot_max_size,
+            crawl_max_concurrent_snapshots=crawl_max_concurrent_snapshots,
+            tag=tag,
+            url_allowlist=url_filters.get("allowlist") or "",
+            url_denylist=url_filters.get("denylist") or "",
+            plugins=plugins,
+            persona=persona.name if persona else "Default",
+            bg=True,
             created_by_id=created_by_id,
             config=config,
-            persona_id=persona.id if persona else None,
-            status=Crawl.StatusChoices.PAUSED if start_paused else Crawl.StatusChoices.QUEUED,
-            retry_at=RETRY_AT_MAX if start_paused else timezone.now(),
         )
+        if notes:
+            crawl.safe_update({"notes": notes}, refresh=False)
+        if permissions and crawl.config.get("PERMISSIONS") != permissions:
+            next_config = {**crawl.config, "PERMISSIONS": permissions}
+            crawl.safe_update({"config": next_config}, refresh=True)
+        if start_paused:
+            crawl.pause()
 
         # 3. create a CrawlSchedule if schedule is provided
         if schedule:
@@ -1518,11 +1498,6 @@ class AddView(UserPassesTestMixin, FormView):
             )
             crawl.schedule = crawl_schedule
             crawl.safe_update({"schedule": crawl_schedule}, refresh=False)
-
-        if not start_paused:
-            from archivebox.services.runner import ensure_background_runner
-
-            ensure_background_runner()
 
         return crawl
 

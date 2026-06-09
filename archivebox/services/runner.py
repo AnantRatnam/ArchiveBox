@@ -1022,7 +1022,9 @@ class CrawlRunner:
             if snapshot["status"] == "sealed" and not self.selected_plugins:
                 await sync_to_async(run_snapshot_maintenance, thread_sensitive=True)(snapshot_id)
                 return
-            snapshot_selected_plugins = self.selected_plugins
+            config = normalize_runtime_config(snapshot["config"])
+            snapshot_config_plugins = [name.strip() for name in str(config.get("PLUGINS") or "").split(",") if name.strip()]
+            snapshot_selected_plugins = self.selected_plugins if self.selected_plugins_from_args else (snapshot_config_plugins or self.selected_plugins)
             selected_hooks_by_plugin = None
             if snapshot["status"] == "started":
                 _reset_count, running_count = await sync_to_async(snapshot["_snapshot"].reset_abandoned_results, thread_sensitive=True)()
@@ -1070,7 +1072,6 @@ class CrawlRunner:
             ):
                 await sync_to_async(self.seal_snapshot_due_to_limit, thread_sensitive=True)(snapshot_id)
                 return
-            config = normalize_runtime_config(snapshot["config"])
             derived_config = normalize_runtime_config(self.derived_config)
             output_dir = Path(snapshot["output_dir"])
             plugins = (
@@ -1397,7 +1398,10 @@ def snapshot_hooks_for_pending_archiveresults(snapshot) -> list[tuple[str, str]]
     from archivebox.config.common import get_config
 
     config = get_config(crawl=snapshot.crawl, snapshot=snapshot)
-    plugin_names = [name.strip() for name in str(config.PLUGINS or "").split(",") if name.strip()]
+    snapshot_plugin_names = [name.strip() for name in str((snapshot.config or {}).get("PLUGINS") or "").split(",") if name.strip()]
+    crawl_plugin_names = [name.strip() for name in str((snapshot.crawl.config or {}).get("PLUGINS") or "").split(",") if name.strip()]
+    config_plugin_names = [name.strip() for name in str(config.PLUGINS or "").split(",") if name.strip()]
+    plugin_names = snapshot_plugin_names or crawl_plugin_names or config_plugin_names
     plugins = (
         filter_plugins(_discover_archivebox_plugins(), plugin_names, include_providers=True)
         if plugin_names
