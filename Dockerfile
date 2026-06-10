@@ -191,7 +191,7 @@ RUN echo "[*] Setting up $ARCHIVEBOX_USER user uid=${DEFAULT_PUID}..." \
 WORKDIR "$DATA_DIR"
 RUN echo "[+] Initializing image collection..." \
     && find "$DATA_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} + \
-    && PUID=0 PGID=0 archivebox init \
+    && archivebox init \
     && (chown "$DEFAULT_PUID:$DEFAULT_PGID" \
         "$DATA_DIR" "$DATA_DIR"/.archivebox_id "$DATA_DIR"/ArchiveBox.conf "$DATA_DIR"/index.sqlite3 \
         "$DATA_DIR"/logs "$DATA_DIR"/logs/* "$DATA_DIR"/sources \
@@ -210,7 +210,8 @@ RUN "$LIB_DIR/playwright/bin/chromium" --version | tee -a /VERSION.txt \
     && /usr/local/bin/sonic --version | tee -a /VERSION.txt \
     && /venv/bin/supervisord --version | tee -a /VERSION.txt \
     && for forbidden_bin in gcc g++ make; do ! command -v "$forbidden_bin" || (echo "Unexpected build tool in runtime: $forbidden_bin=$(command -v "$forbidden_bin")" >&2 && exit 1); done \
-    && stat -c "%U:%G %a %n" "$LIB_DIR" "$PLAYWRIGHT_BROWSERS_PATH" \
+    && stat -c "%U:%G %a %n" "$CONFIG_DIR" "$LIB_DIR" "$PLAYWRIGHT_BROWSERS_PATH" \
+    && setpriv --reuid="$ARCHIVEBOX_USER" --regid="$ARCHIVEBOX_USER" --init-groups test -w "$CONFIG_DIR" \
     && setpriv --reuid="$ARCHIVEBOX_USER" --regid="$ARCHIVEBOX_USER" --init-groups test -w "$LIB_DIR" \
     && setpriv --reuid="$ARCHIVEBOX_USER" --regid="$ARCHIVEBOX_USER" --init-groups archivebox version 2>&1 | tee -a /VERSION.txt \
     && chown -R "$DEFAULT_PUID:$DEFAULT_PGID" "/home/$ARCHIVEBOX_USER/.cache" \

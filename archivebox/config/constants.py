@@ -36,8 +36,8 @@ from .permissions import (
     IN_DOCKER,
     RUNNING_AS_UID,
     RUNNING_AS_GID,
-    DEFAULT_PUID,
-    DEFAULT_PGID,
+    DEFAULT_UID,
+    DEFAULT_GID,
     ARCHIVEBOX_USER,
     ARCHIVEBOX_GROUP,
 )
@@ -66,8 +66,8 @@ class ConstantsDict:
     ARCHIVEBOX_GROUP: int = ARCHIVEBOX_GROUP
     RUNNING_AS_UID: int = RUNNING_AS_UID
     RUNNING_AS_GID: int = RUNNING_AS_GID
-    DEFAULT_PUID: int = DEFAULT_PUID
-    DEFAULT_PGID: int = DEFAULT_PGID
+    DEFAULT_UID: int = DEFAULT_UID
+    DEFAULT_GID: int = DEFAULT_GID
     IS_INSIDE_VENV: bool = sys.prefix != sys.base_prefix
 
     # Source code dirs

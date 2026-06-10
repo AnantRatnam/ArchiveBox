@@ -133,7 +133,7 @@ def version(
     try:
         DATA_DIR_STAT = CONSTANTS.DATA_DIR.stat()
         prnt(
-            f"EUID={os.geteuid()}:{os.getegid()} UID={RUNNING_AS_UID}:{RUNNING_AS_GID} PUID={ARCHIVEBOX_USER}:{ARCHIVEBOX_GROUP}",
+            f"EUID={os.geteuid()}:{os.getegid()} UID={RUNNING_AS_UID}:{RUNNING_AS_GID} ARCHIVEBOX_USER={ARCHIVEBOX_USER}:{ARCHIVEBOX_GROUP}",
             f"FS_UID={DATA_DIR_STAT.st_uid}:{DATA_DIR_STAT.st_gid}",
             f"FS_PERMS={config.OUTPUT_PERMISSIONS}",
             f"FS_ATOMIC={config.ENFORCE_ATOMIC_WRITES}",
@@ -141,7 +141,7 @@ def version(
         )
     except Exception:
         prnt(
-            f"EUID={os.geteuid()}:{os.getegid()} UID={RUNNING_AS_UID}:{RUNNING_AS_GID} PUID={ARCHIVEBOX_USER}:{ARCHIVEBOX_GROUP}",
+            f"EUID={os.geteuid()}:{os.getegid()} UID={RUNNING_AS_UID}:{RUNNING_AS_GID} ARCHIVEBOX_USER={ARCHIVEBOX_USER}:{ARCHIVEBOX_GROUP}",
         )
 
     prnt(

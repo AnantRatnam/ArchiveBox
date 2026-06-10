@@ -122,7 +122,7 @@ def dir_is_writable(dir_path: Path, uid: int | None = None, gid: int | None = No
     try:
         with SudoPermission(uid=uid, fallback=fallback):
             test_file.exists()
-            test_file.write_text(f"Checking if PUID={uid} PGID={gid} can write to dir")
+            test_file.write_text(f"Checking if uid={uid} gid={gid} can write to dir")
             test_file.unlink()
             return True
     except (OSError, PermissionError):

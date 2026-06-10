@@ -187,6 +187,7 @@ permission_error() {
 # Create and repair only the small set of top-level writable paths. Do not recurse
 # through /data/archive; large collections can take days to recursively chown/chmod.
 ensure_dir "$DATA_DIR"
+ensure_dir "$CONFIG_DIR"
 ensure_dir "$DATA_DIR/logs"
 ensure_dir "$DATA_DIR/sources"
 ensure_dir "$DATA_DIR/archive"
@@ -197,6 +198,8 @@ ensure_dir "$PERSONAS_DIR/Default/chrome_profile"
 [[ -e "$DATA_DIR/users" ]] && ensure_dir "$DATA_DIR/users"
 ensure_file_owner "$DATA_DIR/index.sqlite3"
 ensure_file_owner "$DATA_DIR/ArchiveBox.conf"
+ensure_file_owner "$CONFIG_DIR/config.env"
+ensure_file_owner "$CONFIG_DIR/derived.env"
 
 run_as_archivebox touch "$DATA_DIR/logs/.permissions_test_safe_to_delete" 2>/dev/null || permission_error "$DATA_DIR/logs"
 rm -f "$DATA_DIR/logs/.permissions_test_safe_to_delete"

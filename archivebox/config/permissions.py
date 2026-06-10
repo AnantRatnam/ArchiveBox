@@ -24,8 +24,8 @@ except PermissionError:
     DATA_DIR_UID = 0
     DATA_DIR_GID = 0
 
-DEFAULT_PUID = 911
-DEFAULT_PGID = 911
+DEFAULT_UID = 911
+DEFAULT_GID = 911
 RUNNING_AS_UID = os.getuid()
 RUNNING_AS_GID = os.getgid()
 EUID = os.geteuid()
@@ -42,23 +42,20 @@ IN_DOCKER = os.environ.get("IN_DOCKER", False) in ("1", "true", "True", "TRUE", 
 
 FALLBACK_UID = RUNNING_AS_UID or SUDO_UID
 FALLBACK_GID = RUNNING_AS_GID or SUDO_GID
-if RUNNING_AS_UID == 0:
-    try:
-        # if we are running as root it's really hard to figure out what the correct archivebox user should be
-        # as a last resort instead of setting DATA_DIR ownership to 0:0 (which breaks it for non-root users)
-        # check if 911:911 archivebox user exists on host system, and use it instead of 0
-        if pwd.getpwuid(DEFAULT_PUID).pw_name == "archivebox":
-            FALLBACK_UID = DEFAULT_PUID
-            FALLBACK_GID = DEFAULT_PGID
-    except Exception:
-        pass
+try:
+    ARCHIVEBOX_ACCOUNT = pwd.getpwnam("archivebox")
+except KeyError:
+    ARCHIVEBOX_ACCOUNT = None
 
-
-os.environ.setdefault("PUID", str(DATA_DIR_UID or EUID or RUNNING_AS_UID or FALLBACK_UID))
-os.environ.setdefault("PGID", str(DATA_DIR_GID or EGID or RUNNING_AS_GID or FALLBACK_GID))
-
-ARCHIVEBOX_USER = int(os.environ["PUID"])
-ARCHIVEBOX_GROUP = int(os.environ["PGID"])
+if DATA_DIR_UID != 0:
+    ARCHIVEBOX_USER = DATA_DIR_UID
+    ARCHIVEBOX_GROUP = DATA_DIR_GID
+elif RUNNING_AS_UID == 0 and ARCHIVEBOX_ACCOUNT is not None:
+    ARCHIVEBOX_USER = ARCHIVEBOX_ACCOUNT.pw_uid
+    ARCHIVEBOX_GROUP = ARCHIVEBOX_ACCOUNT.pw_gid
+else:
+    ARCHIVEBOX_USER = EUID or RUNNING_AS_UID or FALLBACK_UID
+    ARCHIVEBOX_GROUP = EGID or RUNNING_AS_GID or FALLBACK_GID
 if not USER:
     try:
         # alternative method 1 to get username
@@ -94,13 +91,12 @@ except Exception:
 
 
 def drop_privileges():
-    """If running as root, drop privileges to the user that owns the data dir (or PUID)"""
+    """If running as root, drop privileges to the data dir owner or archivebox user."""
 
-    # always run archivebox as the user that owns the data dir, never as root
+    # Always run ArchiveBox as the user that owns the data dir, or as the
+    # archivebox service account when the data dir is root-owned.
     if os.getuid() == 0:
-        # drop permissions to the user that owns the data dir / provided PUID
         if os.geteuid() != ARCHIVEBOX_USER and ARCHIVEBOX_USER != 0 and ARCHIVEBOX_USER_EXISTS:
-            # drop our effective UID to the archivebox user's UID
             os.seteuid(ARCHIVEBOX_USER)
 
             # update environment variables so that subprocesses dont try to write to /root

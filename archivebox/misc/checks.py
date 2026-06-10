@@ -220,14 +220,14 @@ def check_not_inside_source_dir():
 def check_data_dir_permissions(config=None, **config_kwargs):
     from archivebox import DATA_DIR
     from archivebox.misc.logging import STDERR
-    from archivebox.config.permissions import ARCHIVEBOX_USER, ARCHIVEBOX_GROUP, DEFAULT_PUID, DEFAULT_PGID, IS_ROOT, USER
+    from archivebox.config.permissions import ARCHIVEBOX_USER, ARCHIVEBOX_GROUP, DEFAULT_UID, DEFAULT_GID, IS_ROOT, USER
     from archivebox.config.paths import get_or_create_working_tmp_dir, get_or_create_working_lib_dir
 
     data_dir_stat = Path(DATA_DIR).stat()
     data_dir_uid, data_dir_gid = data_dir_stat.st_uid, data_dir_stat.st_gid
     data_owned_by_root = data_dir_uid == 0
 
-    # data_owned_by_default_user = data_dir_uid == DEFAULT_PUID or data_dir_gid == DEFAULT_PGID
+    # data_owned_by_default_user = data_dir_uid == DEFAULT_UID or data_dir_gid == DEFAULT_GID
     data_owner_doesnt_match = (data_dir_uid != ARCHIVEBOX_USER and data_dir_gid != ARCHIVEBOX_GROUP) if not IS_ROOT else False
     data_not_writable = not (os.path.isdir(DATA_DIR) and os.access(DATA_DIR, os.W_OK))
     if data_not_writable:
@@ -245,9 +245,9 @@ def check_data_dir_permissions(config=None, **config_kwargs):
 
     if data_not_writable:
         STDERR.print(
-            f"[violet]Hint:[/violet] Change the current ownership [red]{data_dir_uid}[/red]:{data_dir_gid} (PUID:PGID) to the user & group that will run ArchiveBox, e.g.:",
+            f"[violet]Hint:[/violet] Change the current ownership [red]{data_dir_uid}[/red]:{data_dir_gid} to the user & group that will run ArchiveBox, e.g.:",
         )
-        STDERR.print(f"    [grey53]sudo[/grey53] chown -R [blue]{DEFAULT_PUID}:{DEFAULT_PGID}[/blue] {DATA_DIR.resolve()}")
+        STDERR.print(f"    [grey53]sudo[/grey53] chown -R [blue]{DEFAULT_UID}:{DEFAULT_GID}[/blue] {DATA_DIR.resolve()}")
         STDERR.print("    Avoid recursive chown on very large archives unless you know the full tree needs repair.")
         STDERR.print()
         STDERR.print("[blue]More info:[/blue]")
@@ -315,7 +315,7 @@ def check_tmp_dir(tmp_dir=None, throw=False, quiet=False, must_exist=True, confi
         tmp_is_valid = dir_is_writable(tmp_dir)
         if not config.ALLOW_NO_UNIX_SOCKETS:
             tmp_is_valid = tmp_is_valid and assert_dir_can_contain_unix_sockets(tmp_dir)
-        assert tmp_is_valid, f"ArchiveBox user PUID={ARCHIVEBOX_USER} PGID={ARCHIVEBOX_GROUP} is unable to write to TMP_DIR={tmp_dir}"
+        assert tmp_is_valid, f"ArchiveBox user {ARCHIVEBOX_USER}:{ARCHIVEBOX_GROUP} is unable to write to TMP_DIR={tmp_dir}"
         socket_url_len = len(f"file://{socket_file}")
         assert tmp_dir_socket_path_is_short_enough(tmp_dir), (
             f"ArchiveBox TMP_DIR={tmp_dir} is too long, file://{socket_file} is {socket_url_len} chars "
@@ -333,7 +333,7 @@ def check_tmp_dir(tmp_dir=None, throw=False, quiet=False, must_exist=True, confi
                     "",
                     "[blue]Info:[/blue] [grey53]The TMP_DIR is used for the supervisord unix socket file and other temporary files.",
                     "  - It [red]must[/red] be on a local drive (not inside a docker volume, remote network drive, or FUSE mount).",
-                    f"  - It [red]must[/red] be readable and writable by the ArchiveBox user (PUID={ARCHIVEBOX_USER}, PGID={ARCHIVEBOX_GROUP}).",
+                    f"  - It [red]must[/red] be readable and writable by the ArchiveBox user ({ARCHIVEBOX_USER}:{ARCHIVEBOX_GROUP}).",
                     "  - It [red]must[/red] be a *short* path (less than 90 characters) due to UNIX path length restrictions for sockets.",
                     "  - It [yellow]should[/yellow] be able to hold at least 200MB of data (in-progress downloads can be large).[/grey53]",
                     "",
@@ -373,7 +373,7 @@ def check_lib_dir(lib_dir: Path | None = None, throw=False, quiet=False, must_ex
     lib_is_valid = False
     try:
         lib_is_valid = dir_is_writable(lib_dir)
-        assert lib_is_valid, f"ArchiveBox user PUID={ARCHIVEBOX_USER} PGID={ARCHIVEBOX_GROUP} is unable to write to LIB_DIR={lib_dir}"
+        assert lib_is_valid, f"ArchiveBox user {ARCHIVEBOX_USER}:{ARCHIVEBOX_GROUP} is unable to write to LIB_DIR={lib_dir}"
         return True
     except Exception as e:
         if not quiet:
@@ -385,7 +385,7 @@ def check_lib_dir(lib_dir: Path | None = None, throw=False, quiet=False, must_ex
                     f"   [yellow]{e}[/yellow]",
                     "",
                     "[blue]Info:[/blue] [grey53]The LIB_DIR is used to store ArchiveBox auto-installed plugin library and binary dependencies.",
-                    f"  - It [red]must[/red] be readable and writable by the ArchiveBox user (PUID={ARCHIVEBOX_USER}, PGID={ARCHIVEBOX_GROUP}).",
+                    f"  - It [red]must[/red] be readable and writable by the ArchiveBox user ({ARCHIVEBOX_USER}:{ARCHIVEBOX_GROUP}).",
                     "  - It [yellow]should[/yellow] be on a local (ideally fast) drive like an SSD or HDD (not on a network drive or external HDD).",
                     "  - It [yellow]should[/yellow] be able to hold at least 1GB of data (some dependencies like Chrome can be large).[/grey53]",
                     "",
