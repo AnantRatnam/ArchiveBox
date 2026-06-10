@@ -12,7 +12,7 @@ from .conftest import (
     start_archivebox_server,
     stop_server,
 )
-from archivebox.core.models import Snapshot
+from archivebox.core.models import Snapshot, SnapshotTag
 from archivebox.crawls.models import Crawl
 from archivebox.tests.test_orm_helpers import use_archivebox_db
 
@@ -159,25 +159,43 @@ def wait_for_import_processing(cwd: Path, expected_urls: set[str], *, timeout: f
     raise AssertionError("timed out waiting for import crawl processing to start")
 
 
-def wait_for_expected_import_snapshots(cwd: Path, expected_urls: set[str], *, timeout: float = 180.0) -> None:
+def wait_for_expected_import_snapshots(
+    cwd: Path,
+    expected_urls: set[str],
+    *,
+    timeout: float = 180.0,
+    expected_tags: set[str] | None = None,
+) -> None:
     import time
 
     allowed_statuses = {Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED, Snapshot.StatusChoices.SEALED}
     deadline = time.time() + timeout
     while time.time() < deadline:
         with use_archivebox_db(cwd):
-            rows = list(Snapshot.objects.filter(url__in=expected_urls).values_list("url", "status"))
+            snapshots = list(Snapshot.objects.filter(url__in=expected_urls).values("id", "url", "status"))
+            tag_names_by_snapshot_id = {}
+            if expected_tags and snapshots:
+                for snapshot_id, tag_name in SnapshotTag.objects.filter(
+                    snapshot_id__in=[snapshot["id"] for snapshot in snapshots],
+                ).values_list("snapshot_id", "tag__name"):
+                    tag_names_by_snapshot_id.setdefault(snapshot_id, set()).add(tag_name)
         counts = {url: 0 for url in expected_urls}
         bad_statuses = []
-        for url, status in rows:
-            counts[url] += 1
-            if status not in allowed_statuses:
-                bad_statuses.append((url, status))
-        if all(count == 1 for count in counts.values()) and not bad_statuses:
+        missing_tags = {}
+        for snapshot in snapshots:
+            counts[snapshot["url"]] += 1
+            if snapshot["status"] not in allowed_statuses:
+                bad_statuses.append((snapshot["url"], snapshot["status"]))
+            if expected_tags:
+                tag_names = tag_names_by_snapshot_id.get(snapshot["id"], set())
+                missing = expected_tags - tag_names
+                if missing:
+                    missing_tags[snapshot["url"]] = missing
+        if all(count == 1 for count in counts.values()) and not bad_statuses and not missing_tags:
             return
         time.sleep(1)
     raise AssertionError(
-        f"timed out waiting for one queued/started/sealed snapshot per URL, got counts={counts}, bad_statuses={bad_statuses}",
+        f"timed out waiting for one queued/started/sealed snapshot per URL, got counts={counts}, bad_statuses={bad_statuses}, missing_tags={missing_tags}",
     )
 
 
@@ -364,10 +382,13 @@ def test_api_cli_add_rejects_file_path_and_shell_injection_payloads(tmp_path):
     finally:
         stop_server(tmp_path)
 
+    wait_for_expected_import_snapshots(tmp_path, {safe_url}, timeout=30, expected_tags={"api-security"})
     assert_no_file_or_shell_payload_snapshots(tmp_path, canary=canary)
     with use_archivebox_db(tmp_path):
         snapshot = Snapshot.objects.get(url=safe_url)
         crawl = Crawl.objects.get()
     assert crawl.status in {Crawl.StatusChoices.STARTED, Crawl.StatusChoices.SEALED}
     assert snapshot.status in {Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED, Snapshot.StatusChoices.SEALED}
-    assert "api-security" in set(snapshot.tags.values_list("name", flat=True))
+    with use_archivebox_db(tmp_path):
+        tag_names = set(SnapshotTag.objects.filter(snapshot=snapshot).values_list("tag__name", flat=True))
+    assert "api-security" in tag_names
