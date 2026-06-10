@@ -37,6 +37,8 @@ export ARCHIVEBOX_USER="${ARCHIVEBOX_USER:-archivebox}"
 export PERSONAS_DIR="${PERSONAS_DIR:-$DATA_DIR/personas}"
 export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$LIB_DIR/playwright/cache}"
 export ABXBUS_CACHE_DIR="${ABXBUS_CACHE_DIR:-${XDG_CACHE_HOME:-/home/archivebox/.cache}/abxbus}"
+export UV_CACHE_DIR="${UV_CACHE_DIR:-${XDG_CACHE_HOME:-/home/archivebox/.cache}/uv}"
+export PNPM_HOME="${PNPM_HOME:-${XDG_CACHE_HOME:-/home/archivebox/.cache}/pnpm}"
 
 # Global default PUID and PGID if data dir is empty and no intended PUID+PGID is set manually by user
 export DEFAULT_PUID=911
@@ -226,11 +228,15 @@ find /tmp "$TMP_DIR" -maxdepth 1 -type d -name "archivebox-chrome-profile.*" -mm
 ensure_dir "/home/$ARCHIVEBOX_USER"
 ensure_small_runtime_tree "$ABXBUS_CACHE_DIR"
 ensure_small_runtime_tree "$ABXBUS_CACHE_DIR/semaphores"
+ensure_small_runtime_tree "$UV_CACHE_DIR"
+ensure_small_runtime_tree "$PNPM_HOME"
 ensure_runtime_tree "$PLAYWRIGHT_BROWSERS_PATH"
 ensure_runtime_tmp_tree
 ensure_runtime_tree "$LIB_DIR"
 run_as_archivebox touch "$ABXBUS_CACHE_DIR/semaphores/.permissions_test_safe_to_delete" 2>/dev/null || permission_error "$ABXBUS_CACHE_DIR/semaphores"
 rm -f "$ABXBUS_CACHE_DIR/semaphores/.permissions_test_safe_to_delete"
+run_as_archivebox touch "$UV_CACHE_DIR/.permissions_test_safe_to_delete" 2>/dev/null || permission_error "$UV_CACHE_DIR"
+rm -f "$UV_CACHE_DIR/.permissions_test_safe_to_delete"
 
 # (this check is written in blood in 2023, QEMU silently breaks things in ways that are not obvious)
 export IN_QEMU="$(pmap 1 | grep qemu >/dev/null && echo 'True' || echo 'False')"

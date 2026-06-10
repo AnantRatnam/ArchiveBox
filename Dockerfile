@@ -197,7 +197,7 @@ RUN echo "[+] Initializing image collection..." \
         "$DATA_DIR"/logs "$DATA_DIR"/logs/* "$DATA_DIR"/sources \
         "$DATA_DIR"/archive "$DATA_DIR"/archive/users "$DATA_DIR"/personas \
         "$DATA_DIR"/tmp "$DATA_DIR"/tmp/* \
-        "$TMP_DIR" "$LIB_DIR" "$PLAYWRIGHT_BROWSERS_PATH" "/home/$ARCHIVEBOX_USER/.cache/abxbus" "/home/$ARCHIVEBOX_USER/.cache/abxbus/semaphores" \
+        "$TMP_DIR" "$LIB_DIR" "$PLAYWRIGHT_BROWSERS_PATH" "/home/$ARCHIVEBOX_USER/.cache" \
         2>/dev/null || true) \
     && find "$TMP_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
 
@@ -213,8 +213,10 @@ RUN "$LIB_DIR/playwright/bin/chromium" --version | tee -a /VERSION.txt \
     && stat -c "%U:%G %a %n" "$LIB_DIR" "$PLAYWRIGHT_BROWSERS_PATH" \
     && setpriv --reuid="$ARCHIVEBOX_USER" --regid="$ARCHIVEBOX_USER" --init-groups test -w "$LIB_DIR" \
     && setpriv --reuid="$ARCHIVEBOX_USER" --regid="$ARCHIVEBOX_USER" --init-groups archivebox version 2>&1 | tee -a /VERSION.txt \
-    && chown -R "$DEFAULT_PUID:$DEFAULT_PGID" "/home/$ARCHIVEBOX_USER/.cache/abxbus" \
+    && chown -R "$DEFAULT_PUID:$DEFAULT_PGID" "/home/$ARCHIVEBOX_USER/.cache" \
     && setpriv --reuid="$ARCHIVEBOX_USER" --regid="$ARCHIVEBOX_USER" --init-groups test -w "/home/$ARCHIVEBOX_USER/.cache/abxbus/semaphores" \
+    && setpriv --reuid="$ARCHIVEBOX_USER" --regid="$ARCHIVEBOX_USER" --init-groups test -w "/home/$ARCHIVEBOX_USER/.cache/uv" \
+    && setpriv --reuid="$ARCHIVEBOX_USER" --regid="$ARCHIVEBOX_USER" --init-groups abx-dl install \
     && rm -rf /root/.cache /var/cache/apt/* /var/lib/apt/lists/*
 
 RUN (echo -e "\n\n[√] Finished ArchiveBox multistage Docker build successfully." \
