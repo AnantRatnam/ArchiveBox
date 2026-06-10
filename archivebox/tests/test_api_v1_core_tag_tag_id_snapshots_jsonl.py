@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from archivebox.core.models import Snapshot, Tag
@@ -31,6 +33,12 @@ def test_tag_snapshots_export_returns_jsonl(client, api_token, tagged_data):
     assert response.status_code == 200
     assert response["Content-Type"].startswith("application/x-ndjson")
     assert f"tag-{tag.slug}-snapshots.jsonl" in response["Content-Disposition"]
-    body = response.content.decode()
-    assert '"type": "Snapshot"' in body
-    assert '"tags": "Alpha Research"' in body
+    rows = [json.loads(line) for line in response.content.decode().splitlines()]
+    rows_by_url = {row["url"]: row for row in rows}
+    assert set(rows_by_url) == {"https://example.com/one", "https://example.com/two"}
+    assert rows_by_url["https://example.com/one"]["type"] == "Snapshot"
+    assert rows_by_url["https://example.com/one"]["title"] == "Example One"
+    assert rows_by_url["https://example.com/two"]["type"] == "Snapshot"
+    assert rows_by_url["https://example.com/two"]["title"] == "Example Two"
+    for row in rows:
+        assert "Alpha Research" in row["tags"].split(",")
