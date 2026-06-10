@@ -197,6 +197,7 @@ RUN echo "[+] Initializing image collection..." \
         "$DATA_DIR"/logs "$DATA_DIR"/logs/* "$DATA_DIR"/sources \
         "$DATA_DIR"/archive "$DATA_DIR"/archive/users "$DATA_DIR"/personas \
         "$DATA_DIR"/tmp "$DATA_DIR"/tmp/* \
+        "$CONFIG_DIR" "$CONFIG_DIR"/config.env "$CONFIG_DIR"/derived.env \
         "$TMP_DIR" "$LIB_DIR" "$PLAYWRIGHT_BROWSERS_PATH" "/home/$ARCHIVEBOX_USER/.cache" \
         2>/dev/null || true) \
     && find "$TMP_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
