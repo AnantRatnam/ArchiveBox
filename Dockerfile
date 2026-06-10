@@ -41,8 +41,8 @@ ENV PYTHON_VERSION=3.13 \
     NODE_VERSION=24
 
 ENV ARCHIVEBOX_USER=archivebox \
-    DEFAULT_PUID=911 \
-    DEFAULT_PGID=911 \
+    DEFAULT_ARCHIVEBOX_UID=911 \
+    DEFAULT_ARCHIVEBOX_GID=911 \
     IN_DOCKER=True
 
 ENV CODE_DIR=/app \
@@ -168,7 +168,7 @@ COPY --from=archivebox-builder /venv /venv
 COPY --from=archivebox-builder /app /app
 COPY --from=archivebox-builder /VERSION.txt /VERSION.txt
 
-RUN echo "[*] Setting up $ARCHIVEBOX_USER user uid=${DEFAULT_PUID}..." \
+RUN echo "[*] Setting up $ARCHIVEBOX_USER user uid=${DEFAULT_ARCHIVEBOX_UID}..." \
     && printf 'export PATH="/venv/bin:/opt/node/bin:$PATH"\n' > /etc/profile.d/archivebox-path.sh \
     && ln -sf /venv/bin/archivebox /usr/local/bin/archivebox \
     && ln -sf /venv/bin/daphne /usr/local/bin/daphne \
@@ -177,22 +177,22 @@ RUN echo "[*] Setting up $ARCHIVEBOX_USER user uid=${DEFAULT_PUID}..." \
     && getent group "$ARCHIVEBOX_USER" >/dev/null || groupadd --system "$ARCHIVEBOX_USER" \
     && id -u "$ARCHIVEBOX_USER" >/dev/null 2>&1 || useradd --system --create-home --gid "$ARCHIVEBOX_USER" --groups audio,video "$ARCHIVEBOX_USER" \
     && usermod --append --groups audio,video "$ARCHIVEBOX_USER" \
-    && [[ "$(id -u "$ARCHIVEBOX_USER")" == "$DEFAULT_PUID" ]] || usermod -u "$DEFAULT_PUID" "$ARCHIVEBOX_USER" \
-    && [[ "$(id -g "$ARCHIVEBOX_USER")" == "$DEFAULT_PGID" ]] || groupmod -g "$DEFAULT_PGID" "$ARCHIVEBOX_USER" \
+    && [[ "$(id -u "$ARCHIVEBOX_USER")" == "$DEFAULT_ARCHIVEBOX_UID" ]] || usermod -u "$DEFAULT_ARCHIVEBOX_UID" "$ARCHIVEBOX_USER" \
+    && [[ "$(id -g "$ARCHIVEBOX_USER")" == "$DEFAULT_ARCHIVEBOX_GID" ]] || groupmod -g "$DEFAULT_ARCHIVEBOX_GID" "$ARCHIVEBOX_USER" \
     && (which sonic && sonic --version) | tee -a /VERSION.txt \
-    && install -d -o "$DEFAULT_PUID" -g "$DEFAULT_PGID" "$DATA_DIR" "$TMP_DIR" "$CONFIG_DIR" "$LIB_DIR" "$PLAYWRIGHT_BROWSERS_PATH" \
-    && install -d -o "$DEFAULT_PUID" -g "$DEFAULT_PGID" "/home/$ARCHIVEBOX_USER" "/home/$ARCHIVEBOX_USER/.cache" \
-    && install -d -o "$DEFAULT_PUID" -g "$DEFAULT_PGID" "/home/$ARCHIVEBOX_USER/.cache/abxbus/semaphores" "/home/$ARCHIVEBOX_USER/.cache/pnpm" "/home/$ARCHIVEBOX_USER/.cache/uv" \
-    && chown "$DEFAULT_PUID:$DEFAULT_PGID" "$DATA_DIR" "$TMP_DIR" "$LIB_DIR" "$PLAYWRIGHT_BROWSERS_PATH" "/home/$ARCHIVEBOX_USER/.cache/abxbus" "/home/$ARCHIVEBOX_USER/.cache/abxbus/semaphores" \
+    && install -d -o "$DEFAULT_ARCHIVEBOX_UID" -g "$DEFAULT_ARCHIVEBOX_GID" "$DATA_DIR" "$TMP_DIR" "$CONFIG_DIR" "$LIB_DIR" "$PLAYWRIGHT_BROWSERS_PATH" \
+    && install -d -o "$DEFAULT_ARCHIVEBOX_UID" -g "$DEFAULT_ARCHIVEBOX_GID" "/home/$ARCHIVEBOX_USER" "/home/$ARCHIVEBOX_USER/.cache" \
+    && install -d -o "$DEFAULT_ARCHIVEBOX_UID" -g "$DEFAULT_ARCHIVEBOX_GID" "/home/$ARCHIVEBOX_USER/.cache/abxbus/semaphores" "/home/$ARCHIVEBOX_USER/.cache/pnpm" "/home/$ARCHIVEBOX_USER/.cache/uv" \
+    && chown "$DEFAULT_ARCHIVEBOX_UID:$DEFAULT_ARCHIVEBOX_GID" "$DATA_DIR" "$TMP_DIR" "$LIB_DIR" "$PLAYWRIGHT_BROWSERS_PATH" "/home/$ARCHIVEBOX_USER/.cache/abxbus" "/home/$ARCHIVEBOX_USER/.cache/abxbus/semaphores" \
     && openssl rand -hex 16 > /etc/machine-id \
-    && echo -e "\nARCHIVEBOX_USER=$ARCHIVEBOX_USER PUID=$(id -u "$ARCHIVEBOX_USER") PGID=$(id -g "$ARCHIVEBOX_USER")" | tee -a /VERSION.txt \
+    && echo -e "\nARCHIVEBOX_USER=$ARCHIVEBOX_USER ARCHIVEBOX_UID=$(id -u "$ARCHIVEBOX_USER") ARCHIVEBOX_GID=$(id -g "$ARCHIVEBOX_USER")" | tee -a /VERSION.txt \
     && echo -e "TMP_DIR=$TMP_DIR\nLIB_DIR=$LIB_DIR\nPLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH\nMACHINE_ID=$(cat /etc/machine-id)\n" | tee -a /VERSION.txt
 
 WORKDIR "$DATA_DIR"
 RUN echo "[+] Initializing image collection..." \
     && find "$DATA_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} + \
     && archivebox init \
-    && (chown "$DEFAULT_PUID:$DEFAULT_PGID" \
+    && (chown "$DEFAULT_ARCHIVEBOX_UID:$DEFAULT_ARCHIVEBOX_GID" \
         "$DATA_DIR" "$DATA_DIR"/.archivebox_id "$DATA_DIR"/ArchiveBox.conf "$DATA_DIR"/index.sqlite3 \
         "$DATA_DIR"/logs "$DATA_DIR"/logs/* "$DATA_DIR"/sources \
         "$DATA_DIR"/archive "$DATA_DIR"/archive/users "$DATA_DIR"/personas \
@@ -215,7 +215,7 @@ RUN "$LIB_DIR/playwright/bin/chromium" --version | tee -a /VERSION.txt \
     && setpriv --reuid="$ARCHIVEBOX_USER" --regid="$ARCHIVEBOX_USER" --init-groups test -w "$CONFIG_DIR" \
     && setpriv --reuid="$ARCHIVEBOX_USER" --regid="$ARCHIVEBOX_USER" --init-groups test -w "$LIB_DIR" \
     && setpriv --reuid="$ARCHIVEBOX_USER" --regid="$ARCHIVEBOX_USER" --init-groups archivebox version 2>&1 | tee -a /VERSION.txt \
-    && chown -R "$DEFAULT_PUID:$DEFAULT_PGID" "/home/$ARCHIVEBOX_USER/.cache" \
+    && chown -R "$DEFAULT_ARCHIVEBOX_UID:$DEFAULT_ARCHIVEBOX_GID" "/home/$ARCHIVEBOX_USER/.cache" \
     && setpriv --reuid="$ARCHIVEBOX_USER" --regid="$ARCHIVEBOX_USER" --init-groups test -w "/home/$ARCHIVEBOX_USER/.cache/abxbus/semaphores" \
     && setpriv --reuid="$ARCHIVEBOX_USER" --regid="$ARCHIVEBOX_USER" --init-groups test -w "/home/$ARCHIVEBOX_USER/.cache/uv" \
     && setpriv --reuid="$ARCHIVEBOX_USER" --regid="$ARCHIVEBOX_USER" --init-groups abx-dl install \
