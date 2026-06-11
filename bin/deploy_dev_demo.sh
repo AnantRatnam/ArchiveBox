@@ -82,7 +82,7 @@ if "${COMPOSE[@]}" config --services | grep -qx argo; then
 fi
 
 echo "[+] ArchiveBox version:"
-VERSION_OUTPUT="$("${COMPOSE[@]}" exec -T "$DEPLOY_SERVICE" archivebox version 2>&1 || true)"
+VERSION_OUTPUT="$("${COMPOSE[@]}" exec -T "$DEPLOY_SERVICE" archivebox version </dev/null 2>&1 || true)"
 printf '%s\n' "$VERSION_OUTPUT" | sed -n '1,40p'
 if [[ -n "$DEPLOY_EXPECT_VERSION" ]] && ! grep -q "ArchiveBox v${DEPLOY_EXPECT_VERSION}" <<<"$VERSION_OUTPUT"; then
     echo "[X] Deployed container is not running ArchiveBox ${DEPLOY_EXPECT_VERSION}" >&2
@@ -90,7 +90,7 @@ if [[ -n "$DEPLOY_EXPECT_VERSION" ]] && ! grep -q "ArchiveBox v${DEPLOY_EXPECT_V
 fi
 
 echo "[+] Health check:"
-"${COMPOSE[@]}" exec -T "$DEPLOY_SERVICE" curl -fsS --max-time 10 --connect-timeout 2 -H 'Host: admin.archivebox.io' http://127.0.0.1:8000/health/
+"${COMPOSE[@]}" exec -T "$DEPLOY_SERVICE" curl -fsS --max-time 10 --connect-timeout 2 -H 'Host: admin.archivebox.io' http://127.0.0.1:8000/health/ </dev/null
 REMOTE
 
 echo "[√] Demo deploy finished."
