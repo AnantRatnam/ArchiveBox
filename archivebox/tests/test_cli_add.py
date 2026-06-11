@@ -12,7 +12,7 @@ import pytest
 from django.db import connection
 from django.utils import timezone
 
-from archivebox.core.models import ArchiveResult, Snapshot
+from archivebox.core.models import ArchiveResult, Snapshot, SnapshotTag
 from archivebox.crawls.models import Crawl
 from archivebox.machine.models import Process
 from archivebox.tests.conftest import (
@@ -484,6 +484,62 @@ def test_add_bg_queues_internal_input_root_snapshot(initialized_archive):
     assert root_snapshot.url == Snapshot.INTERNAL_INPUT_URL
     assert root_snapshot.depth == 0
     assert root_input == "https://example.com"
+
+
+@pytest.mark.timeout(180)
+def test_add_tagged_single_url_seals_without_duplicate_snapshot_tags(initialized_archive):
+    env = os.environ.copy()
+    env.update(
+        {
+            "USE_COLOR": "False",
+            "SHOW_PROGRESS": "False",
+            "PLUGINS": "parse_txt_urls,title",
+            "TIMEOUT": "60",
+            "CRAWL_MAX_CONCURRENT_SNAPSHOTS": "1",
+        },
+    )
+    result = run_archivebox_cmd(
+        [
+            "add",
+            "--bg",
+            "--depth=0",
+            "--tag=tagged-single-url",
+            "https://example.com/?archivebox-tagged-single-url=1",
+        ],
+        cwd=initialized_archive,
+        env=env,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+    run_queued_crawls(initialized_archive, env, timeout=180)
+
+    with use_archivebox_db(initialized_archive):
+        crawl = Crawl.objects.get()
+        snapshots = list(Snapshot.objects.order_by("depth", "url"))
+        tag_counts = {
+            snapshot.url: SnapshotTag.objects.filter(snapshot=snapshot, tag__name="tagged-single-url").count() for snapshot in snapshots
+        }
+        results = list(
+            ArchiveResult.objects.select_related("snapshot")
+            .order_by("snapshot__depth", "snapshot__url", "plugin")
+            .values_list("snapshot__url", "plugin", "status", "output_str"),
+        )
+
+    assert crawl.status == Crawl.StatusChoices.SEALED
+    assert [(snapshot.url, snapshot.depth, snapshot.status) for snapshot in snapshots] == [
+        (Snapshot.INTERNAL_INPUT_URL, 0, Snapshot.StatusChoices.SEALED),
+        ("https://example.com/?archivebox-tagged-single-url=1", 1, Snapshot.StatusChoices.SEALED),
+    ]
+    assert tag_counts == {
+        Snapshot.INTERNAL_INPUT_URL: 1,
+        "https://example.com/?archivebox-tagged-single-url=1": 1,
+    }
+    by_url_plugin = {(url, plugin): status for url, plugin, status, _output in results}
+    assert by_url_plugin[(Snapshot.INTERNAL_INPUT_URL, "parse_txt_urls")] == "succeeded"
+    assert by_url_plugin[("https://example.com/?archivebox-tagged-single-url=1", "title")] == "succeeded"
+    unexpected_failures = [(url, plugin, status, output) for url, plugin, status, output in results if status == "failed"]
+    assert not unexpected_failures
 
 
 def test_add_index_only_rejected_urls_leave_empty_crawl_for_runner_to_seal(initialized_archive):

@@ -136,7 +136,7 @@ class Tag(ModelWithUUID):
 
         # Auto-attach to snapshot if in overrides
         if overrides and "snapshot" in overrides and tag:
-            overrides["snapshot"].tags.add(tag)
+            overrides["snapshot"].add_tag_ids([tag.pk])
 
         return tag
 
@@ -571,6 +571,15 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
         @property
         def sm(self) -> "SnapshotMachine": ...
 
+    def add_tag_ids(self, tag_ids: Iterable[int | str]) -> None:
+        tag_ids = [tag_id for tag_id in dict.fromkeys(tag_ids) if tag_id]
+        if not tag_ids:
+            return
+        SnapshotTag.objects.bulk_create(
+            [SnapshotTag(snapshot_id=self.pk, tag_id=tag_id) for tag_id in tag_ids],
+            ignore_conflicts=True,
+        )
+
     class Meta(
         ModelWithDeleteAfter.Meta,
         ModelWithOutputDir.Meta,
@@ -974,7 +983,7 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
                 if missing_tags:
                     Tag.objects.bulk_create(missing_tags, ignore_conflicts=True)
                     tags_by_name = {tag.name: tag for tag in Tag.objects.filter(name__in=crawl_tag_names)}
-                self.tags.add(*[tag.pk for name in crawl_tag_names if (tag := tags_by_name.get(name))])
+                self.add_tag_ids([tag.pk for name in crawl_tag_names if (tag := tags_by_name.get(name))])
             # Snapshot.save() normally appends newly created URLs to Crawl.urls
             # so legacy/direct crawls can keep their queue text in sync. For
             # internal-input crawls that would corrupt the original submitted
@@ -1690,7 +1699,7 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
             with transaction.atomic():
                 for tag_name in new_tags:
                     tag, _ = Tag.objects.get_or_create(name=tag_name)
-                    self.tags.add(tag)
+                    self.add_tag_ids([tag.pk])
 
     def _merge_archive_results_from_index(self, index_data: dict, update_existing: bool = True):
         """Merge ArchiveResults one row per hook; retries update the existing row."""
@@ -2136,7 +2145,7 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
 
             # Merge tags
             for tag in dup.tags.all():
-                keeper.tags.add(tag)
+                keeper.add_tag_ids([tag.pk])
 
             # Move ArchiveResults
             ArchiveResult.objects.filter(snapshot=dup).update(
@@ -2584,7 +2593,7 @@ class Snapshot(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelW
     def save_tags(self, tags: Iterable[str] = ()) -> None:
         tags_id = [Tag.objects.get_or_create(name=tag)[0].pk for tag in tags if tag.strip()]
         self.tags.clear()
-        self.tags.add(*tags_id)
+        self.add_tag_ids(tags_id)
 
     def pending_archiveresults(self) -> QuerySet["ArchiveResult"]:
         return self.archiveresult_set.exclude(status__in=ArchiveResult.FINAL_OR_ACTIVE_STATES)

@@ -1409,6 +1409,7 @@ def include_background_prerequisite_hooks(
 
 def snapshot_hooks_for_pending_archiveresults(snapshot) -> list[tuple[str, str]]:
     from archivebox.config.common import get_config
+    from archivebox.core.models import Snapshot
 
     config = get_config(crawl=snapshot.crawl, snapshot=snapshot)
     snapshot_plugin_names = [name.strip() for name in str((snapshot.config or {}).get("PLUGINS") or "").split(",") if name.strip()]
@@ -1420,6 +1421,8 @@ def snapshot_hooks_for_pending_archiveresults(snapshot) -> list[tuple[str, str]]
         if plugin_names
         else _discover_archivebox_plugins()
     )
+    if snapshot.url == Snapshot.INTERNAL_INPUT_URL:
+        plugins = {name: plugin for name, plugin in plugins.items() if getattr(plugin.config, "x_accepts_internal_input", False)}
     return sorted((plugin.name, hook.name) for plugin in plugins.values() for hook in plugin.filter_hooks("Snapshot"))
 
 

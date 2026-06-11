@@ -1082,7 +1082,7 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
                         # relation without clearing any non-crawl snapshot tags.
                         Tag.objects.bulk_create(missing_tags, ignore_conflicts=True)
                         tags_by_name.update({tag.name: tag for tag in Tag.objects.filter(name__in=missing_names)})
-                snapshot.tags.add(*[tag.pk for tag_name in tag_names if (tag := tags_by_name.get(tag_name))])
+                snapshot.add_tag_ids([tag.pk for tag_name in tag_names if (tag := tags_by_name.get(tag_name))])
 
             # Symlink creation touches the filesystem and can be slow on remote disks.
             # Defer it until after any active DB transaction commits so SQLite does
@@ -1191,7 +1191,7 @@ class Crawl(ModelWithDeleteAfter, ModelWithOutputDir, ModelWithConfig, ModelWith
             }
             if tag_names:
                 tag_ids = [Tag.objects.get_or_create(name=tag_name)[0].pk for tag_name in tag_names]
-                snapshot.tags.add(*tag_ids)
+                snapshot.add_tag_ids(tag_ids)
 
         existing_scope = Snapshot.objects if bool(self._config_value(config, "ONLY_NEW", True)) else self.snapshot_set
         existing_urls = set(existing_scope.filter(url__in=deduped_records.keys()).values_list("url", flat=True))
