@@ -157,7 +157,6 @@ PY
 /usr/bin/uv sync \
     --project /tmp/archivebox-uv-project \
     --refresh \
-    --python-platform linux \
     --no-dev \
     --inexact \
     --no-install-project \
