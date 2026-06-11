@@ -1354,6 +1354,14 @@ def queued_plugins_for_snapshot(snapshot_id: str) -> list[str] | None:
     return queued_plugins
 
 
+def config_overrides_for_queued_plugins(selected_plugins: list[str], **overrides: Any) -> dict[str, Any]:
+    config_overrides = dict(overrides)
+    for plugin_name in selected_plugins:
+        if plugin_name.startswith("search_backend_"):
+            config_overrides[f"{plugin_name.upper()}_ENABLED"] = True
+    return config_overrides
+
+
 def fail_unavailable_queued_hooks(
     snapshot_id: str,
     selected_hooks_by_plugin: dict[str, set[str] | None],
@@ -1602,16 +1610,18 @@ def run_due_snapshot(snapshot, *, lock_seconds: int, interactive_interrupts: boo
             _runner_console_line(crawl_id=snapshot.crawl_id, snapshot=snapshot)
             # Explicit maintenance, e.g. `archivebox update --index-only`, may
             # need to run search/index hooks for a paused snapshot. That should
-            # not resume the crawl or make unrelated queued work runnable, so
-            # selected_plugins is required and the paused state is restored in
-            # the finally block below.
+            # not resume the crawl or make unrelated queued work runnable. The
+            # queued ArchiveResult rows are the durable maintenance request, so
+            # run that exact plugin set even when the paused crawl's normal
+            # PLUGINS config names a different extractor surface.
             run_crawl(
                 str(snapshot.crawl_id),
                 snapshot_ids=[str(snapshot.id)],
                 selected_plugins=selected_plugins,
                 process_discovered_snapshots_inline=True,
                 interactive_interrupts=interactive_interrupts,
-                selected_plugins_are_explicit=False,
+                config_overrides=config_overrides_for_queued_plugins(selected_plugins),
+                selected_plugins_are_explicit=True,
             )
         finally:
             # Targeted plugin rows can complete while the Snapshot remains
@@ -1643,7 +1653,8 @@ def run_due_snapshot(snapshot, *, lock_seconds: int, interactive_interrupts: boo
                 selected_plugins=selected_plugins,
                 process_discovered_snapshots_inline=True,
                 interactive_interrupts=interactive_interrupts,
-                selected_plugins_are_explicit=False,
+                config_overrides=config_overrides_for_queued_plugins(selected_plugins),
+                selected_plugins_are_explicit=True,
             )
             if search_only_plugins:
                 from archivebox.core.models import ArchiveResult
@@ -1928,7 +1939,7 @@ def _run_due_queued_plugin_result(
             status=ArchiveResult.StatusChoices.QUEUED,
             plugin__in=plugin_names,
             snapshot__retry_at__lte=now,
-            snapshot__status=Snapshot.StatusChoices.SEALED,
+            snapshot__status__in=(Snapshot.StatusChoices.SEALED, Snapshot.StatusChoices.PAUSED),
         )
         .filter(**({"snapshot__crawl_id": crawl_id} if crawl_id else {}))
         .values("snapshot_id", "snapshot__crawl_id")[:1]
@@ -1937,6 +1948,15 @@ def _run_due_queued_plugin_result(
     if not first_due_results:
         return False
     root_crawl_id = str(first_due_results[0]["snapshot__crawl_id"])
+
+    first_due_snapshot = Snapshot.objects.filter(pk=first_due_results[0]["snapshot_id"]).first()
+    if first_due_snapshot and first_due_snapshot.status == Snapshot.StatusChoices.PAUSED:
+        return run_due_snapshot(
+            first_due_snapshot,
+            lock_seconds=lock_seconds,
+            interactive_interrupts=interactive_interrupts,
+            runtime_config=runtime_config,
+        )
 
     due_snapshots = Snapshot.objects.filter(
         retry_at__lte=now,
@@ -1985,21 +2005,14 @@ def _run_due_queued_plugin_result(
     if not claimed_snapshot_ids or selected_plugins is None:
         return True
 
-    config_overrides = {
-        "CRAWL_MAX_CONCURRENT_SNAPSHOTS": batch_size,
-    }
-    for plugin_name in selected_plugins:
-        if plugin_name.startswith("search_backend_"):
-            config_overrides[f"{plugin_name.upper()}_ENABLED"] = True
-
     run_crawl(
         root_crawl_id,
         snapshot_ids=claimed_snapshot_ids,
         selected_plugins=selected_plugins,
         process_discovered_snapshots_inline=True,
         interactive_interrupts=interactive_interrupts,
-        config_overrides=config_overrides,
-        selected_plugins_are_explicit=False,
+        config_overrides=config_overrides_for_queued_plugins(selected_plugins, CRAWL_MAX_CONCURRENT_SNAPSHOTS=batch_size),
+        selected_plugins_are_explicit=True,
     )
     if all(plugin.startswith("search_backend_") for plugin in selected_plugins):
         queued_results = ArchiveResult.objects.filter(
