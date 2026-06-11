@@ -125,7 +125,8 @@ def add(
     created_by_id = created_by_id or get_or_create_system_user_pk()
     started_at = timezone.now()
 
-    source_text = urls if isinstance(urls, str) else "\n".join(str(url) for url in urls)
+    use_internal_input_root = isinstance(urls, str)
+    source_text = urls if use_internal_input_root else "\n".join(str(url) for url in urls)
 
     # 2. Create a new Crawl with inline URLs
     cli_args = [*sys.argv]
@@ -170,9 +171,12 @@ def add(
     # that is not representable as one plain URL per line.
     crawl = Crawl.objects.create(
         urls=source_text,
-        # The internal root snapshot occupies depth 0. URLs discovered from the
-        # submitted source become normal child snapshots at depth 1, so the
-        # effective crawl limit must be one hop deeper than the user requested.
+        # `archivebox add` stores one extra internal processing hop so parser
+        # output can be represented as child snapshots without shrinking the
+        # user-facing recursion depth. Stdin/import text gets an explicit
+        # archivebox://internal root at depth 0; direct URL args use the same
+        # depth convention but skip that root because the URLs are already
+        # normalized user-facing snapshot inputs.
         max_depth=depth + 1,
         tags_str=tag,
         persona_id=persona_obj.id,
@@ -183,18 +187,22 @@ def add(
         config=crawl_config,
     )
 
-    # Parser plugins consume this root snapshot through the normal Snapshot
-    # hook lifecycle. ArchiveBox does not select parser plugins or call them
-    # directly; non-parser plugins cheaply no-result unsupported internal input.
-    root_snapshot = Snapshot.objects.create(
-        url=Snapshot.INTERNAL_INPUT_URL,
-        crawl=crawl,
-        depth=0,
-        title="stdin.txt",
-    )
-    staticfile_dir = root_snapshot.output_dir / "staticfile"
-    staticfile_dir.mkdir(parents=True, exist_ok=True)
-    (staticfile_dir / "stdin.txt").write_text(source_text, encoding="utf-8")
+    if use_internal_input_root:
+        # Parser plugins consume this root snapshot through the normal Snapshot
+        # hook lifecycle. ArchiveBox does not select parser plugins or call
+        # them directly; non-parser plugins cheaply no-result unsupported
+        # internal input.
+        root_snapshot = Snapshot.objects.create(
+            url=Snapshot.INTERNAL_INPUT_URL,
+            crawl=crawl,
+            depth=0,
+            title="stdin.txt",
+        )
+        staticfile_dir = root_snapshot.output_dir / "staticfile"
+        staticfile_dir.mkdir(parents=True, exist_ok=True)
+        (staticfile_dir / "stdin.txt").write_text(source_text, encoding="utf-8")
+    else:
+        crawl.create_discovered_snapshots(None, ({"url": url} for url in urls), depth=1)
 
     print(f"[green]\\[+] Created Crawl {crawl.id} with max_depth={depth}[/green]")
     first_url = crawl.get_urls_list()[0] if crawl.get_urls_list() else ""

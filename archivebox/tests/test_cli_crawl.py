@@ -418,7 +418,7 @@ def test_crawl_multiple_urls_creates_multiple_snapshots(initialized_archive):
 
 
 def test_crawl_from_file_creates_snapshot(initialized_archive):
-    """Test that crawl can create snapshots from a file of URLs."""
+    """Test that crawl can create snapshots from URL text piped on stdin."""
     env = cli_env(disable_extractors=True)
 
     # Write URLs to a file
@@ -426,9 +426,10 @@ def test_crawl_from_file_creates_snapshot(initialized_archive):
     urls_file.write_text("https://example.com\n")
 
     run_archivebox_cmd(
-        ["crawl", "create", str(urls_file)],
+        ["crawl", "create"],
         cwd=initialized_archive,
         env=env,
+        stdin=urls_file.read_text(),
         check=True,
     )
     run_queued_crawls(initialized_archive, env)
