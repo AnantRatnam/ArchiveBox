@@ -19,6 +19,7 @@ jobs:
   release-state:
     if: github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'release:')
     runs-on: ubuntu-latest
+    environment: pypi
     steps:
       - uses: actions/checkout@v4
         with:
