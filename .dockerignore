@@ -42,6 +42,7 @@ chromeprofile/
 chrome_profile/
 lib/
 out/
+tests/out/
 users/
 archive/
 crawls/

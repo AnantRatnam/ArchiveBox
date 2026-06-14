@@ -1857,6 +1857,7 @@ def run_due_binary(binary, *, lock_seconds: int) -> bool:
 async def _run_install(plugin_names: list[str] | None = None) -> None:
     from archivebox.config.common import get_config
     from archivebox.machine.models import Machine
+    from archivebox.plugins.discovery import get_enabled_plugins
 
     plugins = _discover_archivebox_plugins()
     config = get_config(include_machine=False)
@@ -1877,10 +1878,13 @@ async def _run_install(plugin_names: list[str] | None = None) -> None:
     bus_destroyed = False
 
     try:
-        selected_plugins = filter_plugins(plugins, list(plugin_names), include_providers=True) if plugin_names else plugins
+        if plugin_names:
+            selected_plugins = filter_plugins(plugins, list(plugin_names), include_providers=True)
+        else:
+            selected_plugins = filter_plugins(plugins, get_enabled_plugins(config=config), include_providers=True)
         if not selected_plugins:
             return
-        plugins_label = ", ".join(plugin_names) if plugin_names else f"all ({len(plugins)} available)"
+        plugins_label = ", ".join(plugin_names) if plugin_names else f"enabled ({len(selected_plugins)} of {len(plugins)} available)"
         timeout_seconds = config["TIMEOUT"]
         stdout_is_tty = sys.stdout.isatty()
         stderr_is_tty = sys.stderr.isatty()
