@@ -185,8 +185,7 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked,id=uv-$TARGETARCH$T
     && if [[ "$COMMIT_HASH" =~ ^[0-9a-fA-F]{40}$ ]]; then echo "COMMIT_HASH=$COMMIT_HASH" | tee -a /VERSION.txt; fi \
     && /usr/bin/uv pip install --no-deps "$CODE_DIR" \
     && rm -f /venv/bin/uv /venv/bin/uvx \
-    && (/usr/bin/uv pip show archivebox && which archivebox) | tee -a /VERSION.txt \
-    && rm -rf "$CODE_DIR/.git"
+    && (/usr/bin/uv pip show archivebox && which archivebox) | tee -a /VERSION.txt
 
 FROM archivebox-runtime-base
 

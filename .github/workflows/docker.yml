@@ -196,6 +196,30 @@ jobs:
       - name: Image digest
         run: echo ${{ steps.docker_build.outputs.digest }}
 
+      - name: Validate pushed image version, commit, and size
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          IMAGE="${DOCKERHUB_IMAGE}@${{ steps.docker_build.outputs.digest }}"
+          SHORT_SHA="${GITHUB_SHA::7}"
+
+          docker run --rm --platform '${{ matrix.platform }}' --entrypoint bash "$IMAGE" -lc \
+            'set -Eeuo pipefail; archivebox version | tee /tmp/archivebox-version.out; grep -F "ArchiveBox v${{ steps.docker_meta.outputs.version }}" /tmp/archivebox-version.out; grep -F "COMMIT_HASH='"${SHORT_SHA}"'" /tmp/archivebox-version.out; grep -Fx "COMMIT_HASH='"${GITHUB_SHA}"'" /VERSION.txt'
+
+          python3 - "$IMAGE" <<'PY'
+          import json
+          import subprocess
+          import sys
+
+          image = sys.argv[1]
+          limit = 780 * 1024 * 1024
+          manifest = json.loads(subprocess.check_output(["docker", "manifest", "inspect", image]))
+          total = manifest.get("config", {}).get("size", 0) + sum(layer.get("size", 0) for layer in manifest.get("layers", []))
+          print(f"{image} compressed_size={total / 1024 / 1024:.2f} MiB limit={limit / 1024 / 1024:.2f} MiB")
+          if total > limit:
+              raise SystemExit(f"{image} is over the compressed size limit")
+          PY
+
       - name: Export digest
         shell: bash
         run: |
