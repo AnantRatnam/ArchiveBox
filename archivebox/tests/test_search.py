@@ -480,6 +480,15 @@ class TestPublicIndexSearch:
         assert b"archivebox-search-stream-status" in response.content
 
     @override_settings(PUBLIC_INDEX=True)
+    def test_public_search_stream_preserves_search_form_dom(self, client, public_snapshot):
+        response = client.get("/public/", {"q": "Public Example"}, HTTP_HOST=WEB_HOST)
+
+        assert response.status_code == 200
+        assert b"replaceRegionFromDocument(doc, '.public-snapshot-count')" in response.content
+        assert b"replaceRegionFromDocument(doc, '#table-bookmarks tbody')" in response.content
+        assert b"currentList.replaceWith(nextList)" not in response.content
+
+    @override_settings(PUBLIC_INDEX=True)
     def test_public_search_stream_populates_public_results_cache(self, client, public_snapshot):
         search_params = {"q": "Public Example", "search_mode": "meta"}
         search_url = f"/public/?{urlencode(search_params)}"
@@ -581,11 +590,20 @@ class TestPublicIndexSearch:
 
         assert response.status_code == 200
         content = response.content.decode()
-        assert "screenshot/screenshot.png" in content
         first = content.index("chrome_extension_screenshot/screenshot-1.png")
         second = content.index("chrome_extension_screenshot/screenshot.png")
         assert first < second
+        assert "screenshot/screenshot.png" not in content
         assert "chrome_extension_screenshot/screenshot-2.png" not in content
+
+    @override_settings(PUBLIC_INDEX=True)
+    def test_public_index_snapshot_without_preview_renders_placeholder(self, client, public_snapshot):
+        response = client.get("/public/", HTTP_HOST=WEB_HOST)
+
+        assert response.status_code == 200
+        content = response.content.decode()
+        assert "snapshot-preview-empty" in content
+        assert "screenshot/screenshot.png" not in content
 
     @override_settings(PUBLIC_INDEX=True)
     def test_public_index_pending_snapshot_uses_small_preview_spinner(self, client, crawl):

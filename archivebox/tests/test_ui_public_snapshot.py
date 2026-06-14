@@ -282,7 +282,7 @@ class TestPublicIndex:
 
     @override_settings(PUBLIC_INDEX=True)
     def test_public_snapshot_surfaces_escape_legacy_raw_title_and_tag_values(self, client, admin_user):
-        from archivebox.core.models import Snapshot, Tag
+        from archivebox.core.models import ArchiveResult, Snapshot, Tag
         from archivebox.crawls.models import Crawl
 
         crawl = Crawl.objects.create(urls="https://public-xss.example", created_by=admin_user, config={"PERMISSIONS": "public"})
@@ -296,11 +296,19 @@ class TestPublicIndex:
         snapshot.tags.add(tag)
         snapshot_archive_path = snapshot.archive_path
 
-        title_payload = "</script><script id=public-title-xss>window.__archivebox_public_title_xss__=1</script>"
+        title_payload = "Legacy title 1 < 2 & 3 </script><script id=public-title-xss>window.__archivebox_public_title_xss__=1</script>"
         tag_payload = "</script><script id=public-tag-xss>window.__archivebox_public_tag_xss__=1</script>"
         url_payload = "https://public-xss.example/</script><script id=public-url-xss>window.__archivebox_public_url_xss__=1</script>"
+        filename_payload = 'evil"><script id=public-file-xss>window.__archivebox_public_file_xss__=1</script>.txt'
         Snapshot.objects.filter(pk=snapshot.pk).update(title=title_payload, url=url_payload)
         Tag.objects.filter(pk=tag.pk).update(name=tag_payload)
+        ArchiveResult.objects.create(
+            snapshot=snapshot,
+            plugin="staticfile",
+            hook_name="on_Snapshot__00_staticfile.py",
+            status=ArchiveResult.StatusChoices.SUCCEEDED,
+            output_files={filename_payload: {"size": 12, "mimetype": "text/plain"}},
+        )
 
         public_index = client.get("/public/", HTTP_HOST=WEB_TEST_HOST)
         snapshot_detail = client.get(f"/{snapshot_archive_path}/index.html", HTTP_HOST=WEB_TEST_HOST)
@@ -311,9 +319,13 @@ class TestPublicIndex:
             assert b"<script id=public-title-xss>" not in response.content
             assert b"<script id=public-tag-xss>" not in response.content
             assert b"<script id=public-url-xss>" not in response.content
+            assert b"<script id=public-file-xss>" not in response.content
             assert b"&lt;/script&gt;&lt;script id=public-tag-xss&gt;" in response.content
         assert b"&lt;/script&gt;&lt;script id=public-title-xss&gt;" in public_index.content
         assert b"window.__archivebox_public_title_xss__=1" in snapshot_detail.content
+        assert b"Legacy title 1 &lt; 2 &amp; 3" in snapshot_detail.content
+        assert b"Legacy title 1 &amp;lt; 2 &amp;amp; 3" not in snapshot_detail.content
+        assert b"&lt;script id=public-file-xss&gt;" in snapshot_detail.content
 
     def test_direct_snapshot_urls_allow_unlisted_but_not_private_for_guests(self, client, admin_user):
         from archivebox.core.models import Snapshot

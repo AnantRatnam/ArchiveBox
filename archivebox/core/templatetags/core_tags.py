@@ -560,6 +560,17 @@ def snapshot_index_row(context, link) -> str:
             f'<img src="{escape(static("spinner.gif"))}" alt="" decoding="async" loading="lazy">'
             "</span>"
         )
+    elif "_public_preview_paths" in link.__dict__:
+        preview_paths = list(getattr(link, "_public_preview_paths", []) or [])
+        if preview_paths:
+            preview_urls = [build_snapshot_url(snapshot_id, path, request=request, config=config) for path in preview_paths]
+            preview_html = (
+                f'<img src="{escape(preview_urls[0])}" '
+                f'data-fallbacks="{escape(",".join(preview_urls[1:]))}" '
+                'onerror="nextPublicSnapshotPreview(this)" class="snapshot-preview screenshot" alt="" decoding="async" loading="lazy">'
+            )
+        else:
+            preview_html = '<span class="snapshot-preview snapshot-preview-empty" aria-label="No preview available"></span>'
     else:
         preview_html = (
             f'<img src="{escape(screenshot_plugin_url)}" '

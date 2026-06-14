@@ -7,6 +7,7 @@ ARCHIVEBOX_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKSPACE_DIR="$(cd "${ARCHIVEBOX_REPO}/.." && pwd)"
 PYPI_USERNAME="${PYPI_USERNAME:-__token__}"
 PYPI_WAIT_ATTEMPTS="${PYPI_WAIT_ATTEMPTS:-90}"
+DOCKER_IMAGE_REPOS="${DOCKER_IMAGE_REPOS:-archivebox/archivebox ghcr.io/archivebox/archivebox}"
 
 cd "${WORKSPACE_DIR}"
 

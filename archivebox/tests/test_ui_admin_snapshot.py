@@ -71,6 +71,72 @@ def test_snapshot_admin_archive_results_escape_extractor_output(admin_client, sn
     assert b"&lt;img src=x onerror=&quot;window.__archivebox_archiveresult_xss__=1&quot;&gt;" in body
 
 
+def test_snapshot_admin_archive_result_table_escapes_legacy_string_fields(admin_client, snapshot):
+    from uuid import uuid4
+
+    from archivebox.core.models import ArchiveResult
+    from archivebox.machine.models import Binary, Machine, Process
+
+    machine = Machine.objects.create(
+        guid=f"xss-machine-{uuid4()}",
+        hostname='<script id="machine-xss">x</script>',
+        hw_in_docker=False,
+        hw_in_vm=False,
+        hw_manufacturer="Test",
+        hw_product="Test Product",
+        hw_uuid=f"xss-hw-{uuid4()}",
+        os_arch="arm64",
+        os_family="darwin",
+        os_platform="macOS",
+        os_release="14.0",
+        os_kernel="Darwin",
+        stats={},
+        config={},
+    )
+    binary = Binary.objects.create(
+        machine=machine,
+        name="staticfile",
+        abspath="/usr/bin/staticfile",
+        version='<b id="version-xss">v</b>',
+        binprovider="env",
+        binproviders="env",
+        status=Binary.StatusChoices.INSTALLED,
+    )
+    process = Process.objects.create(
+        machine=machine,
+        binary=binary,
+        process_type=Process.TypeChoices.HOOK,
+        pwd='/tmp/archivebox"><script id="pwd-xss">x</script>',
+        cmd=["staticfile"],
+        status=Process.StatusChoices.EXITED,
+    )
+    result = ArchiveResult.objects.create(
+        snapshot=snapshot,
+        plugin="staticfile",
+        hook_name="on_Snapshot__00_staticfile.py",
+        process=process,
+        status=ArchiveResult.StatusChoices.SUCCEEDED,
+        output_files={'evil"><script id="file-xss">x</script>.txt': {"size": 12, "mimetype": "text/plain"}},
+        output_str='staticfile/evil"><script id="file-xss">x</script>.txt',
+    )
+    ArchiveResult.objects.filter(pk=result.pk).update(plugin='<script id="plugin-xss">x</script>')
+
+    response = admin_client.get(reverse("admin:core_snapshot_change", args=[snapshot.pk]), HTTP_HOST=ADMIN_TEST_HOST)
+    body = response.content
+
+    assert response.status_code == 200
+    assert b'<script id="machine-xss">' not in body
+    assert b'<script id="version-xss">' not in body
+    assert b'<script id="pwd-xss">' not in body
+    assert b'<script id="file-xss">' not in body
+    assert b'<script id="plugin-xss">' not in body
+    assert b"&lt;script id=&quot;machine-xss&quot;&gt;" in body
+    assert b"&lt;b id=&quot;version-xss&quot;&gt;v&lt;/b&gt;" in body
+    assert b"&lt;script id=&quot;pwd-xss&quot;&gt;" in body
+    assert b"&lt;script id=&quot;file-xss&quot;&gt;" in body
+    assert b"&lt;script id=&quot;plugin-xss&quot;&gt;" in body
+
+
 def test_snapshot_changelist_bulk_permissions_action_updates_selected_snapshots(client, admin_user, crawl, snapshot):
     client.force_login(admin_user)
     url = reverse("admin:core_snapshot_changelist")

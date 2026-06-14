@@ -142,18 +142,22 @@ def render_archiveresults_list(archiveresults_qs, limit=50, config=None):
         process = result.process_record
         process_display = "-"
         if process:
+            process_url = html.escape(reverse("admin:machine_process_change", args=[process.id]), quote=True)
+            process_label = html.escape(get_process_link_label(process), quote=True)
             process_display = f'''
-                <a href="{reverse("admin:machine_process_change", args=[process.id])}"
+                <a href="{process_url}"
                    style="color: #2563eb; text-decoration: none; font-family: ui-monospace, monospace; font-size: 12px;"
-                   title="View process">{get_process_link_label(process)}</a>
+                   title="View process">{process_label}</a>
             '''
 
         machine_display = "-"
         if process and process.machine_id:
+            machine_url = html.escape(reverse("admin:machine_machine_change", args=[process.machine_id]), quote=True)
+            machine_label = html.escape(str(process.machine.hostname or ""), quote=True)
             machine_display = f'''
-                <a href="{reverse("admin:machine_machine_change", args=[process.machine_id])}"
+                <a href="{machine_url}"
                    style="color: #2563eb; text-decoration: none; font-size: 12px;"
-                   title="View machine">{process.machine.hostname}</a>
+                   title="View machine">{machine_label}</a>
             '''
 
         # Truncate output for display
@@ -176,9 +180,13 @@ def render_archiveresults_list(archiveresults_qs, limit=50, config=None):
             output_link = build_snapshot_url(snapshot_id, embed_path, config=config)
         else:
             output_link = build_snapshot_url(snapshot_id, "", config=config)
+        output_link_attr = html.escape(output_link, quote=True)
 
         # Get version - try cmd_version field
-        version = result.cmd_version if result.cmd_version else "-"
+        version = html.escape(str(result.cmd_version if result.cmd_version else "-"), quote=True)
+        plugin_text = html.escape(str(result.plugin or ""), quote=True)
+        status_text = html.escape(str(status), quote=True)
+        pwd_text = html.escape(str(result.pwd or "-"), quote=True)
 
         # Unique ID for this row's expandable output
         row_id = f"output_{idx}_{str(result.id)[:8]}"
@@ -195,18 +203,18 @@ def render_archiveresults_list(archiveresults_qs, limit=50, config=None):
                 <td style="padding: 10px 12px; white-space: nowrap;">
                     <span style="display: inline-block; padding: 3px 10px; border-radius: 12px;
                                  font-size: 11px; font-weight: 600; text-transform: uppercase;
-                                 color: {color}; background: {bg};">{status}</span>
+                                 color: {color}; background: {bg};">{status_text}</span>
                 </td>
-                <td style="padding: 10px 12px; white-space: nowrap; font-size: 20px;" title="{result.plugin}">
+                <td style="padding: 10px 12px; white-space: nowrap; font-size: 20px;" title="{plugin_text}">
                     {icon}
                 </td>
                 <td style="padding: 10px 12px; font-weight: 500; color: #334155;">
-                        <a href="{output_link}" target="_blank"
+                        <a href="{output_link_attr}" target="_blank"
                            style="color: #334155; text-decoration: none;"
                        title="View output fullscreen"
                        onmouseover="this.style.color='#2563eb'; this.style.textDecoration='underline';"
                        onmouseout="this.style.color='#334155'; this.style.textDecoration='none';">
-                        {result.plugin}
+                        {plugin_text}
                     </a>
                 </td>
                 <td style="padding: 10px 12px; max-width: 280px;">
@@ -233,7 +241,7 @@ def render_archiveresults_list(archiveresults_qs, limit=50, config=None):
                 </td>
                 <td style="padding: 10px 8px; white-space: nowrap;">
                     <div style="display: flex; gap: 4px;">
-                        <a href="{output_link}" target="_blank"
+                        <a href="{output_link_attr}" target="_blank"
                            style="padding: 4px 8px; background: #f1f5f9; border-radius: 4px; color: #475569; text-decoration: none; font-size: 11px;"
                            title="View output">📄</a>
                         <a href="{reverse("admin:core_archiveresult_change", args=[result.id])}"
@@ -252,7 +260,7 @@ def render_archiveresults_list(archiveresults_qs, limit=50, config=None):
                             <div style="font-size: 11px; color: #64748b; margin-bottom: 8px;">
                                 <span style="margin-right: 16px;"><b>ID:</b> <code>{str(result.id)}</code></span>
                                 <span style="margin-right: 16px;"><b>Version:</b> <code>{version}</code></span>
-                                <span style="margin-right: 16px;"><b>PWD:</b> <code>{result.pwd or "-"}</code></span>
+                                <span style="margin-right: 16px;"><b>PWD:</b> <code>{pwd_text}</code></span>
                             </div>
                             <div style="font-size: 11px; color: #64748b; margin-bottom: 8px;">
                                 <b>Output:</b>

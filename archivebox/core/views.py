@@ -51,7 +51,7 @@ from archivebox.misc.paginators import AcceleratedPaginator
 from archivebox.misc.util import (
     base_url,
     filter_queryset_by_uuid_substring,
-    htmlencode,
+    htmldecode,
     sanitize_html_text,
     ts_to_date_str,
     urldecode,
@@ -441,7 +441,7 @@ class SnapshotView(View):
             "progress_endpoint": progress_endpoint("snapshot", snapshot.id),
             "url": snapshot.url,
             "archive_path": snapshot.archive_path_from_db,
-            "title": htmlencode(snapshot.resolved_title or (snapshot.base_url if is_archived else TITLE_LOADING_MSG)),
+            "title": htmldecode(snapshot.resolved_title or (snapshot.base_url if is_archived else TITLE_LOADING_MSG)),
             "extension": snapshot.extension or "html",
             "tags": snapshot.tags_str() or "untagged",
             "size": printable_filesize(output_size) if output_size else "—",
@@ -1226,6 +1226,7 @@ class PublicIndexView(ListView):
         snapshots = list(context.get("object_list") or ())
         icons_by_snapshot: dict[str, set[str]] = {str(snapshot.id): set() for snapshot in snapshots}
         tag_names_by_snapshot: dict[str, list[str]] = {str(snapshot.id): [] for snapshot in snapshots}
+        preview_paths_by_snapshot: dict[str, list[str]] = {str(snapshot.id): [] for snapshot in snapshots}
         progress_by_snapshot: dict[str, dict[str, int]] = {
             str(snapshot.id): {
                 "total": 0,
@@ -1246,12 +1247,18 @@ class PublicIndexView(ListView):
             ):
                 tag_names_by_snapshot[str(snapshot_id)].append(tag_name)
 
-            for snapshot_id, plugin, status in (
+            preview_candidates = {
+                "screenshot": ("screenshot.png",),
+                "chrome_extension_screenshot": ("screenshot-1.png", "screenshot.png"),
+                "favicon": ("favicon.ico",),
+            }
+
+            for snapshot_id, plugin, status, output_files in (
                 ArchiveResult.objects.filter(
                     snapshot_id__in=icons_by_snapshot.keys(),
                 )
                 .exclude(plugin="")
-                .values_list("snapshot_id", "plugin", "status")
+                .values_list("snapshot_id", "plugin", "status", "output_files")
                 .iterator(chunk_size=1000)
             ):
                 snapshot_key = str(snapshot_id)
@@ -1260,6 +1267,11 @@ class PublicIndexView(ListView):
                 if status == ArchiveResult.StatusChoices.SUCCEEDED:
                     icons_by_snapshot[snapshot_key].add(plugin)
                     progress["succeeded"] += 1
+                    if plugin in preview_candidates and isinstance(output_files, dict):
+                        for filename in preview_candidates[plugin]:
+                            file_info = output_files.get(filename)
+                            if file_info and int((file_info or {}).get("size") or 0) > 0:
+                                preview_paths_by_snapshot[snapshot_key].append(f"{plugin}/{filename}")
                 elif status == ArchiveResult.StatusChoices.FAILED:
                     progress["failed"] += 1
                 elif status == ArchiveResult.StatusChoices.STARTED:
@@ -1275,6 +1287,7 @@ class PublicIndexView(ListView):
             snapshot._icons_progress_stats = progress_by_snapshot.get(str(snapshot.id), {})
             snapshot.num_outputs_cached = snapshot._icons_progress_stats.get("succeeded", 0)
             snapshot._tags_str_cached = ",".join(tag_names_by_snapshot.get(str(snapshot.id), []))
+            snapshot._public_preview_paths = preview_paths_by_snapshot.get(str(snapshot.id), [])
             snapshot._is_archived_cached = bool(snapshot.downloaded_at or snapshot.status == Snapshot.StatusChoices.SEALED)
         context["object_list"] = snapshots
         return context

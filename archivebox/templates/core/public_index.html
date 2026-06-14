@@ -656,18 +656,22 @@
                     return url
                 }
 
+                function replaceRegionFromDocument(doc, selector) {
+                    const next = doc.querySelector(selector)
+                    const current = document.querySelector(selector)
+                    if (next && current) current.innerHTML = next.innerHTML
+                }
+
                 async function renderNow() {
                     const url = buildListUrl()
                     const response = await fetch(url, {headers: {'X-Requested-With': 'XMLHttpRequest'}, signal: controller.signal})
                     const html = await response.text()
                     const doc = new DOMParser().parseFromString(html, 'text/html')
-                    const nextList = doc.querySelector('.public-snapshot-list')
-                    const currentList = document.querySelector('.public-snapshot-list')
-                    if (nextList && currentList) {
-                        currentList.replaceWith(nextList)
-                        initPublicSearchMode()
-                        setSearchLoading(controller, resultVersion ? 'Searching... ' + resultVersion + ' found' : 'Searching...')
-                    }
+                    replaceRegionFromDocument(doc, '.public-snapshot-count')
+                    replaceRegionFromDocument(doc, '#table-bookmarks thead th:nth-child(3)')
+                    replaceRegionFromDocument(doc, '#table-bookmarks tbody')
+                    replaceRegionFromDocument(doc, '.public-pagination')
+                    setSearchLoading(controller, resultVersion ? 'Searching... ' + resultVersion + ' found' : 'Searching...')
                 }
 
                 const listUrl = buildListUrl()
