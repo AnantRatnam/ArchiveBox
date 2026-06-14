@@ -3,11 +3,45 @@
 __package__ = "archivebox.cli"
 
 import os
+import shutil
+from pathlib import Path
 
 import rich_click as click
 from rich import print
 
 from archivebox.misc.util import docstring, enforce_types
+
+
+def ensure_data_dir_lib_symlink(data_dir: Path, abxpkg_lib_dir: Path) -> Path | None:
+    """Expose the shared abxpkg lib dir at DATA_DIR/lib after install."""
+    link_path = data_dir / "lib"
+    target_config_path = abxpkg_lib_dir.expanduser().absolute()
+    target_path = abxpkg_lib_dir.expanduser().resolve()
+    from archivebox.config.paths import get_machine_type
+
+    scoped_data_lib_path = (link_path / get_machine_type()).absolute()
+
+    if target_config_path == scoped_data_lib_path:
+        if link_path.is_symlink() or link_path.is_file():
+            link_path.unlink()
+        target_config_path.mkdir(parents=True, exist_ok=True)
+        return None
+
+    if link_path.resolve(strict=False) == target_path:
+        return None
+
+    target_path.mkdir(parents=True, exist_ok=True)
+
+    if link_path.is_symlink():
+        if link_path.resolve(strict=False) == target_path:
+            return link_path
+        link_path.unlink()
+    elif link_path.exists():
+        shutil.rmtree(link_path)
+
+    relative_target = os.path.relpath(target_path, start=link_path.parent)
+    link_path.symlink_to(relative_target, target_is_directory=True)
+    return link_path
 
 
 @enforce_types
@@ -66,6 +100,11 @@ def install(binaries: tuple[str, ...] = (), binproviders: str = "*", dry_run: bo
     from archivebox.services.runner import run_install
 
     run_install(plugin_names=plugin_names or None)
+
+    from archivebox.config.common import get_config
+
+    config = get_config(include_machine=False)
+    ensure_data_dir_lib_symlink(CONSTANTS.DATA_DIR, config.ABXPKG_LIB_DIR)
 
     print()
 

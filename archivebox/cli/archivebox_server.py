@@ -231,6 +231,7 @@ def server(
     debug: bool = False,
     daemonize: bool = False,
     nothreading: bool = False,
+    createsuperuser: bool = False,
 ) -> None:
     """Run the ArchiveBox HTTP server"""
     from archivebox.config.common import get_config
@@ -243,6 +244,12 @@ def server(
         os.environ["DEBUG"] = "True"
 
     from django.contrib.auth.models import User
+
+    if createsuperuser:
+        from archivebox.cli.archivebox_manage import manage
+
+        manage(args=["createsuperuser"])
+        print()
 
     if not User.objects.filter(is_superuser=True).exclude(username="system").exists():
         print()
@@ -404,6 +411,7 @@ def server(
 @click.option("--debug", is_flag=True, help="Enable DEBUG=True mode with more verbose errors")
 @click.option("--nothreading", is_flag=True, help="Force runserver to run in single-threaded mode")
 @click.option("--daemonize", is_flag=True, help="Run the server in the background as a daemon")
+@click.option("--createsuperuser", is_flag=True, help="Run archivebox manage createsuperuser before starting the server")
 @docstring(server.__doc__)
 def main(**kwargs):
     server(**kwargs)

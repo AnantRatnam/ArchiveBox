@@ -11,8 +11,6 @@ Each persona has its own:
 __package__ = "archivebox.personas"
 
 import shutil
-import subprocess
-import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -62,11 +60,7 @@ VOLATILE_PROFILE_FILE_NAMES = {
 
 def derive_persona_config(*, name: str, config: Mapping[str, Any] | None, persona_dir: Path) -> dict[str, Any]:
     derived = dict(config or {})
-
-    if "CHROME_USER_DATA_DIR" not in derived:
-        derived["CHROME_USER_DATA_DIR"] = str(persona_dir / "chrome_profile")
-    if "CHROME_DOWNLOADS_DIR" not in derived:
-        derived["CHROME_DOWNLOADS_DIR"] = str(persona_dir / "chrome_downloads")
+    derived["PERSONAS_DIR"] = str(persona_dir.parent)
 
     cookies_path = persona_dir / "cookies.txt"
     if "COOKIES_FILE" not in derived and cookies_path.exists():
@@ -165,8 +159,7 @@ class Persona(ModelWithConfig):
 
         Returns dict with:
         - All values from self.config JSONField
-        - CHROME_USER_DATA_DIR (derived from persona path)
-        - CHROME_DOWNLOADS_DIR (derived from persona path)
+        - PERSONAS_DIR (derived from DATA_DIR/personas)
         - COOKIES_FILE (derived from persona path, if file exists)
         - AUTH_STORAGE_FILE (derived from persona path, if file exists)
         - ACTIVE_PERSONA (set to this persona's name)
@@ -259,27 +252,16 @@ class Persona(ModelWithConfig):
         return self.runtime_root_for_snapshot(snapshot) / "chrome_downloads"
 
     def copy_chrome_profile(self, source_dir: Path, destination_dir: Path) -> None:
+        from archivebox.personas.importers import VOLATILE_PROFILE_COPY_PATTERNS
+
         destination_dir.parent.mkdir(parents=True, exist_ok=True)
         shutil.rmtree(destination_dir, ignore_errors=True)
-        destination_dir.mkdir(parents=True, exist_ok=True)
-
-        copy_cmd: list[str] | None = None
-        source_contents = f"{source_dir}/."
-
-        if sys.platform == "darwin":
-            copy_cmd = ["cp", "-cR", source_contents, str(destination_dir)]
-        elif sys.platform.startswith("linux"):
-            copy_cmd = ["cp", "-a", source_contents, str(destination_dir)]
-
-        if copy_cmd:
-            result = subprocess.run(copy_cmd, capture_output=True, text=True)
-            if result.returncode == 0:
-                return
-
-            shutil.rmtree(destination_dir, ignore_errors=True)
-            destination_dir.mkdir(parents=True, exist_ok=True)
-
-        shutil.copytree(source_dir, destination_dir, symlinks=True, dirs_exist_ok=True)
+        shutil.copytree(
+            source_dir,
+            destination_dir,
+            symlinks=True,
+            ignore=shutil.ignore_patterns(*VOLATILE_PROFILE_COPY_PATTERNS),
+        )
 
     def prepare_runtime_for_crawl(self, crawl, chrome_binary: str = "") -> dict[str, str]:
         self.ensure_dirs()
@@ -306,8 +288,13 @@ class Persona(ModelWithConfig):
                 (runtime_root / "chrome_binary.txt").write_text(chrome_binary)
 
         return {
-            "CHROME_USER_DATA_DIR": str(runtime_profile_dir),
-            "CHROME_DOWNLOADS_DIR": str(runtime_downloads_dir),
+            # Hooks derive CHROME_USER_DATA_DIR/CHROME_DOWNLOADS_DIR from
+            # PERSONAS_DIR + ACTIVE_PERSONA. Point PERSONAS_DIR at the
+            # per-crawl runtime root here so CHROME_ISOLATION=crawl never
+            # leaks or reuses the template profile while keeping Chrome path
+            # derivation centralized in the Chrome plugin helpers.
+            "PERSONAS_DIR": str(runtime_root.parent),
+            "ACTIVE_PERSONA": self.name,
         }
 
     def prepare_runtime_for_snapshot(self, snapshot, chrome_binary: str = "") -> dict[str, str]:
@@ -333,8 +320,11 @@ class Persona(ModelWithConfig):
             (runtime_root / "chrome_binary.txt").write_text(chrome_binary)
 
         return {
-            "CHROME_USER_DATA_DIR": str(runtime_profile_dir),
-            "CHROME_DOWNLOADS_DIR": str(runtime_downloads_dir),
+            # See prepare_runtime_for_crawl(): snapshot isolation changes the
+            # persona root, not individual CHROME_* config keys, so standalone
+            # Chrome hooks and ArchiveBox-driven hooks resolve paths the same way.
+            "PERSONAS_DIR": str(runtime_root.parent),
+            "ACTIVE_PERSONA": self.name,
         }
 
     def cleanup_runtime_for_crawl(self, crawl) -> None:

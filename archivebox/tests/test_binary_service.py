@@ -29,7 +29,6 @@ def _runtime_env(data_dir: Path, bin_dir: Path, *, lib_dir: Path | None = None) 
     assert archivebox_bin, "archivebox console script must be available for CLI tests"
     lib_dir = lib_dir or data_dir / "lib"
     return {
-        "LIB_DIR": str(lib_dir),
         "ABXPKG_LIB_DIR": str(lib_dir),
         "PATH": os.pathsep.join([str(bin_dir), str(Path(archivebox_bin).parent), "/usr/bin", "/bin", "/usr/sbin", "/sbin"]),
     }

@@ -89,12 +89,13 @@ def test_snapshot_payload_uses_crawl_chrome_dirs_by_default():
     config = payload["config"]
     other_config = other_payload["config"]
 
-    assert Path(config["CHROME_USER_DATA_DIR"]).is_relative_to(crawl.output_dir)
-    assert Path(config["CHROME_DOWNLOADS_DIR"]).is_relative_to(crawl.output_dir)
-    assert Path(config["CHROME_USER_DATA_DIR"]).name == "chrome_profile"
-    assert Path(config["CHROME_DOWNLOADS_DIR"]).name == "chrome_downloads"
-    assert Path(config["CHROME_USER_DATA_DIR"]) == Path(other_config["CHROME_USER_DATA_DIR"])
-    assert Path(config["CHROME_DOWNLOADS_DIR"]) == Path(other_config["CHROME_DOWNLOADS_DIR"])
+    personas_dir = Path(config["PERSONAS_DIR"])
+    other_personas_dir = Path(other_config["PERSONAS_DIR"])
+    assert personas_dir.is_relative_to(crawl.output_dir)
+    assert personas_dir == persona.runtime_root_for_crawl(crawl).parent
+    assert personas_dir == other_personas_dir
+    assert personas_dir / config["ACTIVE_PERSONA"] / "chrome_profile" == persona.runtime_profile_dir_for_crawl(crawl)
+    assert personas_dir / config["ACTIVE_PERSONA"] / "chrome_downloads" == persona.runtime_downloads_dir_for_crawl(crawl)
     assert crawl_downloads_sentinel.read_text() == "keep"
     assert config["ACTIVE_PERSONA"] == "RuntimePersona"
     assert Path(config["CRAWL_DIR"]) == crawl.output_dir
@@ -130,12 +131,15 @@ def test_snapshot_payload_uses_snapshot_chrome_dirs_when_snapshot_isolated():
     config = payload["config"]
     other_config = other_payload["config"]
 
-    assert Path(config["CHROME_USER_DATA_DIR"]).is_relative_to(snapshot.output_dir)
-    assert Path(config["CHROME_DOWNLOADS_DIR"]).is_relative_to(snapshot.output_dir)
-    assert Path(other_config["CHROME_USER_DATA_DIR"]).is_relative_to(other_snapshot.output_dir)
-    assert Path(other_config["CHROME_DOWNLOADS_DIR"]).is_relative_to(other_snapshot.output_dir)
-    assert Path(config["CHROME_USER_DATA_DIR"]) != Path(other_config["CHROME_USER_DATA_DIR"])
-    assert Path(config["CHROME_DOWNLOADS_DIR"]) != Path(other_config["CHROME_DOWNLOADS_DIR"])
+    personas_dir = Path(config["PERSONAS_DIR"])
+    other_personas_dir = Path(other_config["PERSONAS_DIR"])
+    assert personas_dir.is_relative_to(snapshot.output_dir)
+    assert other_personas_dir.is_relative_to(other_snapshot.output_dir)
+    assert personas_dir == persona.runtime_root_for_snapshot(snapshot).parent
+    assert other_personas_dir == persona.runtime_root_for_snapshot(other_snapshot).parent
+    assert personas_dir != other_personas_dir
+    assert personas_dir / config["ACTIVE_PERSONA"] / "chrome_profile" == persona.runtime_profile_dir_for_snapshot(snapshot)
+    assert personas_dir / config["ACTIVE_PERSONA"] / "chrome_downloads" == persona.runtime_downloads_dir_for_snapshot(snapshot)
     assert Path(config["CRAWL_DIR"]) == crawl.output_dir
     assert Path(config["SNAP_DIR"]) == snapshot.output_dir
 
@@ -465,7 +469,7 @@ def test_machine_service_persists_only_derived_config_events(tmp_path, hermetic_
     # path / install cache — that's the security boundary that stops plugins
     # from rewriting arbitrary user config via events. So CHROME_USER_DATA_DIR
     # from the derived payload is dropped; WGET_BINARY made it in (inside
-    # LIB_DIR) then the unset removed it; ABX_INSTALL_CACHE survives.
+    # ABXPKG_LIB_DIR) then the unset removed it; ABX_INSTALL_CACHE survives.
     assert machine.config == {
         "ABX_INSTALL_CACHE": {"wget": "2026-03-24T00:00:00+00:00"},
         "ABX_PNPM_CACHE": "/tmp/pnpm-cache",
@@ -483,8 +487,8 @@ def test_load_run_state_uses_real_lib_dir_for_machine_binary_config(tmp_path, he
     from archivebox.machine.models import Machine
     from archivebox.services.runner import CrawlRunner
 
-    resolved_lib_dir = get_config(include_machine=False).LIB_DIR
-    assert resolved_lib_dir == hermetic_lib_dir, f"LIB_DIR override not applied: {resolved_lib_dir!r} != {hermetic_lib_dir!r}"
+    resolved_lib_dir = get_config(include_machine=False).ABXPKG_LIB_DIR
+    assert resolved_lib_dir == hermetic_lib_dir, f"ABXPKG_LIB_DIR override not applied: {resolved_lib_dir!r} != {hermetic_lib_dir!r}"
 
     wget_binary = resolved_lib_dir / "bin" / "wget"
     wget_binary.write_text("#!/bin/sh\n", encoding="utf-8")
@@ -517,8 +521,8 @@ def test_load_run_state_uses_real_lib_dir_for_machine_binary_config(tmp_path, he
     runner = CrawlRunner(crawl)
     snapshot_ids = runner.load_run_state()
 
-    # ``derived_config`` is Machine.config sanitized against LIB_DIR. Binary
-    # paths outside LIB_DIR drop out (YTDLP_BINARY → ``/tmp/...``); the
+    # ``derived_config`` is Machine.config sanitized against ABXPKG_LIB_DIR. Binary
+    # paths outside ABXPKG_LIB_DIR drop out (YTDLP_BINARY → ``/tmp/...``); the
     # ArchiveBox.conf mirror values (CHROME_ISOLATION, CHROME_USER_DATA_DIR,
     # ABX_INSTALL_CACHE) survive so plugin hooks see the same runtime cache
     # the user/runner persisted.
@@ -528,7 +532,7 @@ def test_load_run_state_uses_real_lib_dir_for_machine_binary_config(tmp_path, he
         "CHROME_ISOLATION": "snapshot",
         "CHROME_USER_DATA_DIR": "/tmp/stale-profile",
     }
-    assert runner.base_config["LIB_DIR"] == resolved_lib_dir
+    assert runner.base_config["ABXPKG_LIB_DIR"] == resolved_lib_dir
     assert runner.base_config["CHROME_KEEPALIVE"] is False
     assert runner.selected_plugins == ["__archivebox_test_no_plugins__"]
     assert Snapshot.objects.filter(id__in=snapshot_ids, crawl=crawl, url="https://example.com").count() == 1
@@ -546,7 +550,7 @@ def test_crawl_runner_empty_plugin_selection_emits_lifecycle_and_seals_crawl(tmp
     crawl = Crawl.objects.create(
         urls="https://example.com",
         config={
-            "LIB_DIR": str(tmp_path / "lib"),
+            "ABXPKG_LIB_DIR": str(tmp_path / "lib"),
             "PLUGINS": "__archivebox_test_no_plugins__",
             "CHROME_BINARY": "",
         },
@@ -694,7 +698,7 @@ def test_run_pending_crawls_processes_queued_crawl_before_missing_binary_backlog
     crawl = Crawl.objects.create(
         urls="https://example.com",
         config={
-            "LIB_DIR": str(tmp_path / "lib"),
+            "ABXPKG_LIB_DIR": str(tmp_path / "lib"),
             "PLUGINS": "__archivebox_test_no_plugins__",
             "CHROME_BINARY": "",
         },

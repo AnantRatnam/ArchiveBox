@@ -279,13 +279,13 @@ def run_hook(
             records = process.get_records()  # Get parsed JSONL output
     """
     from archivebox.machine.models import Process, Machine, NetworkInterface
-    from archivebox.config.common import get_config, normalize_runtime_config
+    from archivebox.config.common import ArchiveBoxConfig, _archivebox_config_input_names, get_config, normalize_runtime_config
 
     config_scope = {key.removeprefix("config_"): kwargs.pop(key) for key in list(kwargs) if key.startswith("config_")}
     config_overrides = _config_to_overrides(config)
     resolved_config = get_config(overrides=config_overrides, **config_scope)
     hook_config = normalize_runtime_config(
-        config_overrides if config is not None else resolved_config.for_crawl(),
+        resolved_config.for_crawl_runtime(),
         json_safe=False,
     )
 
@@ -365,6 +365,9 @@ def run_hook(
 
     # Set up environment with base paths
     env = os.environ.copy()
+    archivebox_config_input_names = _archivebox_config_input_names()
+    for key in archivebox_config_input_names:
+        env.pop(key, None)
     env["DATA_DIR"] = str(CONSTANTS.DATA_DIR)
     env["LIBRARY_VERSION"] = VERSION
     env.setdefault("MACHINE_ID", os.environ.get("MACHINE_ID", CONSTANTS.MACHINE_ID))
@@ -375,10 +378,9 @@ def run_hook(
     if crawl_dir:
         env["CRAWL_DIR"] = str(crawl_dir)
 
-    # Export runtime library roots; abx-dl/abxpkg own executable lookup env.
-    lib_dir = hook_config.get("LIB_DIR")
+    # Export the runtime library root; abx-dl/abxpkg own executable lookup env.
+    lib_dir = hook_config.get("ABXPKG_LIB_DIR")
     if lib_dir:
-        env["LIB_DIR"] = str(lib_dir)
         env["ABXPKG_LIB_DIR"] = str(lib_dir)
 
     # Set Node.js module resolution paths.
@@ -400,10 +402,9 @@ def run_hook(
         env["NODE_PATH"] = os.pathsep.join(node_path_parts)
 
     # Export all config values to environment (already merged by get_config())
-    # Skip keys we've already handled specially above (PATH, LIB_DIR, NODE_PATH, etc.)
+    # Skip keys we've already handled specially above (PATH, ABXPKG_LIB_DIR, NODE_PATH, etc.)
     SKIP_KEYS = {
         "PATH",
-        "LIB_DIR",
         "ABXPKG_LIB_DIR",
         "NODE_PATH",
         "NODE_MODULES_DIR",
@@ -413,9 +414,12 @@ def run_hook(
         "SNAP_DIR",
         "CRAWL_DIR",
     }
+    canonical_config_keys = set(ArchiveBoxConfig.model_fields)
     for key, value in hook_config.items():
         if key in SKIP_KEYS:
             continue  # Already handled specially above, don't overwrite
+        if key in archivebox_config_input_names and key not in canonical_config_keys:
+            continue
         if value is None:
             continue
         elif isinstance(value, bool):

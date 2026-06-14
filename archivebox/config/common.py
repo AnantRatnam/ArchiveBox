@@ -250,10 +250,10 @@ class StorageConfig(BaseConfigSet):
     # must be a local SSD/tmpfs for speed and because bind mounts/network mounts/FUSE dont support unix sockets
     TMP_DIR: Path = Field(default=CONSTANTS.DEFAULT_TMP_DIR, json_schema_extra={"scope": _SCOPE_CRAWL_EXECUTION})
 
-    # LIB_DIR must be a local, fast, readable/writable dir by archivebox user,
+    # ABXPKG_LIB_DIR must be a local, fast, readable/writable dir by archivebox user,
     # must be able to contain executable binaries (up to 5GB size)
     # should not be a remote/network/FUSE mount for speed reasons, otherwise extractors will be slow
-    LIB_DIR: Path = Field(default=CONSTANTS.DEFAULT_LIB_DIR, json_schema_extra={"scope": _SCOPE_CRAWL_EXECUTION})
+    ABXPKG_LIB_DIR: Path = Field(default=CONSTANTS.DEFAULT_ABXPKG_LIB_DIR, json_schema_extra={"scope": _SCOPE_CRAWL_EXECUTION})
 
     OUTPUT_PERMISSIONS: str = Field(default="644")
     ENFORCE_ATOMIC_WRITES: bool = Field(default=True)
@@ -536,6 +536,10 @@ def _archivebox_config_input_names() -> set[str]:
     for field in ArchiveBoxConfig.model_fields.values():
         if isinstance(field.alias, str):
             names.add(field.alias)
+    for prop in _plugin_config_properties(PLUGIN_CONFIG_SCHEMAS).values():
+        aliases = prop.get("x-aliases") if isinstance(prop, Mapping) else None
+        if isinstance(aliases, list):
+            names.update(str(alias) for alias in aliases if str(alias).strip())
     return names
 
 
@@ -647,11 +651,10 @@ class ArchiveBoxBaseConfig(
         runtime_derived_keys = {
             "ABX_INSTALL_CACHE",
             "ACTIVE_PERSONA",
-            "CHROME_DOWNLOADS_DIR",
-            "CHROME_USER_DATA_DIR",
             "CRAWL_DIR",
             "DEFAULT_PERSONA",
             "EXTRA_CONTEXT",
+            "PERSONAS_DIR",
             "SNAP_DIR",
         }
         return frozenset(
@@ -697,9 +700,9 @@ class ArchiveBoxBaseConfig(
         config["DATA_DIR"] = str(CONSTANTS.DATA_DIR)
         scope_by_key = type(self)._scope_by_key()
         model_fields = type(self).model_fields
-        # ArchiveBox owns SEARCH_BACKEND_ENGINE and uses it during model
-        # validation to derive the selected backend's *_ENABLED flag. Hooks
-        # only receive the backend-local flags, never the selector itself.
+        # ArchiveBox-only selectors are consumed during model validation to
+        # derive hook-owned *_ENABLED flags. They are stripped below after
+        # crawl/snapshot overlays have had a chance to apply.
         config.pop("SEARCH_BACKEND_ENGINE", None)
         if persona is not None:
             for key, value in persona.get_derived_config().items():
@@ -721,6 +724,11 @@ class ArchiveBoxBaseConfig(
         if runtime_overrides:
             config.update(normalize_runtime_config(runtime_overrides, json_safe=False))
 
+        # Hooks should only see concrete plugin-local flags, never the
+        # ArchiveBox selectors used to derive them.
+        config.pop("PLUGINS", None)
+        config.pop("SEARCH_BACKEND_ENGINE", None)
+
         if extra_context:
             context: dict[str, Any] = {}
             if config.get("EXTRA_CONTEXT"):
@@ -735,10 +743,10 @@ class ArchiveBoxBaseConfig(
 
     @model_validator(mode="after")
     def resolve_runtime_paths(self):
-        lib_dir = self.LIB_DIR.expanduser()
+        lib_dir = self.ABXPKG_LIB_DIR.expanduser()
         if not lib_dir.is_absolute():
             lib_dir = CONSTANTS.DATA_DIR / lib_dir
-        self.LIB_DIR = lib_dir.resolve()
+        self.ABXPKG_LIB_DIR = lib_dir.resolve()
 
         return self
 
@@ -997,6 +1005,7 @@ def get_config(
         persona = crawl.resolve_persona()
 
     config_data: ConfigPayload = dict(defaults or {})
+    config_data["PERSONAS_DIR"] = str(CONSTANTS.PERSONAS_DIR)
     base_config_payload: ConfigPayload = {}
     if crawl_config_base:
         config_data.update(
@@ -1024,7 +1033,7 @@ def get_config(
 
         scope_overrides.update(
             normalize_runtime_config(
-                _sanitize_machine_config(machine.config, lib_dir=config_data.get("LIB_DIR")),
+                _sanitize_machine_config(machine.config, lib_dir=config_data.get("ABXPKG_LIB_DIR")),
                 only_crawl_execution=crawl_config_base,
                 exclude_runtime_derived=True,
                 json_safe=False,
@@ -1133,8 +1142,7 @@ def get_config(
             value = config[key]
             if is_sensitive_config_key(key) and value not in (None, ""):
                 setattr(config, key, SENSITIVE_CONFIG_VALUE_REDACTED)
-    os.environ["LIB_DIR"] = str(config.LIB_DIR)
-    os.environ["ABXPKG_LIB_DIR"] = str(config.LIB_DIR)
+    os.environ["ABXPKG_LIB_DIR"] = str(config.ABXPKG_LIB_DIR)
     archiving_warning_key = (config.TIMEOUT, config.USE_COLOR)
     if archiving_warning_key not in _WARNED_ARCHIVING_CONFIGS:
         config.warn_if_invalid()

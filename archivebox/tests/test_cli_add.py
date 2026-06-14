@@ -539,6 +539,67 @@ def test_add_tagged_single_url_seals_without_duplicate_snapshot_tags(initialized
     assert not unexpected_failures
 
 
+@pytest.mark.timeout(180)
+def test_add_title_hook_env_gets_canonical_runtime_config_without_archivebox_selectors_or_aliases(initialized_archive):
+    env = os.environ.copy()
+    env.update(
+        {
+            "USE_COLOR": "False",
+            "SHOW_PROGRESS": "False",
+            "PLUGINS": "title",
+            "SAVE_TITLE": "True",
+            "SECRET_KEY": "hook-env-secret-must-not-leak",
+            "PUBLIC_ADD_VIEW": "True",
+            "ADMIN_PASSWORD": "hook-env-admin-password-must-not-leak",
+            "URL_BLACKLIST": "$^",
+            "ARCHIVEBOX_TEST_ARBITRARY_ENV": "preserved-user-env",
+            "LD_PRELOAD": "",
+            "TIMEOUT": "60",
+            "CRAWL_MAX_CONCURRENT_SNAPSHOTS": "1",
+        },
+    )
+    result = run_archivebox_cmd(
+        [
+            "add",
+            "--depth=0",
+            "--plugins=title",
+            "https://example.com/?archivebox-title-env=1",
+        ],
+        cwd=initialized_archive,
+        env=env,
+        timeout=180,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+    with use_archivebox_db(initialized_archive):
+        crawl = Crawl.objects.get()
+        snapshot = Snapshot.objects.get()
+        title_result = ArchiveResult.objects.select_related("process").get(snapshot=snapshot, plugin="title")
+        process_env = title_result.process.env
+
+    assert crawl.config["PLUGINS"] == "title"
+    assert snapshot.url == "https://example.com/?archivebox-title-env=1"
+    assert snapshot.status == Snapshot.StatusChoices.SEALED
+    assert snapshot.title == "Example Domain"
+    assert title_result.status == ArchiveResult.StatusChoices.SUCCEEDED
+    assert title_result.output_str == "Example Domain"
+    assert title_result.process.exit_code == 0
+    assert process_env["TITLE_ENABLED"] == "True"
+    assert process_env["CHROME_ENABLED"] == "True"
+    assert process_env["WGET_ENABLED"] == "False"
+    assert process_env["ARCHIVEBOX_TEST_ARBITRARY_ENV"] == "preserved-user-env"
+    assert process_env["LD_PRELOAD"] == ""
+    assert "PLUGINS" not in process_env
+    assert "SAVE_TITLE" not in process_env
+    assert "SEARCH_BACKEND_ENGINE" not in process_env
+    assert "SECRET_KEY" not in process_env
+    assert "ADMIN_PASSWORD" not in process_env
+    assert "PUBLIC_ADD_VIEW" not in process_env
+    assert "URL_BLACKLIST" not in process_env
+    assert "hook-env-secret-must-not-leak" not in json.dumps(process_env)
+    assert "hook-env-admin-password-must-not-leak" not in json.dumps(process_env)
+
+
 def test_add_index_only_rejected_urls_leave_empty_crawl_for_runner_to_seal(initialized_archive):
     """Index-only add only creates the crawl; rejected URLs are sealed by the runner."""
     env = cli_env(disable_extractors=True)

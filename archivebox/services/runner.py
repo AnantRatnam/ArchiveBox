@@ -566,7 +566,7 @@ class CrawlRunner:
             current_process.machine = current_iface.machine
             current_process.save(update_fields=["iface", "machine", "modified_at"])
         self.persona = self.crawl.resolve_persona()
-        self.base_config = get_config(crawl=self.crawl)
+        self.base_config = get_config(crawl=self.crawl, overrides=self.config_overrides)
         self.derived_config = dict(Machine.current().config or {})
         self.crawl_output_dir = str(self.crawl.output_dir)
         if self.persona:
@@ -576,7 +576,6 @@ class CrawlRunner:
                     chrome_binary=self.base_config["CHROME_BINARY"],
                 ),
             )
-        self.base_config.update(self.config_overrides)
         if self.selected_plugins is None:
             raw_plugins = str(self.base_config.get("PLUGINS") or "").strip()
             if raw_plugins:
@@ -765,8 +764,7 @@ class CrawlRunner:
         snapshot = Snapshot.objects.select_related("crawl", "crawl__created_by").get(id=snapshot_id)
         self.crawl = snapshot.crawl
         self.persona = snapshot.crawl.resolve_persona()
-        self.base_config = get_config(crawl=snapshot.crawl, persona=self.persona)
-        self.base_config.update(self.config_overrides)
+        self.base_config = get_config(crawl=snapshot.crawl, persona=self.persona, overrides=self.config_overrides)
         self.crawl_output_dir = str(snapshot.crawl.output_dir)
         runtime_chrome_overrides = {}
         if self.persona:
@@ -782,8 +780,8 @@ class CrawlRunner:
                 crawl_downloads_dir.mkdir(parents=True, exist_ok=True)
                 runtime_chrome_overrides.update(
                     {
-                        "CHROME_USER_DATA_DIR": str(self.persona.runtime_profile_dir_for_crawl(snapshot.crawl)),
-                        "CHROME_DOWNLOADS_DIR": str(crawl_downloads_dir),
+                        "PERSONAS_DIR": str(self.persona.runtime_root_for_crawl(snapshot.crawl).parent),
+                        "ACTIVE_PERSONA": self.persona.name,
                     },
                 )
         snapshot_output_dir = str(snapshot.output_dir)
@@ -802,7 +800,6 @@ class CrawlRunner:
             },
         )
         normalized_config = normalize_runtime_config(config)
-        normalized_config.update(self.config_overrides)
         return {
             "id": str(snapshot.id),
             "url": snapshot.url,
@@ -2244,7 +2241,7 @@ def run_pending_crawls(
     while True:
         raise_if_shutdown_requested()
         now_monotonic = time.monotonic()
-        if now_monotonic - last_retention_at >= (60.0 if daemon else 1.0):
+        if crawl_id is None and now_monotonic - last_retention_at >= (60.0 if daemon else 1.0):
             for model in (ArchiveResult, Snapshot, Crawl, Process):
                 # Keep the tight scheduler loop anchored on indexed delete_at
                 # columns only. Backfilling missing delete_at values has to read
@@ -2426,7 +2423,7 @@ def run_pending_crawls(
                 continue
 
         now_monotonic = time.monotonic()
-        if now_monotonic - last_retention_repair_at >= (60.0 if daemon else 0.0):
+        if crawl_id is None and now_monotonic - last_retention_repair_at >= (60.0 if daemon else 0.0):
             for model in (ArchiveResult, Snapshot, Crawl, Process):
                 # No runnable work was found on this scheduler pass. This is
                 # the bounded repair point for missing retention deadlines,

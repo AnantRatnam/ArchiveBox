@@ -14,7 +14,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 def _install_chrome(tmp_path, env):
     env["CHROME_ISOLATION"] = "snapshot"
-    env["LIB_DIR"] = str(tmp_path / "lib")
+    env["ABXPKG_LIB_DIR"] = str(tmp_path / "lib")
     install_process = run_archivebox_cmd(
         ["install", "chrome"],
         cwd=tmp_path,
@@ -22,7 +22,7 @@ def _install_chrome(tmp_path, env):
         timeout=600,
     )
     assert install_process.returncode == 0, install_process.stderr or install_process.stdout
-    cached_browser = _find_cached_chrome(Path(env["LIB_DIR"]))
+    cached_browser = _find_cached_chrome(Path(env["ABXPKG_LIB_DIR"]))
     if cached_browser is not None:
         env["CHROME_BINARY"] = str(cached_browser)
         return

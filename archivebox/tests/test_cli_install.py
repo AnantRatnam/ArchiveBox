@@ -11,6 +11,8 @@ from archivebox.tests.conftest import run_archivebox_cmd
 
 import pytest
 
+from archivebox.cli.archivebox_install import ensure_data_dir_lib_symlink
+from archivebox.config.paths import get_machine_type
 from archivebox.core.models import Snapshot
 from archivebox.crawls.models import Crawl
 from archivebox.machine.models import Binary
@@ -114,6 +116,9 @@ def test_install_from_empty_dir_initializes_collection(tmp_path):
     env = os.environ.copy()
     tmp_short = Path("/tmp") / f"abx-install-empty-{tmp_path.name}"
     tmp_short.mkdir(parents=True, exist_ok=True)
+    stale_lib_dir = tmp_path / "lib"
+    stale_lib_dir.mkdir()
+    (stale_lib_dir / "stale.txt").write_text("stale")
     env.update(
         {
             "TMP_DIR": str(tmp_short),
@@ -134,11 +139,23 @@ def test_install_from_empty_dir_initializes_collection(tmp_path):
     assert "Installing specific binaries: git" in output
     assert (tmp_path / "ArchiveBox.conf").is_file()
     assert (tmp_path / "index.sqlite3").is_file()
+    assert (tmp_path / "lib").is_symlink()
+    assert (tmp_path / "lib").resolve().is_dir()
 
     with use_archivebox_db(tmp_path):
         assert Snapshot.objects.count() == 0
         assert Crawl.objects.count() == 0
         assert Binary.objects.filter(status="installed", name="git").count() == 1
+
+
+def test_install_lib_symlink_preserves_scoped_data_lib_dir(tmp_path):
+    """DATA_DIR/lib/<machine_type> is a valid ABXPKG_LIB_DIR and must not be replaced by a parent symlink."""
+    scoped_lib_dir = tmp_path / "lib" / get_machine_type()
+
+    assert ensure_data_dir_lib_symlink(tmp_path, scoped_lib_dir) is None
+    assert (tmp_path / "lib").is_dir()
+    assert not (tmp_path / "lib").is_symlink()
+    assert scoped_lib_dir.is_dir()
 
 
 def test_install_updates_binary_table(initialized_archive):
@@ -174,3 +191,5 @@ def test_install_updates_binary_table(initialized_archive):
     assert snapshot_count == 0
     assert binary_counts.get("installed", 0) > 0
     assert installed_git == 1
+    assert (initialized_archive / "lib").is_symlink()
+    assert (initialized_archive / "lib").resolve().is_dir()

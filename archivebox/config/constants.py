@@ -113,10 +113,9 @@ class ConstantsDict:
     TMP_DIR_NAME: str = "tmp"
     DEFAULT_TMP_DIR: Path = DATA_DIR / TMP_DIR_NAME / MACHINE_ID  # ./data/tmp/abc3244323
 
-    LIB_DIR_NAME: str = "lib"
-    DEFAULT_LIB_DIR: Path = _env_path(
-        "LIB_DIR",
-        user_config_path("abx") / LIB_DIR_NAME,
+    DEFAULT_ABXPKG_LIB_DIR: Path = _env_path(
+        "ABXPKG_LIB_DIR",
+        user_config_path("abx") / "lib",
     )
 
     RESERVED_ARCHIVE_DIR_NAMES: frozenset[str] = frozenset(
@@ -240,7 +239,7 @@ class ConstantsDict:
             SOURCES_DIR_NAME,
             LOGS_DIR_NAME,
             CACHE_DIR_NAME,
-            LIB_DIR_NAME,
+            "lib",
             TMP_DIR_NAME,
             PERSONAS_DIR_NAME,
             CUSTOM_TEMPLATES_DIR_NAME,

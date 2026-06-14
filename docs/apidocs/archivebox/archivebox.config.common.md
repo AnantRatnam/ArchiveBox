@@ -451,13 +451,13 @@ Bases: {py:obj}`archivebox.config.configset.BaseConfigSet`
 
 ````
 
-````{py:attribute} LIB_DIR
-:canonical: archivebox.config.common.StorageConfig.LIB_DIR
+````{py:attribute} ABXPKG_LIB_DIR
+:canonical: archivebox.config.common.StorageConfig.ABXPKG_LIB_DIR
 :type: pathlib.Path
 :value: >
    'Field(...)'
 
-```{autodoc2-docstring} archivebox.config.common.StorageConfig.LIB_DIR
+```{autodoc2-docstring} archivebox.config.common.StorageConfig.ABXPKG_LIB_DIR
 ```
 
 ````

@@ -4,6 +4,8 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
+from django.utils.http import url_has_allowed_host_and_scheme
+
 from archivebox.config.common import get_config
 
 
@@ -282,6 +284,54 @@ def host_matches(request_host: str, target_host: str) -> bool:
     if target_port and req_port and target_port != req_port:
         return False
     return True
+
+
+def is_allowed_archivebox_redirect_url(url: str | None, request=None, config: dict[str, Any] | None = None) -> bool:
+    """Allow login redirects to this host or to the explicit ArchiveBox BASE_URL family.
+
+    Django already rejects arbitrary absolute ``next=`` URLs for the current host.
+    ArchiveBox also has legitimate cross-subdomain handoffs (admin/web/api/snap-*),
+    but only when BASE_URL is pinned. Without an explicit BASE_URL we do not widen
+    trust based on a request Host header that may be user supplied.
+    """
+    if not url:
+        return False
+
+    require_https = bool(request and request.is_secure())
+    request_host = request.get_host() if request else ""
+    if url_has_allowed_host_and_scheme(url=url, allowed_hosts={request_host}, require_https=require_https):
+        return True
+
+    parsed = urlparse(url)
+    if not parsed.netloc:
+        return False
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    if require_https and parsed.scheme != "https":
+        return False
+    if parsed.username or parsed.password:
+        return False
+
+    config = config or get_config()
+    base_url = _normalize_base_url(config.BASE_URL)
+    if not base_url:
+        return False
+
+    base_host, base_port = split_host_port(urlparse(base_url).netloc)
+    if not base_host:
+        return False
+
+    redirect_host = (parsed.hostname or "").lower()
+    if redirect_host != base_host and not redirect_host.endswith(f".{base_host}"):
+        return False
+
+    try:
+        redirect_port = str(parsed.port) if parsed.port else None
+    except ValueError:
+        return False
+    if base_port:
+        return redirect_port == base_port
+    return redirect_port is None
 
 
 def _scheme_from_request(request=None, config: dict[str, Any] | None = None) -> str:

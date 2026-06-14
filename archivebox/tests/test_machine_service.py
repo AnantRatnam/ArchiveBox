@@ -37,7 +37,6 @@ def _runtime_env(data_dir: Path, bin_dir: Path) -> dict[str, str]:
         os.environ.get("PATH", ""),
     ]
     return {
-        "LIB_DIR": str(data_dir / "lib"),
         "ABXPKG_LIB_DIR": str(data_dir / "lib"),
         "LITEPARSE_ENABLED": "True",
         "TIMEOUT": "180",

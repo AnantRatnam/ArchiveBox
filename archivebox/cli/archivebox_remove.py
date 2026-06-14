@@ -34,6 +34,7 @@ def remove(
     after: float | None = None,
     before: float | None = None,
     yes: bool = False,
+    delete: bool = False,
     out_dir: Path = CONSTANTS.DATA_DIR,
     timeout: float | None = None,
     **kwargs,
@@ -142,6 +143,7 @@ def remove(
 
 @click.command()
 @click.option("--yes", is_flag=True, help="Remove links instantly without prompting to confirm")
+@click.option("--delete", is_flag=True, help="Compatibility no-op; archived content is deleted automatically")
 @click.option("--timeout", type=float, default=None, help="Maximum seconds to spend deleting snapshots")
 @snapshot_filter_options(default_filter_type="exact")
 @docstring(remove.__doc__)

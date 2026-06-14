@@ -207,8 +207,7 @@ def test_reload_workers_use_current_interpreter_and_supervisord_managed_runner()
 
 
 def test_server_daemon_starts_real_plugin_owned_sonic_worker(archivebox_daemon_server):
-    if shutil.which("sonic") is None:
-        pytest.skip("sonic server binary is required for Sonic worker integration tests")
+    assert shutil.which("sonic") is not None, "sonic server binary is required for Sonic worker integration tests"
 
     server = archivebox_daemon_server(
         SEARCH_BACKEND_ENGINE="sonic",
@@ -332,8 +331,7 @@ def test_sonic_worker_is_disabled_when_sonic_disabled(tmp_path):
 
 
 def test_sonic_daemon_event_handler_accepts_real_running_worker(archivebox_daemon_server):
-    if shutil.which("sonic") is None:
-        pytest.skip("sonic server binary is required for Sonic worker integration tests")
+    assert shutil.which("sonic") is not None, "sonic server binary is required for Sonic worker integration tests"
 
     from abx_dl.events import ProcessStdoutEvent
     from abx_dl.orchestrator import create_bus

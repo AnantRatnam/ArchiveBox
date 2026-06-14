@@ -331,6 +331,7 @@ def add(
 @click.option("--url-denylist", "--domain-denylist", default="", help="Comma-separated URL/domain denylist for this crawl")
 @click.option("--parser", default="auto", help="Parser for reading input URLs (auto, txt, html, rss, json, jsonl, netscape, ...)")
 @click.option("--plugins", "-p", default="", help="Comma-separated list of plugins to run e.g. title,favicon,screenshot,singlefile,...")
+@click.option("--extract", default="", help="Comma-separated plugins or output types to extract e.g. title,pdf,text/html,image,...")
 @click.option("--persona", default="Default", help="Authentication profile to use when archiving")
 @click.option(
     "--only-new/--no-only-new",
@@ -380,10 +381,23 @@ def main(**kwargs):
         overwrite = kwargs.pop("overwrite", False)
         update = kwargs.pop("update", False)
         only_new = kwargs.pop("only_new", None)
+        extract = kwargs.pop("extract", "")
         if overwrite or update:
             only_new = False
         if only_new is not None:
             kwargs["config"] = {"ONLY_NEW": bool(only_new)}
+        if extract:
+            from abx_dl.models import discover_plugins, plugins_matching_output
+
+            all_plugins = discover_plugins()
+            tokens = [token.strip() for token in extract.split(",") if token.strip()]
+            plugin_names = {name.lower(): name for name in all_plugins}
+            selected = [plugin_names[token.lower()] for token in tokens if token.lower() in plugin_names]
+            selected += plugins_matching_output(all_plugins, tokens)
+            if not selected:
+                raise click.UsageError(f"No plugins found matching extract types: {extract}")
+            existing = [token.strip() for token in (kwargs.get("plugins") or "").split(",") if token.strip()]
+            kwargs["plugins"] = ",".join(dict.fromkeys([*existing, *selected]))
 
         add(urls=urls, **kwargs)
 

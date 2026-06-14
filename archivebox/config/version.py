@@ -47,15 +47,6 @@ def get_COMMIT_HASH() -> str | None:
         if re.fullmatch(r"[0-9a-fA-F]{40}", env_commit_hash):
             return env_commit_hash
 
-    if IN_DOCKER:
-        try:
-            version_txt = Path("/VERSION.txt").read_text()
-            docker_commit_hashes = re.findall(r"COMMIT_HASH=([0-9a-fA-F]{40})", version_txt)
-            if docker_commit_hashes:
-                return docker_commit_hashes[-1]
-        except Exception:
-            pass
-
     def _read_git_file(git_dir: Path, ref: str) -> str | None:
         try:
             return git_dir.joinpath(ref).read_text().strip()
@@ -106,13 +97,10 @@ def get_COMMIT_HASH() -> str | None:
 
 @cache
 def get_BUILD_TIME() -> str:
-    if IN_DOCKER:
-        try:
-            # if we're in the archivebox official docker image, /VERSION.txt will contain the build time
-            docker_build_end_time = Path("/VERSION.txt").read_text().rsplit("BUILD_END_TIME=")[-1].split("\n", 1)[0]
-            return docker_build_end_time
-        except Exception:
-            pass
+    for env_var in ("ARCHIVEBOX_BUILD_TIME", "BUILD_TIME"):
+        build_time = os.environ.get(env_var, "").strip()
+        if build_time:
+            return build_time
 
     src_last_modified_unix_timestamp = (PACKAGE_DIR / "README.md").stat().st_mtime
     return datetime.fromtimestamp(src_last_modified_unix_timestamp).strftime("%Y-%m-%d %H:%M:%S %s")

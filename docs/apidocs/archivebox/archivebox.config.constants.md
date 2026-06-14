@@ -562,24 +562,13 @@
 
 ````
 
-````{py:attribute} LIB_DIR_NAME
-:canonical: archivebox.config.constants.ConstantsDict.LIB_DIR_NAME
-:type: str
-:value: >
-   'lib'
-
-```{autodoc2-docstring} archivebox.config.constants.ConstantsDict.LIB_DIR_NAME
-```
-
-````
-
-````{py:attribute} DEFAULT_LIB_DIR
-:canonical: archivebox.config.constants.ConstantsDict.DEFAULT_LIB_DIR
+````{py:attribute} DEFAULT_ABXPKG_LIB_DIR
+:canonical: archivebox.config.constants.ConstantsDict.DEFAULT_ABXPKG_LIB_DIR
 :type: pathlib.Path
 :value: >
    '_env_path(...)'
 
-```{autodoc2-docstring} archivebox.config.constants.ConstantsDict.DEFAULT_LIB_DIR
+```{autodoc2-docstring} archivebox.config.constants.ConstantsDict.DEFAULT_ABXPKG_LIB_DIR
 ```
 
 ````

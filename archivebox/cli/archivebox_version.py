@@ -29,8 +29,7 @@ def _format_binary_abspath(
 
     candidate_bases: tuple[tuple[Path, str], ...] = (
         (pwd, "./"),
-        (lib_dir, "LIB_DIR/"),
-        (Path(os.environ.get("LIB_DIR", "")), "LIB_DIR/") if os.environ.get("LIB_DIR") else (Path(), ""),
+        (lib_dir, "ABXPKG_LIB_DIR/"),
         (personas_dir, "PERSONAS_DIR/"),
         (home, "~/"),
     )
@@ -47,8 +46,8 @@ def _format_binary_abspath(
             relative_str = relative.as_posix()
             if prefix == "./":
                 return "." if not relative_str else f"./{relative_str}"
-            if prefix == "LIB_DIR/":
-                return "LIB_DIR" if not relative_str else f"LIB_DIR/{relative_str}"
+            if prefix == "ABXPKG_LIB_DIR/":
+                return "ABXPKG_LIB_DIR" if not relative_str else f"ABXPKG_LIB_DIR/{relative_str}"
             if prefix == "PERSONAS_DIR/":
                 return "PERSONAS_DIR" if not relative_str else f"PERSONAS_DIR/{relative_str}"
             return "~" if not relative_str else f"~/{relative_str}"
@@ -59,10 +58,10 @@ def _format_binary_abspath(
 def _render_binary_abspath(abspath: str):
     from rich.text import Text
 
-    if abspath.startswith("LIB_DIR/"):
-        return Text.assemble(("LIB_DIR", "bright_blue"), (abspath.removeprefix("LIB_DIR"), "green"))
-    if abspath == "LIB_DIR":
-        return Text("LIB_DIR", style="bright_blue")
+    if abspath.startswith("ABXPKG_LIB_DIR/"):
+        return Text.assemble(("ABXPKG_LIB_DIR", "bright_blue"), (abspath.removeprefix("ABXPKG_LIB_DIR"), "green"))
+    if abspath == "ABXPKG_LIB_DIR":
+        return Text("ABXPKG_LIB_DIR", style="bright_blue")
     if abspath.startswith("PERSONAS_DIR/"):
         return Text.assemble(("PERSONAS_DIR", "medium_purple"), (abspath.removeprefix("PERSONAS_DIR"), "green"))
     if abspath == "PERSONAS_DIR":
@@ -265,14 +264,8 @@ def version(
             machine = Machine.current()
             derived_config = normalize_runtime_config(machine.config, json_safe=False)
             for binary in Binary.objects.filter(machine=machine).order_by("name", "-modified_at"):
-                if _binary_record_matches_runtime(binary, config.LIB_DIR):
+                if _binary_record_matches_runtime(binary, config.ABXPKG_LIB_DIR):
                     db_binaries.setdefault(binary.name, binary)
-                    continue
-                if binary.status == Binary.StatusChoices.INSTALLED and binary.abspath:
-                    binary.status = Binary.StatusChoices.QUEUED
-                    binary.retry_at = None
-                    binary.abspath = ""
-                    binary.save(update_fields=["status", "retry_at", "abspath", "modified_at"])
             db_available = True
 
         except Exception as e:
@@ -329,7 +322,7 @@ def version(
 
                 any_rows = True
                 installed = db_binaries.get(logical_name) if db_available else None
-                if _binary_record_matches_runtime(installed, config.LIB_DIR):
+                if _binary_record_matches_runtime(installed, config.ABXPKG_LIB_DIR):
                     abspath = installed.abspath
                     version_str = (installed.version or "unknown")[:15]
                     provider = (installed.binprovider or "env")[:8]
@@ -346,7 +339,7 @@ def version(
                         _format_binary_abspath(
                             abspath,
                             pwd=Path.cwd(),
-                            lib_dir=config.LIB_DIR,
+                            lib_dir=config.ABXPKG_LIB_DIR,
                             personas_dir=CONSTANTS.PERSONAS_DIR,
                             home=Path.home(),
                         )

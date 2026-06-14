@@ -3,7 +3,15 @@ __package__ = "archivebox.core"
 from typing import TYPE_CHECKING, Any
 
 from django.contrib import admin
+from django.contrib.auth import REDIRECT_FIELD_NAME
+from django.contrib.auth.decorators import login_not_required
+from django.contrib.auth.views import LoginView
 from django.db import DatabaseError, connection
+from django.http import HttpResponseRedirect
+from django.urls import reverse
+from django.utils.decorators import method_decorator
+from django.utils.translation import gettext as _
+from django.views.decorators.cache import never_cache
 from admin_data_views.admin import (
     admin_data_index_view as adv_admin_data_index_view,
     get_admin_data_urls as adv_get_admin_data_urls,
@@ -12,6 +20,7 @@ from admin_data_views.admin import (
 
 from archivebox.config import VERSION
 from archivebox.config.version import get_COMMIT_HASH
+from archivebox.core.routes_util import is_allowed_archivebox_redirect_url
 
 if TYPE_CHECKING:
     from django.http import HttpRequest
@@ -19,6 +28,17 @@ if TYPE_CHECKING:
     from django.urls import URLPattern, URLResolver
 
     from admin_data_views.typing import AppDict
+
+
+class ArchiveBoxLoginView(LoginView):
+    def get_redirect_url(self) -> str:
+        redirect_to = self.request.POST.get(
+            self.redirect_field_name,
+            self.request.GET.get(self.redirect_field_name),
+        )
+        if is_allowed_archivebox_redirect_url(redirect_to, request=self.request):
+            return redirect_to
+        return ""
 
 
 class ArchiveBoxAdmin(admin.AdminSite):
@@ -71,6 +91,34 @@ class ArchiveBoxAdmin(admin.AdminSite):
 
     def admin_data_index_view(self, request: "HttpRequest", **kwargs: Any) -> "TemplateResponse":
         return adv_admin_data_index_view(self, request, **kwargs)
+
+    @method_decorator(never_cache)
+    @login_not_required
+    def login(self, request: "HttpRequest", extra_context: dict[str, Any] | None = None) -> "TemplateResponse":
+        if request.method == "GET" and self.has_permission(request):
+            return HttpResponseRedirect(reverse("admin:index", current_app=self.name))
+
+        from django.contrib.admin.forms import AdminAuthenticationForm
+
+        context = {
+            **self.each_context(request),
+            "title": _("Log in"),
+            "subtitle": None,
+            "app_path": request.get_full_path(),
+            "username": request.user.get_username(),
+        }
+        if REDIRECT_FIELD_NAME not in request.GET and REDIRECT_FIELD_NAME not in request.POST:
+            context[REDIRECT_FIELD_NAME] = reverse("admin:index", current_app=self.name)
+        context.update(extra_context or {})
+
+        index_path = reverse("admin:index", current_app=self.name)
+        request.current_app = self.name
+        return ArchiveBoxLoginView.as_view(
+            extra_context=context,
+            authentication_form=self.login_form or AdminAuthenticationForm,
+            template_name=self.login_template or "admin/login.html",
+            next_page=index_path,
+        )(request)
 
     def index(self, request: "HttpRequest", extra_context: dict[str, Any] | None = None) -> "TemplateResponse":
         response = super().index(request, extra_context)

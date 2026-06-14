@@ -154,7 +154,7 @@ class TestMachineModel:
         from archivebox.config.constants import CONSTANTS
 
         Machine.current()  # Ensure machine exists
-        wget_path = CONSTANTS.DEFAULT_LIB_DIR / "wget"
+        wget_path = CONSTANTS.DEFAULT_ABXPKG_LIB_DIR / "wget"
         wget_path.parent.mkdir(parents=True, exist_ok=True)
         wget_path.write_text("#!/bin/sh\n")
         cleanup_paths.append(wget_path)
@@ -179,7 +179,7 @@ class TestMachineModel:
         from archivebox.config.constants import CONSTANTS
 
         Machine.current()  # Ensure machine exists
-        wget_path = CONSTANTS.DEFAULT_LIB_DIR / "wget"
+        wget_path = CONSTANTS.DEFAULT_ABXPKG_LIB_DIR / "wget"
         wget_path.parent.mkdir(parents=True, exist_ok=True)
         wget_path.write_text("#!/bin/sh\n")
         cleanup_paths.append(wget_path)
@@ -209,12 +209,12 @@ class TestMachineModel:
         ``Machine.config`` is the file ↔ DB mirror of ``ArchiveBox.conf``, so
         non-binary keys (``CHROME_ISOLATION``, ``CHROMIUM_VERSION``, etc.) are
         preserved on read. Only ``_BINARY`` paths get validated against
-        ``LIB_DIR`` and dropped when stale/missing.
+        ``ABXPKG_LIB_DIR`` and dropped when stale/missing.
         """
         import archivebox.machine.models as models
         from archivebox.config.constants import CONSTANTS
 
-        active_lib_dir = CONSTANTS.DEFAULT_LIB_DIR
+        active_lib_dir = CONSTANTS.DEFAULT_ABXPKG_LIB_DIR
         active_lib_dir.mkdir(parents=True, exist_ok=True)
         chrome_path = active_lib_dir / "chromium"
         node_path = active_lib_dir / "node"
@@ -239,7 +239,7 @@ class TestMachineModel:
 
         refreshed = Machine.current(refresh=True)
 
-        # Valid binary paths inside LIB_DIR survive.
+        # Valid binary paths inside ABXPKG_LIB_DIR survive.
         assert refreshed.config.get("CHROME_BINARY") == str(chrome_path)
         assert refreshed.config.get("NODE_BINARY") == str(node_path)
         # Non-binary mirror keys survive — they belong to ArchiveBox.conf.
@@ -247,7 +247,7 @@ class TestMachineModel:
         assert refreshed.config.get("CHROME_ISOLATION") == "snapshot"
         assert refreshed.config.get("CHROME_USER_DATA_DIR") == "/tmp/profile"
         assert refreshed.config.get("CHROMIUM_VERSION") == "123.4.5"
-        # Stale binary paths get dropped: YTDLP_BINARY outside LIB_DIR,
+        # Stale binary paths get dropped: YTDLP_BINARY outside ABXPKG_LIB_DIR,
         # WGET_BINARY path doesn't exist.
         assert "YTDLP_BINARY" not in refreshed.config
         assert "WGET_BINARY" not in refreshed.config
@@ -262,7 +262,7 @@ class TestMachineModel:
         import archivebox.machine.models as models
         from archivebox.config.common import get_config
 
-        lib_dir = get_config(include_machine=False).LIB_DIR
+        lib_dir = get_config(include_machine=False).ABXPKG_LIB_DIR
         chrome_path = lib_dir / "chromium"
         chrome_path.parent.mkdir(parents=True, exist_ok=True)
         chrome_path.write_text("#!/bin/sh\n")

@@ -18,10 +18,11 @@ if "--debug" in sys.argv:
 
 # Universal `--init` flag: when passed to ANY subcommand (e.g. `archivebox server --init`,
 # `archivebox add --init`, `archivebox shell --init`), run a `quick` archivebox init before
-# the subcommand executes. Strip it from argv here so each subcommand's own click parser
-# never sees it. Ignored for `help` and `init` themselves.
-if "--init" in sys.argv:
-    sys.argv = [arg for arg in sys.argv if arg != "--init"]
+# the subcommand executes. `--quick-init` is the old server spelling. Strip either from
+# argv here so each subcommand's own click parser never sees it. Ignored for `help` and
+# `init` themselves.
+if "--init" in sys.argv or "--quick-init" in sys.argv:
+    sys.argv = [arg for arg in sys.argv if arg not in ("--init", "--quick-init")]
     os.environ["ARCHIVEBOX_WANTS_INIT"] = "1"
 
 
@@ -32,6 +33,7 @@ class ArchiveBoxGroup(click.Group):
         "help": "archivebox.cli.archivebox_help.main",
         "version": "archivebox.cli.archivebox_version.main",
         "mcp": "archivebox.cli.archivebox_mcp.main",
+        "oneshot": "archivebox.cli.archivebox_oneshot.main",
     }
     setup_commands = {
         "init": "archivebox.cli.archivebox_init.main",

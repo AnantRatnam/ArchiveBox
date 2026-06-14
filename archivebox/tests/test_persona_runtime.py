@@ -38,13 +38,15 @@ def test_persona_prepare_runtime_for_crawl_clones_and_cleans_profile(initialized
         )
 
         runtime_root = persona.runtime_root_for_crawl(crawl)
-        runtime_profile = Path(overrides['CHROME_USER_DATA_DIR'])
-        runtime_downloads = Path(overrides['CHROME_DOWNLOADS_DIR'])
+        runtime_profile = persona.runtime_profile_dir_for_crawl(crawl)
+        runtime_downloads = persona.runtime_downloads_dir_for_crawl(crawl)
 
         print(json.dumps({
             'runtime_root_exists': runtime_root.exists(),
             'runtime_profile_exists': runtime_profile.exists(),
             'runtime_downloads_exists': runtime_downloads.exists(),
+            'runtime_personas_dir': overrides['PERSONAS_DIR'],
+            'active_persona': overrides['ACTIVE_PERSONA'],
             'preferences_copied': (runtime_profile / 'Default' / 'Preferences').exists(),
             'singleton_removed': not (runtime_profile / 'SingletonLock').exists(),
             'cache_removed': not (runtime_profile / 'Default' / 'GPUCache').exists(),
@@ -63,6 +65,8 @@ def test_persona_prepare_runtime_for_crawl_clones_and_cleans_profile(initialized
     assert payload["runtime_root_exists"] is True
     assert payload["runtime_profile_exists"] is True
     assert payload["runtime_downloads_exists"] is True
+    assert payload["runtime_personas_dir"].endswith("/.persona")
+    assert payload["active_persona"] == "Default"
     assert payload["preferences_copied"] is True
     assert payload["singleton_removed"] is True
     assert payload["cache_removed"] is True

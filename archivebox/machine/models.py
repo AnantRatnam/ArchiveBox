@@ -140,7 +140,7 @@ def _sanitize_machine_config(config: dict[str, Any] | None, *, lib_dir: str | Pa
     """Validate ``Machine.config`` in place.
 
     Drops stale ``*_BINARY`` overrides whose path no longer exists or whose
-    path falls outside of ``LIB_DIR`` (so a binary uninstall or a lib_dir
+    path falls outside of ``ABXPKG_LIB_DIR`` (so a binary uninstall or a lib_dir
     move clears the override automatically). Non-``_BINARY`` keys
     (``BASE_URL``, ``SERVER_SECURITY_MODE``, plugin tunables, etc.) are
     pass-through — they're arbitrary config overrides and not ours to filter.
@@ -287,7 +287,7 @@ class Machine(ModelWithHealthStats):
     def _sanitize_config(cls, machine: Machine) -> Machine:
         from archivebox.config.common import get_config
 
-        sanitized = _sanitize_machine_config(machine.config, lib_dir=get_config(include_machine=False).LIB_DIR)
+        sanitized = _sanitize_machine_config(machine.config, lib_dir=get_config(include_machine=False).ABXPKG_LIB_DIR)
         current = machine.config or {}
         if sanitized != current:
             machine.config = sanitized
@@ -681,7 +681,7 @@ class Binary(ModelWithHealthStats, ModelWithStateMachine):
             )
             from archivebox.config.common import get_config
 
-            binary.symlink_to_lib_bin_after_commit(get_config().LIB_DIR / "bin")
+            binary.symlink_to_lib_bin_after_commit(get_config().ABXPKG_LIB_DIR / "bin")
             return binary
 
         # Case 2: From binaries.json - create queued binary (needs installation)
@@ -714,7 +714,7 @@ class Binary(ModelWithHealthStats, ModelWithStateMachine):
             )
             from archivebox.config.common import get_config
 
-            binary.symlink_to_lib_bin_after_commit(get_config().LIB_DIR / "bin")
+            binary.symlink_to_lib_bin_after_commit(get_config().ABXPKG_LIB_DIR / "bin")
             return binary
 
         return None
@@ -754,7 +754,7 @@ class Binary(ModelWithHealthStats, ModelWithStateMachine):
 
         After a binary is installed by any binprovider (pip, npm, brew, apt, etc),
         we can optionally expose a flat convenience directory for shell users.
-        ArchiveBox/abx-dl runtime lookup must use the provider-specific LIB_DIR
+        ArchiveBox/abx-dl runtime lookup must use the provider-specific ABXPKG_LIB_DIR
         paths, not this indirection.
 
         Args:

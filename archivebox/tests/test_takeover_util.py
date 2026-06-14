@@ -39,8 +39,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def _require_sonic_binary() -> None:
-    if shutil.which("sonic") is None:
-        pytest.skip("sonic server binary is required for Sonic worker takeover tests")
+    assert shutil.which("sonic") is not None, "sonic server binary is required for Sonic worker takeover tests"
 
 
 def _archive_pages_for_sqlite_reindexing(data_dir: Path, env: dict[str, str], root_url: str) -> None:

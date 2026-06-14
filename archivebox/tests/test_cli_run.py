@@ -566,7 +566,9 @@ class TestRunDaemonMode:
                 if proc.poll() is not None:
                     stdout = proc.stdout.read()
                     stderr = proc.stderr.read()
-                    pytest.fail(f"daemon exited before starting runner: code={proc.returncode}\nstdout={stdout}\nstderr={stderr}")
+                    raise AssertionError(
+                        f"daemon exited before starting runner: code={proc.returncode}\nstdout={stdout}\nstderr={stderr}",
+                    )
                 with use_archivebox_db(initialized_archive):
                     started = Process.objects.filter(
                         process_type=Process.TypeChoices.ORCHESTRATOR,

@@ -287,7 +287,7 @@ def run_runner(
         current.mark_exited()
         return 0
 
-    recover_orchestrator_state(include_chrome=True)
+    recover_orchestrator_state(include_chrome=crawl_id is None, crawl_id=crawl_id)
     if crawl_id:
         from django.utils import timezone
         from archivebox.crawls.models import Crawl

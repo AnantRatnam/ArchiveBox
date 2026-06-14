@@ -427,7 +427,6 @@ def test_add_archivewebpage_installs_required_chrome_dependency(initialized_arch
             "SHOW_PROGRESS": "false",
             "TIMEOUT": "120",
             "ABXPKG_INSTALL_TIMEOUT": "900",
-            "LIB_DIR": str(initialized_archive / "lib"),
             "ABXPKG_LIB_DIR": str(initialized_archive / "lib"),
             "CHROME_HEADLESS": "true",
             "CHROME_SANDBOX": "false",
@@ -506,7 +505,7 @@ def test_add_archivewebpage_installs_required_chrome_dependency(initialized_arch
         if process_type == Process.TypeChoices.HOOK and "chrome_launch" in str(cmd)
     ]
     assert chrome_hook_envs
-    assert all("{LIB_DIR}" not in str(env) for env in chrome_hook_envs)
+    assert all("{ABXPKG_LIB_DIR}" not in str(env) for env in chrome_hook_envs)
     assert any(process_type == Process.TypeChoices.BINARY for process_type, _status, _exit_code, _cmd, _env in process_rows)
     assert all(
         status == Process.StatusChoices.EXITED and exit_code == 0
@@ -531,7 +530,6 @@ def test_recursive_crawl_depth_two_all_plugins_runs_snapshots_in_parallel(initia
         {
             "USE_COLOR": "false",
             "SHOW_PROGRESS": "false",
-            "LIB_DIR": str(initialized_archive / "lib"),
             "ABXPKG_LIB_DIR": str(initialized_archive / "lib"),
             "TIMEOUT": "90",
             "ABXPKG_INSTALL_TIMEOUT": "900",

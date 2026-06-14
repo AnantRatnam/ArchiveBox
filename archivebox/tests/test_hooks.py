@@ -766,7 +766,7 @@ print(json.dumps({
         hook_path,
         output_dir,
         config={
-            "LIB_DIR": str(lib_dir),
+            "ABXPKG_LIB_DIR": str(lib_dir),
             "NODE_PATH": configured_node_path,
         },
         timeout=10,
@@ -812,7 +812,7 @@ print(json.dumps({
         hook_path,
         output_dir,
         config={
-            "LIB_DIR": str(tmp_path / "lib"),
+            "ABXPKG_LIB_DIR": str(tmp_path / "lib"),
         },
         timeout=10,
     )

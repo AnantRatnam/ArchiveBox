@@ -273,9 +273,9 @@ def check_data_dir_permissions(config=None, **config_kwargs):
         tmp_dir = config.TMP_DIR
 
     try:
-        lib_dir = get_or_create_working_lib_dir(autofix=True, quiet=True, config=config) or config.LIB_DIR
+        lib_dir = get_or_create_working_lib_dir(autofix=True, quiet=True, config=config) or config.ABXPKG_LIB_DIR
     except Exception:
-        lib_dir = config.LIB_DIR
+        lib_dir = config.ABXPKG_LIB_DIR
 
     # Check /tmp dir permissions
     check_tmp_dir(tmp_dir, throw=False, must_exist=True, config=config)
@@ -365,7 +365,7 @@ def check_lib_dir(lib_dir: Path | None = None, throw=False, quiet=False, must_ex
     from archivebox.config.common import get_config
 
     config = config or get_config(**config_kwargs)
-    lib_dir = lib_dir or config.LIB_DIR
+    lib_dir = lib_dir or config.ABXPKG_LIB_DIR
 
     if not must_exist and not os.path.isdir(lib_dir):
         return True
@@ -373,7 +373,7 @@ def check_lib_dir(lib_dir: Path | None = None, throw=False, quiet=False, must_ex
     lib_is_valid = False
     try:
         lib_is_valid = dir_is_writable(lib_dir)
-        assert lib_is_valid, f"ArchiveBox user {ARCHIVEBOX_USER}:{ARCHIVEBOX_GROUP} is unable to write to LIB_DIR={lib_dir}"
+        assert lib_is_valid, f"ArchiveBox user {ARCHIVEBOX_USER}:{ARCHIVEBOX_GROUP} is unable to write to ABXPKG_LIB_DIR={lib_dir}"
         return True
     except Exception as e:
         if not quiet:
@@ -381,16 +381,16 @@ def check_lib_dir(lib_dir: Path | None = None, throw=False, quiet=False, must_ex
             ERROR_TEXT = "\n".join(
                 (
                     "",
-                    f"[red]:cross_mark: ArchiveBox is unable to use LIB_DIR={pretty_path(lib_dir)}[/red]",
+                    f"[red]:cross_mark: ArchiveBox is unable to use ABXPKG_LIB_DIR={pretty_path(lib_dir)}[/red]",
                     f"   [yellow]{e}[/yellow]",
                     "",
-                    "[blue]Info:[/blue] [grey53]The LIB_DIR is used to store ArchiveBox auto-installed plugin library and binary dependencies.",
+                    "[blue]Info:[/blue] [grey53]The ABXPKG_LIB_DIR is used to store ArchiveBox auto-installed plugin library and binary dependencies.",
                     f"  - It [red]must[/red] be readable and writable by the ArchiveBox user ({ARCHIVEBOX_USER}:{ARCHIVEBOX_GROUP}).",
                     "  - It [yellow]should[/yellow] be on a local (ideally fast) drive like an SSD or HDD (not on a network drive or external HDD).",
                     "  - It [yellow]should[/yellow] be able to hold at least 1GB of data (some dependencies like Chrome can be large).[/grey53]",
                     "",
-                    "[violet]Hint:[/violet] Fix it by setting LIB_DIR to a path that meets these requirements, e.g.:",
-                    f"      [green]archivebox config --set LIB_DIR={get_or_create_working_lib_dir(autofix=False, quiet=True) or config.LIB_DIR}[/green]",
+                    "[violet]Hint:[/violet] Fix it by setting ABXPKG_LIB_DIR to a path that meets these requirements, e.g.:",
+                    f"      [green]archivebox config --set ABXPKG_LIB_DIR={get_or_create_working_lib_dir(autofix=False, quiet=True) or config.ABXPKG_LIB_DIR}[/green]",
                     "",
                 ),
             )
@@ -399,11 +399,13 @@ def check_lib_dir(lib_dir: Path | None = None, throw=False, quiet=False, must_ex
                     ERROR_TEXT,
                     expand=False,
                     border_style="red",
-                    title="[red]:cross_mark: Error with configured LIB_DIR[/red]",
+                    title="[red]:cross_mark: Error with configured ABXPKG_LIB_DIR[/red]",
                     subtitle="[yellow]Dependencies may not auto-install properly until fixed.[/yellow]",
                 ),
             )
             STDERR.print()
         if throw:
-            raise OSError(f"LIB_DIR={lib_dir} is invalid, ArchiveBox is unable to use it and dependencies will fail to install.") from e
+            raise OSError(
+                f"ABXPKG_LIB_DIR={lib_dir} is invalid, ArchiveBox is unable to use it and dependencies will fail to install.",
+            ) from e
     return False

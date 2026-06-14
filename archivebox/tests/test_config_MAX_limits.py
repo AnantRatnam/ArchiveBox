@@ -115,7 +115,7 @@ def test_run_snapshot_seals_descendant_when_crawl_max_size_is_reached(tmp_path):
     crawl = Crawl.objects.create(
         urls="https://example.com",
         config={
-            "LIB_DIR": str(tmp_path / "lib"),
+            "ABXPKG_LIB_DIR": str(tmp_path / "lib"),
             "PLUGINS": "__archivebox_test_no_plugins__",
             "CHROME_BINARY": "",
             "CRAWL_MAX_SIZE": 16,

@@ -297,7 +297,6 @@ def browser_runtime(initialized_archive: Path):
     env = cli_env(
         ABXPKG_INSTALL_TIMEOUT="900",
         ABXPKG_MIN_RELEASE_AGE="0",
-        LIB_DIR=str(shared_lib),
         ABXPKG_LIB_DIR=str(shared_lib),
         CHROME_HEADLESS="True",
         CHROME_SANDBOX="False",
@@ -776,7 +775,6 @@ def test_archivewebpage_wacz_preview_serves_real_capture_frame(initialized_archi
         ARCHIVEWEBPAGE_TIMEOUT="90",
         TIMEOUT="90",
     )
-    env["LIB_DIR"] = str(browser_runtime["lib_dir"])
     env["ABXPKG_LIB_DIR"] = str(browser_runtime["lib_dir"])
     env["NODE_PATH"] = str(browser_runtime["node_modules_dir"])
     env["NODE_MODULES_DIR"] = str(browser_runtime["node_modules_dir"])

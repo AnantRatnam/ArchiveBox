@@ -10,7 +10,7 @@ def _is_signal_interrupted_exit(exit_code: int | None) -> bool:
     return exit_code is not None and (exit_code < 0 or exit_code >= 128)
 
 
-def recover_orchestrator_state(*, include_chrome: bool = False) -> dict[str, int]:
+def recover_orchestrator_state(*, include_chrome: bool = False, crawl_id: str | None = None) -> dict[str, int]:
     from archivebox.crawls.models import Crawl
     from archivebox.core.models import ArchiveResult, Snapshot
     from archivebox.services.archive_result_service import _collect_output_metadata
@@ -21,10 +21,13 @@ def recover_orchestrator_state(*, include_chrome: bool = False) -> dict[str, int
 
     now = timezone.now()
     recovery_console = Console(stderr=True, highlight=False, soft_wrap=True)
+    crawl_filter = {"id": crawl_id} if crawl_id else {}
+    snapshot_filter = {"crawl_id": crawl_id} if crawl_id else {}
+    result_filter = {"snapshot__crawl_id": crawl_id} if crawl_id else {}
     cleaned = {
-        "processes_stale_running": Process.cleanup_stale_running(),
-        "processes_orphaned_workers": Process.cleanup_orphaned_workers(),
-        "chrome_processes_orphaned": Process.cleanup_orphaned_chrome() if include_chrome else 0,
+        "processes_stale_running": 0 if crawl_id else Process.cleanup_stale_running(),
+        "processes_orphaned_workers": 0 if crawl_id else Process.cleanup_orphaned_workers(),
+        "chrome_processes_orphaned": Process.cleanup_orphaned_chrome() if include_chrome and not crawl_id else 0,
         "crawls_queued_without_retry_at": 0,
         "snapshots_queued_without_retry_at": 0,
         "archiveresults_backoff": 0,
@@ -58,14 +61,16 @@ def recover_orchestrator_state(*, include_chrome: bool = False) -> dict[str, int
     cleaned["crawls_queued_without_retry_at"] = Crawl.objects.filter(
         status=Crawl.StatusChoices.QUEUED,
         retry_at__isnull=True,
+        **crawl_filter,
     ).update(retry_at=now, modified_at=now)
     cleaned["snapshots_queued_without_retry_at"] = Snapshot.objects.filter(
         status=Snapshot.StatusChoices.QUEUED,
         retry_at__isnull=True,
         crawl__status__in=Crawl.RUNNABLE_STATES,
+        **snapshot_filter,
     ).update(retry_at=now, modified_at=now)
-    backoff_results = ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.BACKOFF)
-    orphaned_results = ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.STARTED).exclude(
+    backoff_results = ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.BACKOFF, **result_filter)
+    orphaned_results = ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.STARTED, **result_filter).exclude(
         process__status=Process.StatusChoices.RUNNING,
     )
     # ArchiveResult has no retry_at scheduler. Wake only the parent Snapshots
@@ -92,7 +97,7 @@ def recover_orchestrator_state(*, include_chrome: bool = False) -> dict[str, int
     # only after this runner has won the single-runner gate, so it can safely
     # unlock those stale plugin leases for immediate processing instead of
     # waiting out the previous owner's full lock timeout.
-    queued_plugin_results = ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.QUEUED)
+    queued_plugin_results = ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.QUEUED, **result_filter)
     cleaned["snapshots_queued_plugin_rows_waiting_on_stale_lease"] = (
         Snapshot.objects.filter(
             id__in=queued_plugin_results.values("snapshot_id"),
@@ -113,16 +118,33 @@ def recover_orchestrator_state(*, include_chrome: bool = False) -> dict[str, int
         process_type=Process.TypeChoices.HOOK,
         archiveresult__isnull=True,
     ).exclude(status=Process.StatusChoices.RUNNING)
+    crawl_snapshot_ids = (
+        {str(snapshot_id) for snapshot_id in Snapshot.objects.filter(crawl_id=crawl_id).values_list("id", flat=True)} if crawl_id else None
+    )
+    if crawl_snapshot_ids is not None:
+        # Targeted `archivebox run --crawl-id ...` is used by foreground add/update
+        # commands and by resume of one existing crawl. It must still repair bad
+        # hook state for that crawl, but it must not scan historical orphaned hook
+        # rows from unrelated crawls before the first snapshot can run.
+        if crawl_snapshot_ids:
+            snapshot_pwd_filter = Q()
+            for snapshot_id in crawl_snapshot_ids:
+                snapshot_pwd_filter |= Q(pwd__contains=snapshot_id)
+            orphaned_hook_processes = orphaned_hook_processes.filter(snapshot_pwd_filter)
+        else:
+            orphaned_hook_processes = orphaned_hook_processes.none()
     for process in orphaned_hook_processes.only("id", "pwd", "cmd", "process_type", "status"):
         hook_script_name = process.hook_script_name
         if not hook_script_name or not process.pwd:
             continue
         plugin_dir = Path(process.pwd)
+        if crawl_snapshot_ids is not None and plugin_dir.parent.name not in crawl_snapshot_ids:
+            continue
         try:
             # Old or synthetic hook Process rows can point at arbitrary paths.
             # Only paths whose parent directory is a valid Snapshot id can be
             # reconstructed into ArchiveResult rows.
-            snapshot = Snapshot.objects.filter(id=plugin_dir.parent.name).first()
+            snapshot = Snapshot.objects.filter(id=plugin_dir.parent.name, **snapshot_filter).first()
         except ValidationError:
             continue
         if snapshot is None:
@@ -181,6 +203,7 @@ def recover_orchestrator_state(*, include_chrome: bool = False) -> dict[str, int
             Snapshot.objects.filter(id=snapshot.id).update(retry_at=now, modified_at=now)
     started_snapshots = Snapshot.objects.filter(status=Snapshot.StatusChoices.STARTED).filter(
         Q(retry_at__isnull=True) | Q(retry_at__gt=now),
+        **snapshot_filter,
     )
 
     # Broken lock repair: STARTED + retry_at=NULL or retry_at in the future
@@ -205,6 +228,7 @@ def recover_orchestrator_state(*, include_chrome: bool = False) -> dict[str, int
     # are already final.
     recoverable_started_crawls = Crawl.objects.filter(status=Crawl.StatusChoices.STARTED).filter(
         Q(retry_at__isnull=True) | Q(retry_at__gt=now),
+        **crawl_filter,
     )
 
     due_started_crawls = recoverable_started_crawls.annotate(has_due_child=Exists(due_child_snapshots)).filter(has_due_child=True)

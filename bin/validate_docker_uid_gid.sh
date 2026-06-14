@@ -87,7 +87,7 @@ docker_setup() {
             $setup_script"
 }
 
-default_cmd='printf "ABX_UID=%s\nABX_GID=%s\nABX_USER=%s\nABX_GROUPS=%s\n" "$(id -u)" "$(id -g)" "$(whoami 2>/dev/null || true)" "$(id -Gn)"; touch /data/logs/probe /data/archive/probe "$LIB_DIR/probe" "$PERSONAS_DIR/Default/chrome_profile/probe"; stat -c "ABX_STAT %u:%g:%a %n" /data /data/logs /data/archive "$LIB_DIR" "$PERSONAS_DIR" "$PERSONAS_DIR/Default" "$PERSONAS_DIR/Default/chrome_profile"; echo ABX_PERSONA_PROFILE_OK; echo ABX_OK'
+default_cmd='printf "ABX_UID=%s\nABX_GID=%s\nABX_USER=%s\nABX_GROUPS=%s\n" "$(id -u)" "$(id -g)" "$(whoami 2>/dev/null || true)" "$(id -Gn)"; touch /data/logs/probe /data/archive/probe "$ABXPKG_LIB_DIR/probe" "$PERSONAS_DIR/Default/chrome_profile/probe"; stat -c "ABX_STAT %u:%g:%a %n" /data /data/logs /data/archive "$ABXPKG_LIB_DIR" "$PERSONAS_DIR" "$PERSONAS_DIR/Default" "$PERSONAS_DIR/Default/chrome_profile"; echo ABX_PERSONA_PROFILE_OK; echo ABX_OK'
 version_cmd='printf "ABX_UID=%s\nABX_GID=%s\nABX_USER=%s\nABX_GROUPS=%s\n" "$(id -u)" "$(id -g)" "$(whoami 2>/dev/null || true)" "$(id -Gn)"; archivebox version >/tmp/archivebox-version.out; tail -n 12 /tmp/archivebox-version.out; echo ABX_OK'
 full_flow_cmd='set -Eeuo pipefail
 printf "ABX_UID=%s\nABX_GID=%s\nABX_USER=%s\nABX_GROUPS=%s\n" "$(id -u)" "$(id -g)" "$(whoami 2>/dev/null || true)" "$(id -Gn)"
@@ -163,7 +163,6 @@ run_case() {
     fi
     run_args+=(
         -e DATA_DIR=/data
-        -e LIB_DIR=/libdir
         -e ABXPKG_LIB_DIR=/libdir
         -e PLAYWRIGHT_BROWSERS_PATH=/browsers
     )
@@ -260,7 +259,6 @@ run_readonly_case() {
     fi
     run_args+=(
         -e DATA_DIR=/data
-        -e LIB_DIR=/libdir
         -e ABXPKG_LIB_DIR=/libdir
         -e PLAYWRIGHT_BROWSERS_PATH=/browsers
     )

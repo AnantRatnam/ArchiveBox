@@ -47,6 +47,12 @@ VOLATILE_PROFILE_COPY_PATTERNS = (
     "ShaderCache",
     "Service Worker",
     "GCM Store",
+    "chrome-extension_*",
+    "DNR Extension Rules",
+    "Extension Rules",
+    "Extension Scripts",
+    "Extension State",
+    "Local Extension Settings",
     "*.log",
     "Crashpad",
     "BrowserMetrics",
@@ -611,7 +617,7 @@ def export_browser_state(
     if not state_script.exists():
         return False, None, f"Browser state export script not found at {state_script}"
 
-    node_modules_dir = get_config().LIB_DIR / "pnpm" / "packages" / "chrome" / "node_modules"
+    node_modules_dir = get_config().ABXPKG_LIB_DIR / "pnpm" / "packages" / "chrome" / "node_modules"
     chrome_plugin_dir = Path(get_plugins_dir()).resolve()
 
     env = os.environ.copy()

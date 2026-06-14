@@ -121,7 +121,7 @@ build_and_prek() {
     local repo="$1"
     (
         cd "$repo"
-        rm -rf dist
+        rm -rf dist .pdm-build
         uv --no-cache build --out-dir dist
         # prek auto-fixes (ruff-format, add-trailing-comma, end-of-file-fixer,
         # …) exit with status 1 whenever they modify files. Some hooks expose
@@ -138,7 +138,7 @@ build_and_prek() {
             fi
             echo "[*] prek auto-fixed files in $(basename "$repo"); re-running to verify clean…"
         done
-        rm -rf dist
+        rm -rf dist .pdm-build
         uv --no-cache build --out-dir dist
     )
 }

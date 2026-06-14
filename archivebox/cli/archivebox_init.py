@@ -153,8 +153,8 @@ def init(force: bool = False, quick: bool = False, install: bool = False) -> Non
 
     config = get_config()
     config.TMP_DIR.mkdir(parents=True, exist_ok=True)
-    config.LIB_DIR.mkdir(parents=True, exist_ok=True)
-    (config.LIB_DIR / "bin").mkdir(parents=True, exist_ok=True)
+    config.ABXPKG_LIB_DIR.mkdir(parents=True, exist_ok=True)
+    (config.ABXPKG_LIB_DIR / "bin").mkdir(parents=True, exist_ok=True)
 
     working_tmp_dir = get_or_create_working_tmp_dir(autofix=True, quiet=True)
     if working_tmp_dir:
@@ -186,7 +186,7 @@ def init(force: bool = False, quick: bool = False, install: bool = False) -> Non
 @click.command()
 @click.option("--force", "-f", is_flag=True, help="Ignore unrecognized files in current directory and initialize anyway")
 @click.option("--quick", "-q", is_flag=True, help="Run any updates or migrations without rechecking all snapshot dirs")
-@click.option("--install", "-s", is_flag=True, help="Automatically install dependencies and extras used for archiving")
+@click.option("--install", "--setup", "-s", is_flag=True, help="Automatically install dependencies and extras used for archiving")
 @docstring(init.__doc__)
 def main(**kwargs) -> None:
     init(**kwargs)

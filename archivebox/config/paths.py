@@ -254,8 +254,8 @@ def get_or_create_working_lib_dir(autofix=True, quiet=False, config: "ArchiveBox
 
     config = config or get_config(**config_kwargs)
 
-    # LIB_DIR is either the shared platformdirs default or an explicit env/config override.
-    CANDIDATES = [config.LIB_DIR]
+    # ABXPKG_LIB_DIR is either the shared platformdirs default or an explicit env/config override.
+    CANDIDATES = [config.ABXPKG_LIB_DIR]
 
     for candidate in CANDIDATES:
         try:
@@ -263,12 +263,12 @@ def get_or_create_working_lib_dir(autofix=True, quiet=False, config: "ArchiveBox
         except Exception:
             pass
         if check_lib_dir(candidate, throw=False, quiet=True, must_exist=True):
-            if autofix and config.LIB_DIR != candidate:
-                os.environ["LIB_DIR"] = str(candidate)
+            if autofix and config.ABXPKG_LIB_DIR != candidate:
+                os.environ["ABXPKG_LIB_DIR"] = str(candidate)
             return candidate
 
     if not quiet:
-        raise OSError(f"ArchiveBox is unable to find a writable LIB_DIR, tried {CANDIDATES}!")
+        raise OSError(f"ArchiveBox is unable to find a writable ABXPKG_LIB_DIR, tried {CANDIDATES}!")
 
 
 def get_data_locations(config: "ArchiveBoxConfig | None" = None, **config_kwargs):
@@ -364,9 +364,9 @@ def get_code_locations(config: "ArchiveBoxConfig | None" = None, **config_kwargs
 
     config = config or get_config(**config_kwargs)
     try:
-        lib_dir = get_or_create_working_lib_dir(autofix=True, quiet=True, config=config) or config.LIB_DIR
+        lib_dir = get_or_create_working_lib_dir(autofix=True, quiet=True, config=config) or config.ABXPKG_LIB_DIR
     except Exception:
-        lib_dir = config.LIB_DIR
+        lib_dir = config.ABXPKG_LIB_DIR
 
     return AttrDict(
         {
@@ -390,7 +390,7 @@ def get_code_locations(config: "ArchiveBoxConfig | None" = None, **config_kwargs
                 "enabled": os.path.isdir(CONSTANTS.USER_PLUGINS_DIR),
                 "is_valid": os.path.isdir(CONSTANTS.USER_PLUGINS_DIR) and os.access(CONSTANTS.USER_PLUGINS_DIR, os.R_OK),  # read
             },
-            "LIB_DIR": {
+            "ABXPKG_LIB_DIR": {
                 "path": lib_dir.resolve(),
                 "enabled": True,
                 "is_valid": os.path.isdir(lib_dir) and os.access(lib_dir, os.R_OK) and os.access(lib_dir, os.W_OK),  # read + write

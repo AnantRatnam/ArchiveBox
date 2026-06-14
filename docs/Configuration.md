@@ -616,15 +616,15 @@ Path for temporary files, the supervisord unix socket, and generated supervisor 
 If ArchiveBox detects the configured `TMP_DIR` is unwritable or too long, it will auto-fall-back to `/tmp/archivebox/<collection_id>` at startup.
 
 *Related options:*
-[`LIB_DIR`](#lib_dir), [`ALLOW_NO_UNIX_SOCKETS`](#allow_no_unix_sockets)
+[`ABXPKG_LIB_DIR`](#abxpkg_lib_dir), [`ALLOW_NO_UNIX_SOCKETS`](#allow_no_unix_sockets)
 
 ---
-#### `LIB_DIR`
+#### `ABXPKG_LIB_DIR`
 **Possible Values:** [`<user-config>/abx/lib`]/`/opt/archivebox/lib`/`~/.config/abx/lib`/...
 Path for installed binary dependencies (`chromium`, `single-file`, `yt-dlp`, `ripgrep`, etc.) managed by `abxpkg`. The default is the platform-standard user-config location (`~/.config/abx/lib` on Linux, `~/Library/Application Support/abx/lib` on macOS, `%APPDATA%\abx\lib` on Windows) so a single binary installation can be shared across multiple collections on the same machine without re-downloading.
 
 > [!NOTE]
-> `LIB_DIR` can grow to several GB. Put it on a fast local disk — running extractors off a network-mounted `LIB_DIR` will be painfully slow.
+> `ABXPKG_LIB_DIR` can grow to several GB. Put it on a fast local disk — running extractors off a network-mounted `ABXPKG_LIB_DIR` will be painfully slow.
 
 *Related options:*
 [`TMP_DIR`](#tmp_dir)
