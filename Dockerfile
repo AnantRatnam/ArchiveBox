@@ -231,7 +231,7 @@ RUN echo "[*] Setting up $ARCHIVEBOX_USER user uid=${DEFAULT_ARCHIVEBOX_UID}..."
 WORKDIR "$DATA_DIR"
 RUN echo "[+] Initializing image collection..." \
     && find "$DATA_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} + \
-    && archivebox init \
+    && HOME="$TMP_DIR" archivebox init \
     && (chown "$DEFAULT_ARCHIVEBOX_UID:$DEFAULT_ARCHIVEBOX_GID" \
         "$DATA_DIR" "$DATA_DIR"/.archivebox_id "$DATA_DIR"/ArchiveBox.conf "$DATA_DIR"/index.sqlite3 \
         "$DATA_DIR"/logs "$DATA_DIR"/logs/* "$DATA_DIR"/sources \
