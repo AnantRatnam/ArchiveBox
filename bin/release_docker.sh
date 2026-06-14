@@ -19,6 +19,23 @@ VERSION="$(grep '^version = ' "${REPO_DIR}/pyproject.toml" | awk -F'"' '{print $
 GIT_SHA=sha-"$(git rev-parse --short HEAD)"
 SELECTED_PLATFORMS="${DOCKER_PLATFORMS:-${SELECTED_PLATFORMS:-linux/amd64,linux/arm64}}"
 DOCKER_IMAGE_REPOS="${DOCKER_IMAGE_REPOS:-archivebox/archivebox ghcr.io/archivebox/archivebox}"
+ABX_DL_VERSION="$(python3 - <<'PY'
+import re
+import tomllib
+
+with open("pyproject.toml", "rb") as f:
+    deps = tomllib.load(f)["project"]["dependencies"]
+
+for dep in deps:
+    match = re.match(r"abx-dl\s*(?:==|>=)\s*([^,;\s]+)", dep)
+    if match:
+        print(match.group(1))
+        break
+else:
+    raise SystemExit("Missing abx-dl dependency in pyproject.toml")
+PY
+)"
+ABX_DL_IMAGE="${ABX_DL_IMAGE:-archivebox/abx-dl:${ABX_DL_VERSION}}"
 
 # if not already in TAG_NAMES, add GIT_SHA and BRANCH_NAME  
 if ! echo "${TAG_NAMES[@]}" | grep -q "$GIT_SHA"; then
@@ -31,7 +48,7 @@ if ! echo "${TAG_NAMES[@]}" | grep -q "$VERSION"; then
    TAG_NAMES+=("$VERSION")
 fi
 
-echo "[+] Building + releasing Docker image for $SELECTED_PLATFORMS: branch=$BRANCH_NAME version=$VERSION tags=${TAG_NAMES[*]}"
+echo "[+] Building + releasing Docker image for $SELECTED_PLATFORMS: branch=$BRANCH_NAME version=$VERSION abx_dl_image=$ABX_DL_IMAGE tags=${TAG_NAMES[*]}"
 
 declare -a FULL_TAG_NAMES
 for TAG_NAME in "${TAG_NAMES[@]}"; do
@@ -85,11 +102,14 @@ check_platforms || (recreate_builder && check_platforms) || exit 1
 
 echo "[^] Uploading docker image"
 mkdir -p "$HOME/.cache/docker/archivebox"
+docker buildx imagetools inspect "$ABX_DL_IMAGE"
 
 # https://docs.docker.com/build/cache/backends/
 # shellcheck disable=SC2068
 docker buildx build \
    --platform "$SELECTED_PLATFORMS" \
+   --pull \
+   --build-arg "ABX_DL_IMAGE=$ABX_DL_IMAGE" \
    --cache-from type=local,src="$HOME/.cache/docker/archivebox" \
    --cache-to type=local,compression=zstd,mode=min,oci-mediatypes=true,dest="$HOME/.cache/docker/archivebox" \
    --push . ${FULL_TAG_NAMES[@]}   

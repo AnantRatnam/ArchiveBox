@@ -13,7 +13,6 @@ on:
 env:
   DOCKERHUB_IMAGE: archivebox/archivebox
   GHCR_IMAGE: ghcr.io/archivebox/archivebox
-  ABX_DL_IMAGE: archivebox/abx-dl:latest
 
 permissions:
   contents: read
@@ -105,6 +104,23 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
+          ABX_DL_VERSION="$(python3 - <<'PY'
+          import re
+          import tomllib
+
+          with open("pyproject.toml", "rb") as f:
+              deps = tomllib.load(f)["project"]["dependencies"]
+
+          for dep in deps:
+              match = re.match(r"abx-dl\s*(?:==|>=)\s*([^,;\s]+)", dep)
+              if match:
+                  print(match.group(1))
+                  break
+          else:
+              raise SystemExit("Missing abx-dl dependency in pyproject.toml")
+          PY
+          )"
+          ABX_DL_IMAGE="${ABX_DL_IMAGE:-archivebox/abx-dl:${ABX_DL_VERSION}}"
           deadline=$((SECONDS + 1800))
           until docker buildx imagetools inspect "${ABX_DL_IMAGE}" >/tmp/abx-dl-image.json; do
             if (( SECONDS >= deadline )); then
@@ -173,6 +189,7 @@ jobs:
             ABX_DL_IMAGE=${{ steps.abx_dl_image.outputs.image }}
           cache-from: type=gha,scope=${{ matrix.cache_scope }}
           cache-to: type=gha,mode=max,scope=${{ matrix.cache_scope }}
+          pull: true
           platforms: ${{ matrix.platform }}
           outputs: type=image,push-by-digest=true,name-canonical=true,push=true
 

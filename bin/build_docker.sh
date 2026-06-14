@@ -22,6 +22,23 @@ declare -a TAG_NAMES=("$@")
 BRANCH_NAME="${1:-$(git rev-parse --abbrev-ref HEAD)}"
 VERSION="$(grep '^version = ' "${REPO_DIR}/pyproject.toml" | awk -F'"' '{print $2}')"
 GIT_SHA=sha-"$(git rev-parse --short HEAD)"
+ABX_DL_VERSION="$(python3 - <<'PY'
+import re
+import tomllib
+
+with open("pyproject.toml", "rb") as f:
+    deps = tomllib.load(f)["project"]["dependencies"]
+
+for dep in deps:
+    match = re.match(r"abx-dl\s*(?:==|>=)\s*([^,;\s]+)", dep)
+    if match:
+        print(match.group(1))
+        break
+else:
+    raise SystemExit("Missing abx-dl dependency in pyproject.toml")
+PY
+)"
+ABX_DL_IMAGE="${ABX_DL_IMAGE:-archivebox/abx-dl:${ABX_DL_VERSION}}"
 NATIVE_ARCH="$(docker info --format '{{.Architecture}}' 2>/dev/null || uname -m)"
 case "$NATIVE_ARCH" in
     x86_64|amd64) NATIVE_PLATFORM="linux/amd64" ;;
@@ -41,7 +58,7 @@ if ! echo "${TAG_NAMES[@]}" | grep -q "$VERSION"; then
     TAG_NAMES+=("$VERSION")
 fi
 
-echo "[+] Building Docker image for $SELECTED_PLATFORMS: branch=$BRANCH_NAME version=$VERSION tags=${TAG_NAMES[*]}"
+echo "[+] Building Docker image for $SELECTED_PLATFORMS: branch=$BRANCH_NAME version=$VERSION abx_dl_image=$ABX_DL_IMAGE tags=${TAG_NAMES[*]}"
 
 declare -a FULL_TAG_NAMES
 # for each tag in TAG_NAMES, add archivebox/archivebox:tag and its mirrors to FULL_TAG_NAMES
@@ -97,6 +114,7 @@ check_platforms || (recreate_builder && check_platforms) || exit 1
 
 echo "[+] Building archivebox:$VERSION docker image..."
 mkdir -p "$HOME/.cache/docker/archivebox"
+docker buildx imagetools inspect "$ABX_DL_IMAGE"
 # docker builder prune
 # docker build . --no-cache -t archivebox-dev \
 # replace --load with --push to deploy
@@ -107,6 +125,8 @@ if [[ "$SELECTED_PLATFORMS" == *,* ]]; then
 fi
 docker buildx build \
     --platform "$SELECTED_PLATFORMS" \
+    --pull \
+    --build-arg "ABX_DL_IMAGE=$ABX_DL_IMAGE" \
     --cache-from type=local,src="$HOME/.cache/docker/archivebox" \
     --cache-to type=local,compression=zstd,mode=min,oci-mediatypes=true,dest="$HOME/.cache/docker/archivebox" \
     --load . ${FULL_TAG_NAMES[@]}
