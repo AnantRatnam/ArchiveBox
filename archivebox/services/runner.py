@@ -1239,17 +1239,36 @@ class CrawlRunner:
                     await sync_to_async(run_snapshot_maintenance, thread_sensitive=True)(snapshot_id, output_dir=output_dir)
                     return
                 await self.enqueue_discovered_snapshots_from_outputs(snapshot)
-                await sync_to_async(
-                    lambda: (
-                        self.crawl.sm.seal()
-                        if self.crawl.status == self.crawl.StatusChoices.STARTED
-                        and not self.crawl.snapshot_set.filter(
-                            status__in=self.crawl.snapshot_set.model.OPEN_STATES,
-                        ).exists()
-                        else None
-                    ),
-                    thread_sensitive=True,
-                )()
+
+                def _seal_when_last_snapshot_finished() -> None:
+                    # run_snapshot replaces self.crawl per-snapshot, so multiple
+                    # concurrent tasks each load a fresh Crawl/SM pointing at the
+                    # same DB row. The "no open snapshots" check is non-atomic
+                    # with sm.seal(), so two tasks racing to finish the last
+                    # snapshot can both pass the guard. The first call drives
+                    # the SM to a final state (engine.running=False); the loser
+                    # then raises TransitionNotAllowed even though current_state
+                    # still reads STARTED off its stale model field. Re-read the
+                    # row right before the call and swallow the race so the
+                    # task that lost the lap doesn't fail the whole snapshot.
+                    from statemachine.exceptions import TransitionNotAllowed
+
+                    crawl = self.crawl
+                    crawl.refresh_from_db(fields=["status"])
+                    if crawl.status != crawl.StatusChoices.STARTED:
+                        return
+                    if crawl.snapshot_set.filter(
+                        status__in=crawl.snapshot_set.model.OPEN_STATES,
+                    ).exists():
+                        return
+                    try:
+                        crawl.sm.seal()
+                    except TransitionNotAllowed:
+                        # Another task sealed it between our refresh and the
+                        # SM call. Idempotent by design.
+                        pass
+
+                await sync_to_async(_seal_when_last_snapshot_finished, thread_sensitive=True)()
             finally:
                 snapshot_service.close()
 
