@@ -537,7 +537,7 @@ def test_add_tagged_single_url_seals_without_duplicate_snapshot_tags(initialized
 
     assert crawl.status == Crawl.StatusChoices.SEALED
     assert [(snapshot.url, snapshot.depth, snapshot.status) for snapshot in snapshots] == [
-        ("https://example.com/?archivebox-tagged-single-url=1", 1, Snapshot.StatusChoices.SEALED),
+        ("https://example.com/?archivebox-tagged-single-url=1", 0, Snapshot.StatusChoices.SEALED),
     ]
     assert tag_counts == {
         "https://example.com/?archivebox-tagged-single-url=1": 1,

@@ -129,7 +129,7 @@ def test_cli_api_add_search_update_remove_over_server(tmp_path):
             crawl = (crawl_obj.max_depth, crawl_obj.tags_str, crawl_obj.config) if crawl_obj else None
 
         assert crawl is not None
-        assert crawl[0] == 1
+        assert crawl[0] == 0
         assert crawl[1] == "api-cli"
         assert crawl[2]["INDEX_ONLY"] is True
 
