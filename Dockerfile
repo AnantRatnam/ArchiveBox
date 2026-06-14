@@ -259,7 +259,7 @@ RUN "$LIB_DIR/playwright/bin/chromium" --version | tee -a /VERSION.txt \
     && chown -R "$DEFAULT_ARCHIVEBOX_UID:$DEFAULT_ARCHIVEBOX_GID" "/home/$ARCHIVEBOX_USER/.cache" \
     && setpriv --reuid="$ARCHIVEBOX_USER" --regid="$ARCHIVEBOX_USER" --init-groups test -w "/home/$ARCHIVEBOX_USER/.cache/abxbus/semaphores" \
     && setpriv --reuid="$ARCHIVEBOX_USER" --regid="$ARCHIVEBOX_USER" --init-groups test -w "/home/$ARCHIVEBOX_USER/.cache/uv" \
-    && setpriv --reuid="$ARCHIVEBOX_USER" --regid="$ARCHIVEBOX_USER" --init-groups abx-dl install \
+    && setpriv --reuid="$ARCHIVEBOX_USER" --regid="$ARCHIVEBOX_USER" --init-groups archivebox install \
     && rm -rf /root/.cache /var/cache/apt/* /var/lib/apt/lists/*
 
 RUN (echo -e "\n\n[√] Finished ArchiveBox multistage Docker build successfully." \
