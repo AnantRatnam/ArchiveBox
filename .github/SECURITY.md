@@ -2,23 +2,19 @@
 
 ---
 
-## Security Information
+## Security Documentation
 
-Please see this wiki page for important notices about ArchiveBox security, publishing your archives securely, and the dangers of executing archived JS:
+Please start by reading these links to understand our existing security model, known issues, API surfaces, and setup steps:
 
-https://github.com/ArchiveBox/ArchiveBox/wiki/Security-Overview
-
-Also see this section of the README about important caveats when running ArchiveBox:
-
-https://github.com/ArchiveBox/ArchiveBox?tab=readme-ov-file#caveats
-
-You can also read these pages for more information about ArchiveBox's internals, development environment, DB schema, and more:
-
+- https://github.com/ArchiveBox/ArchiveBox/wiki/Security-Overview
+- https://github.com/ArchiveBox/ArchiveBox/security/advisories/
+- https://github.com/ArchiveBox/ArchiveBox/tree/v0.7.4#security-risks-of-viewing-archived-js
+- https://github.com/ArchiveBox/ArchiveBox/wiki/Publishing-Your-Archive#security-concerns
+- https://github.com/ArchiveBox/ArchiveBox/wiki/Setting-up-Authentication
 - https://github.com/ArchiveBox/ArchiveBox#archive-layout
 - https://github.com/ArchiveBox/ArchiveBox#archivebox-development
 - https://github.com/ArchiveBox/ArchiveBox/wiki/Upgrading-or-Merging-Archives
 - https://github.com/ArchiveBox/ArchiveBox/wiki/Troubleshooting
-- https://github.com/ArchiveBox/ArchiveBox/wiki/Security-Overview
 
 ---
 
@@ -36,12 +32,14 @@ You can also contact the maintainers via our public [Zulip Chat Server zulip.arc
 
 ---
 
-## CVE's and Report Credits
+## CVEs and Report Credits
 
-Note reports that only affect unreleased beta versions or `dev` will be treated as normal Github issues and will not be issued CVEs.  
-Reporters will still receive credit in release notes however.
+> [!IMPORTANT]
+> **Reports that only affect `dev` or beta versions will be converted to normal Github issues and will not be issued CVEs.**  
+> Reporters **will still receive credit in release notes** however.
 
-Reports that affect stable published versions will be issued CVEs and published w/ full credit.
+> [!TIP]
+> Reports that affect **stable published versions will be issued CVEs** and published w/ full credit.
 
 Please read our existing published [security advisories](https://github.com/ArchiveBox/ArchiveBox/security/advisories), [Security Overview Docs](https://github.com/ArchiveBox/ArchiveBox/wiki/Security-Overview), and [issues](https://github.com/ArchiveBox/ArchiveBox/issues) and avoid creating duplicates.
 
@@ -49,19 +47,20 @@ Please read our existing published [security advisories](https://github.com/Arch
 
 ## Threat Model
 
-### All admins are assumed to be trusted
+### All admin users are assumed to be trusted
 
 ArchiveBox does not support granular user permissions, there are only two types of users available in the Admin UI & REST API:
 
 - logged in admin superusers (which are assumed to have `root` on the ArchiveBox host machine already)
 - non-logged in anonymous guest users
 
-Because admin / REST API / CLI / Python API users are already assumed to have `root` on the host machine, there are deliberately no protections against admins inputting malicious config values, attempts to attack other admin users, or destructive/malicious actions. Permissions for non-logged in users are managed via the [`PERMISSIONS`](https://github.com/archiveBox/archiveBox/wiki/configuration#permissions) + [`PUBLIC_INDEX` + `PUBLIC_ADD_VIEW`](https://github.com/archiveBox/archiveBox/wiki/configuration#public_index--public_add_view) and other options.
+Because admin / REST API / CLI / Python API users are already assumed to have `root` on the host machine, there are deliberately no protections against admins inputting malicious config values, attempts to attack other admin users, or destructive/malicious actions. Permissions for non-logged in users are managed via the [`PERMISSIONS`](https://github.com/archiveBox/archiveBox/wiki/configuration#permissions) + [`PUBLIC_INDEX` + `PUBLIC_ADD_VIEW`](https://github.com/archiveBox/archiveBox/wiki/configuration#public_index--public_add_view) + other config options.
 
 ### Sanitization of Config Values, Filesystem Paths, DB Fields, etc.
 
-Non-logged in users can only choose between public Persona config presets on the `/add/` page, but they should never be allowed to directly set config options like `*_ARGS`, `*_BINARY` or DB fields like `title`, `tag.name`, `notes` without sanitization/filtering.
-Non-logged in usage should be tightly limited to prevent attacks like SQL/shell injection, path traversal attacks, XSS, cookie leaks between admin/non-admin domains, etc. Any reports related to non-logged-in users will be prioritized as this is a surface we care a lot about hardening.
+Non-logged in users can only choose between public Persona config presets on the `/add/` page, but they should never be allowed to directly set config options like `*_ARGS`, `*_BINARY` or DB fields like `url`, `title`, `tag.name`, `notes` without sanitization/filtering on save and/or use.
+
+Non-logged in users should be tightly limited to prevent attacks like SQL/shell injection, path traversal attacks, XSS, cookie leaks between admin/non-admin domains, etc. Any reports related to non-logged-in users will be prioritized as this is a surface we care a lot about hardening.
 
 ### XSS, CSRF, CORS, CSP
 
