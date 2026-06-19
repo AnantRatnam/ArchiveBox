@@ -1952,7 +1952,7 @@ async def _run_install(plugin_names: list[str] | None = None) -> None:
                         await bus.destroy(clear=False)
                         bus_destroyed = True
             if live_ui is not None:
-                live_ui.print_summary(output_dir=output_dir)
+                live_ui.print_summary(output_dir=output_dir, archive_results=[])
     finally:
         if not bus_destroyed:
             await bus.destroy(clear=False)
