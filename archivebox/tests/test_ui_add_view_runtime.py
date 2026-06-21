@@ -516,9 +516,10 @@ def test_public_add_view_rejects_file_path_and_shell_injection_payloads(tmp_path
     with use_archivebox_db(tmp_path):
         snapshot = Snapshot.objects.get(url=safe_url)
         crawl = Crawl.objects.get()
+        tag_names = set(snapshot.tags.values_list("name", flat=True))
     assert crawl.status in {Crawl.StatusChoices.STARTED, Crawl.StatusChoices.SEALED}
     assert snapshot.status in {Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED, Snapshot.StatusChoices.SEALED}
-    assert "public-ui-security" in set(snapshot.tags.values_list("name", flat=True))
+    assert "public-ui-security" in tag_names
 
 
 @pytest.mark.timeout(180)
