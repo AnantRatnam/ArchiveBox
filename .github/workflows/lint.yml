@@ -22,13 +22,13 @@ jobs:
           fetch-depth: 1
 
       - name: Clone abxpkg
-        run: git clone --depth=1 https://github.com/ArchiveBox/abxpkg.git abxpkg
+        run: bash .github/scripts/clone_abx_repo.sh abxpkg
 
       - name: Clone abx-plugins
-        run: git clone --depth=1 https://github.com/ArchiveBox/abx-plugins.git abx-plugins
+        run: bash .github/scripts/clone_abx_repo.sh abx-plugins
 
       - name: Clone abx-dl
-        run: git clone --depth=1 https://github.com/ArchiveBox/abx-dl.git abx-dl
+        run: bash .github/scripts/clone_abx_repo.sh abx-dl
 
       - name: Set up Python
         uses: actions/setup-python@v5
