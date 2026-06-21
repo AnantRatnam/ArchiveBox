@@ -9,7 +9,7 @@ case "$repo_name" in
         version="1.11.230"
         ;;
     abx-plugins)
-        version="1.11.236"
+        version="1.11.237"
         ;;
     *)
 version="$(
