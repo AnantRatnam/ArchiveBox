@@ -398,6 +398,50 @@ def version(
                         "style": "" if plugin_enabled else "dim",
                     },
                 )
+
+        if db_available:
+            for binary_name, installed in db_binaries.items():
+                if requested_names and binary_name not in requested_names:
+                    continue
+                abspath = installed.abspath
+                version_str = (installed.version or "unknown")[:15]
+                provider = (installed.binprovider or "env")[:8]
+                row_key = _binary_row_dedupe_key(
+                    display_name=binary_name,
+                    valid=True,
+                    version=version_str,
+                    provider=provider,
+                    abspath=abspath,
+                )
+                if row_key in seen_rows:
+                    continue
+                seen_rows.add(row_key)
+
+                display_path = (
+                    _format_binary_abspath(
+                        abspath,
+                        pwd=Path.cwd(),
+                        lib_dir=config.ABXPKG_LIB_DIR,
+                        personas_dir=CONSTANTS.PERSONAS_DIR,
+                        home=Path.home(),
+                    )
+                    if compact_paths
+                    else abspath
+                )
+                emit_row(
+                    {
+                        "plugin": "(database)",
+                        "state": "detected",
+                        "status": "[green]√[/green]",
+                        "binary": binary_name,
+                        "version": version_str,
+                        "provider": provider,
+                        "path": _render_binary_abspath(display_path) if compact_paths else display_path,
+                        "style": "dim",
+                    },
+                )
+                any_rows = True
+                any_available = True
     finally:
         if live_cm is not None:
             live_cm.stop()

@@ -6,7 +6,7 @@ target_dir="${2:-$repo_name}"
 
 case "$repo_name" in
     abxpkg)
-        version="1.11.229"
+        version="1.11.230"
         ;;
     abx-plugins)
         version="1.11.236"
