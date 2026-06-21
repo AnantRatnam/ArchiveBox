@@ -374,7 +374,6 @@ jobs:
 
       - name: Run plugin tests - ${{ matrix.plugin.name }}
         env:
-          ABXPKG_NO_CACHE: "true"
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           TWOCAPTCHA_API_KEY: ${{ secrets.TWOCAPTCHA_API_KEY }}
           API_KEY_2CAPTCHA: ${{ secrets.TWOCAPTCHA_API_KEY }}
