@@ -394,12 +394,12 @@ class NetworkInterface(ModelWithHealthStats):
     ip_public = models.GenericIPAddressField(default=None, null=False, editable=False)
     ip_local = models.GenericIPAddressField(default=None, null=False, editable=False)
     dns_server = models.GenericIPAddressField(default=None, null=False, editable=False)
-    hostname = models.CharField(max_length=63, default=None, null=False)
-    iface = models.CharField(max_length=15, default=None, null=False)
-    isp = models.CharField(max_length=63, default=None, null=False)
-    city = models.CharField(max_length=63, default=None, null=False)
-    region = models.CharField(max_length=63, default=None, null=False)
-    country = models.CharField(max_length=63, default=None, null=False)
+    hostname = models.CharField(max_length=63, default="", null=False)
+    iface = models.CharField(max_length=15, default="", null=False)
+    isp = models.CharField(max_length=63, default="", null=False)
+    city = models.CharField(max_length=63, default="", null=False)
+    region = models.CharField(max_length=63, default="", null=False)
+    country = models.CharField(max_length=63, default="", null=False)
     # num_uses_failed = models.PositiveIntegerField(default=0)  # from ModelWithHealthStats
     # num_uses_succeeded = models.PositiveIntegerField(default=0)  # from ModelWithHealthStats
 
@@ -408,10 +408,10 @@ class NetworkInterface(ModelWithHealthStats):
 
     class Meta(ModelWithHealthStats.Meta):
         app_label = "machine"
-        unique_together = (("machine", "ip_public", "ip_local", "mac_address", "dns_server"),)
+        unique_together = (("machine", "ip_public", "ip_local", "dns_server"),)
         constraints = [
             models.UniqueConstraint(
-                fields=["machine", "ip_public", "ip_local", "mac_address", "dns_server"],
+                fields=["machine", "ip_public", "ip_local", "dns_server"],
                 name="unique_network_interface_identity",
             ),
         ]
@@ -444,7 +444,6 @@ class NetworkInterface(ModelWithHealthStats):
             machine=machine,
             ip_public=net_info.pop("ip_public"),
             ip_local=net_info.pop("ip_local"),
-            mac_address=net_info.pop("mac_address"),
             dns_server=net_info.pop("dns_server"),
         )
         _CURRENT_INTERFACE = cls.objects.filter(**lookup).order_by("-modified_at", "-created_at").first()

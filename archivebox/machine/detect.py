@@ -145,6 +145,11 @@ ip_addrs = lambda addrs: (a for a in addrs if a.family == socket.AF_INET)
 mac_addrs = lambda addrs: (a for a in addrs if a.family == psutil.AF_LINK)
 
 
+def unknown_if_blank(value):
+    normalized = str(value or "").strip()
+    return normalized or "Unknown"
+
+
 def get_isp_info(ip=None):
     # Get public IP
     try:
@@ -161,10 +166,10 @@ def get_isp_info(ip=None):
     except Exception:
         pass
 
-    isp = data.get("org", "Unknown")
-    city = data.get("city", "Unknown")
-    region = data.get("region", "Unknown")
-    country = data.get("country_name", "Unknown")
+    isp = unknown_if_blank(data.get("org"))
+    city = unknown_if_blank(data.get("city"))
+    region = unknown_if_blank(data.get("region"))
+    country = unknown_if_blank(data.get("country_name"))
 
     # Get system DNS resolver servers
     dns_server = None

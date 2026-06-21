@@ -82,19 +82,19 @@ def _build_binary_table(rows: list[dict[str, object]]):
     from rich.table import Table
 
     table = Table(title="Binary Dependencies", box=box.SIMPLE_HEAVY, expand=True)
+    table.add_column("Binary", no_wrap=True, max_width=28)
     table.add_column("Plugin", no_wrap=True, max_width=24)
     table.add_column("State", no_wrap=True, width=8)
     table.add_column("Status", justify="center", no_wrap=True, width=6)
-    table.add_column("Binary", no_wrap=True, max_width=28)
     table.add_column("Version", no_wrap=True, width=16)
     table.add_column("Provider", no_wrap=True, width=8)
     table.add_column("Path", overflow="fold", ratio=1)
     for row in rows:
         table.add_row(
+            str(row["binary"]),
             str(row["plugin"]),
             str(row["state"]),
             str(row["status"]),
-            str(row["binary"]),
             str(row["version"]),
             str(row["provider"]),
             row["path"],
@@ -106,10 +106,10 @@ def _build_binary_table(rows: list[dict[str, object]]):
 def _print_binary_row(prnt, row: dict[str, object]) -> None:
     prnt(
         "",
+        str(row["binary"]).ljust(28),
         row["status"],
         str(row["plugin"]).ljust(24),
         str(row["state"]).ljust(8),
-        str(row["binary"]).ljust(28),
         str(row["version"]).ljust(16),
         str(row["provider"]).ljust(8),
         row["path"],
@@ -298,7 +298,7 @@ def version(
     live_enabled = console.is_terminal
     live_cm = Live(_build_binary_table(rows), console=console, refresh_per_second=8) if live_enabled else None
     if not live_enabled:
-        prnt("", "Status", "Plugin".ljust(24), "State".ljust(8), "Binary".ljust(28), "Version".ljust(16), "Provider".ljust(8), "Path")
+        prnt("", "Binary".ljust(28), "Status", "Plugin".ljust(24), "State".ljust(8), "Version".ljust(16), "Provider".ljust(8), "Path")
 
     def emit_row(row: dict[str, object]) -> None:
         rows.append(row)

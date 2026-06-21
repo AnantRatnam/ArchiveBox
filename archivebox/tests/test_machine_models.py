@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from django.db import IntegrityError
 from django.db import transaction
 from django.utils import timezone
 
@@ -34,6 +35,7 @@ from archivebox.machine.models import (
     PID_REUSE_WINDOW,
     PROCESS_TIMEOUT_GRACE,
 )
+from archivebox.machine.detect import unknown_if_blank
 
 pytestmark = pytest.mark.django_db
 
@@ -311,6 +313,46 @@ class TestNetworkInterfaceModel:
         """NetworkInterface.objects.current() should return current interface."""
         interface = NetworkInterface.current()
         assert interface is not None
+
+    def test_networkinterface_optional_location_fields_default_to_blank(self, machine):
+        interface = NetworkInterface.objects.create(
+            machine=machine,
+            mac_address="00:00:00:00:00:01",
+            ip_public="127.0.0.1",
+            ip_local="127.0.0.1",
+            dns_server="127.0.0.1",
+        )
+
+        assert interface.hostname == ""
+        assert interface.iface == ""
+        assert interface.isp == ""
+        assert interface.city == ""
+        assert interface.region == ""
+        assert interface.country == ""
+
+    def test_unknown_if_blank_normalizes_null_api_fields(self):
+        assert unknown_if_blank(None) == "Unknown"
+        assert unknown_if_blank("") == "Unknown"
+        assert unknown_if_blank("  ") == "Unknown"
+        assert unknown_if_blank("California") == "California"
+
+    def test_networkinterface_identity_ignores_randomized_mac_address(self, machine):
+        NetworkInterface.objects.create(
+            machine=machine,
+            mac_address="00:00:00:00:00:01",
+            ip_public="127.0.0.1",
+            ip_local="127.0.0.1",
+            dns_server="127.0.0.1",
+        )
+
+        with pytest.raises(IntegrityError), transaction.atomic():
+            NetworkInterface.objects.create(
+                machine=machine,
+                mac_address="00:00:00:00:00:02",
+                ip_public="127.0.0.1",
+                ip_local="127.0.0.1",
+                dns_server="127.0.0.1",
+            )
 
 
 class TestBinaryModel:
