@@ -383,6 +383,7 @@ def run_hook(
     env.pop("PLUGINS", None)
     env["DATA_DIR"] = str(CONSTANTS.DATA_DIR)
     env["LIBRARY_VERSION"] = VERSION
+    env.setdefault("ABXPKG_FAST_SCRIPT", "1")
     env.setdefault("MACHINE_ID", os.environ.get("MACHINE_ID", CONSTANTS.MACHINE_ID))
     snap_dir = hook_config.get("SNAP_DIR") or _model_output_dir_from_child_path(output_dir, CONSTANTS.SNAPSHOTS_DIR_NAME)
     crawl_dir = hook_config.get("CRAWL_DIR") or _model_output_dir_from_child_path(output_dir, CONSTANTS.CRAWLS_DIR_NAME)
