@@ -464,9 +464,7 @@ def version(
 )
 @docstring(version.__doc__)
 def main(**kwargs):
-    failures = version(**kwargs)
-    if failures:
-        raise SystemExit(1)
+    version(**kwargs)
 
 
 if __name__ == "__main__":
