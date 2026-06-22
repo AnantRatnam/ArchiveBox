@@ -240,6 +240,9 @@ def test_snapshot_admin_zip_links():
 
 
 def test_admin_navigation_hides_agent_link_when_opencode_is_disabled(client, admin_user):
+    from archivebox.machine.models import Machine
+
+    Machine.from_json({"config": {"OPENCODE_ENABLED": False}})
     client.force_login(admin_user)
 
     response = client.get(reverse("admin:index"), HTTP_HOST="admin.archivebox.localhost:8000")

@@ -100,6 +100,9 @@ def test_add_view_admin_renders_plugin_config_grid(client, admin_user, monkeypat
 
 
 def test_add_view_hides_agent_link_when_opencode_is_disabled(client, admin_user):
+    from archivebox.machine.models import Machine
+
+    Machine.from_json({"config": {"OPENCODE_ENABLED": False}})
     client.force_login(admin_user)
 
     response = client.get(reverse("add"), HTTP_HOST=ADMIN_HOST)
