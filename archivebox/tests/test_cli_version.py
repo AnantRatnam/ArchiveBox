@@ -153,7 +153,7 @@ def test_version_honors_legacy_save_aliases_when_disabling_extractors(tmp_path):
     assert init_result.returncode == 0, init_result.stderr or init_result.stdout
 
     config_result = run_archivebox_cmd(
-        ["config", "--get", "WGET_ENABLED", "TITLE_ENABLED"],
+        ["config", "--get", "WGET_ENABLED", "TITLE_ENABLED", "CHROME_ENABLED"],
         cwd=data_dir,
         env=env,
         default_cli_env=True,
@@ -163,6 +163,7 @@ def test_version_honors_legacy_save_aliases_when_disabling_extractors(tmp_path):
     assert config_result.returncode == 0, config_output
     assert "WGET_ENABLED = false" in config_output
     assert "TITLE_ENABLED = false" in config_output
+    assert "CHROME_ENABLED = false" in config_output
 
     version_result = run_archivebox_cmd(
         ["version"],
@@ -176,6 +177,30 @@ def test_version_honors_legacy_save_aliases_when_disabling_extractors(tmp_path):
 
     assert version_result.returncode == 0, output
     assert "not installed" not in output
+
+
+def test_plugins_selection_includes_required_plugins_via_config_cli(tmp_path):
+    """PLUGINS selection should include transitive plugin dependencies exactly once."""
+    data_dir = tmp_path / "plugin-dependencies"
+    data_dir.mkdir()
+    env = {"PLUGINS": "wget,screenshot"}
+
+    init_result = run_archivebox_cmd(["init"], cwd=data_dir, env=env, default_cli_env=True, timeout=120)
+    assert init_result.returncode == 0, init_result.stderr or init_result.stdout
+
+    config_result = run_archivebox_cmd(
+        ["config", "--get", "WGET_ENABLED", "SCREENSHOT_ENABLED", "CHROME_ENABLED", "YTDLP_ENABLED"],
+        cwd=data_dir,
+        env=env,
+        default_cli_env=True,
+    )
+    config_output = config_result.stdout + config_result.stderr
+
+    assert config_result.returncode == 0, config_output
+    assert "WGET_ENABLED = true" in config_output
+    assert "SCREENSHOT_ENABLED = true" in config_output
+    assert "CHROME_ENABLED = true" in config_output
+    assert "YTDLP_ENABLED = false" in config_output
 
 
 def test_version_shows_data_locations(tmp_path, initialized_archive):

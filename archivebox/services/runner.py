@@ -59,7 +59,6 @@ from archivebox.config.common import (
     ArchiveBoxBaseConfig,
     normalize_runtime_config,
     _plugin_enabled_config_keys,
-    _plugins_with_required_plugins,
 )
 from archivebox.misc.db import run_db_analyze_batch
 from archivebox.core.shutdown_util import foreground_shutdown_signals, raise_if_shutdown_requested
@@ -811,7 +810,7 @@ class CrawlRunner:
         normalized_config = normalize_runtime_config(config)
         configured_plugins = [name.strip().lower() for name in str(normalized_config.get("PLUGINS") or "").split(",") if name.strip()]
         if configured_plugins:
-            selected_plugin_names = _plugins_with_required_plugins(set(configured_plugins))
+            selected_plugin_names = set(filter_plugins(self.plugins, configured_plugins, include_providers=True))
             for plugin_name, enabled_key in _plugin_enabled_config_keys().items():
                 normalized_config.setdefault(enabled_key, plugin_name in selected_plugin_names)
         return {
@@ -1473,7 +1472,9 @@ def queued_plugins_for_snapshot(snapshot_id: str) -> list[str] | None:
 def config_overrides_for_queued_plugins(selected_plugins: list[str], **overrides: Any) -> dict[str, Any]:
     config_overrides = dict(overrides)
     config_overrides["PLUGINS"] = ",".join(selected_plugins)
-    selected_plugin_names = _plugins_with_required_plugins({plugin_name.lower() for plugin_name in selected_plugins})
+    selected_plugin_names = set(
+        filter_plugins(_discover_archivebox_plugins(), [plugin_name.lower() for plugin_name in selected_plugins], include_providers=True),
+    )
     for plugin_name, enabled_key in _plugin_enabled_config_keys().items():
         config_overrides[enabled_key] = plugin_name in selected_plugin_names
     for plugin_name in selected_plugins:

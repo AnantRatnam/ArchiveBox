@@ -90,29 +90,6 @@ def get_enabled_plugins(config: ConfigLookup | None = None, **config_kwargs: Any
 
         config = get_config(**config_kwargs)
 
-    def normalize_enabled_plugins(value: Any) -> list[str]:
-        if value is None:
-            return []
-        if isinstance(value, str):
-            raw = value.strip()
-            if not raw:
-                return []
-            if raw.startswith("["):
-                try:
-                    parsed = json.loads(raw)
-                except json.JSONDecodeError:
-                    parsed = None
-                if isinstance(parsed, list):
-                    return [str(plugin).strip() for plugin in parsed if str(plugin).strip()]
-            return [plugin.strip() for plugin in raw.split(",") if plugin.strip()]
-        if isinstance(value, (list, tuple, set)):
-            return [str(plugin).strip() for plugin in value if str(plugin).strip()]
-        return [str(value).strip()] if str(value).strip() else []
-
-    plugins_override = config.get("PLUGINS")
-    if plugins_override:
-        return normalize_enabled_plugins(plugins_override)
-
     enabled = []
     for plugin in get_plugins():
         plugin_config = get_plugin_special_config(plugin, config)
@@ -245,61 +222,12 @@ def get_plugin_special_config(plugin_name: str, config: ConfigLookup, _visited: 
     """
     plugin_upper = plugin_name.upper()
 
-    plugins_whitelist = config.get("PLUGINS", "")
-    if plugins_whitelist:
-        plugin_configs = discover_plugin_configs()
-        plugin_names = {p.strip().lower() for p in plugins_whitelist.split(",") if p.strip()}
-        pending = list(plugin_names)
-
-        while pending:
-            current = pending.pop()
-            schema = plugin_configs.get(current, {})
-            required_plugins = schema.get("required_plugins", [])
-            if not isinstance(required_plugins, list):
-                continue
-
-            for required_plugin in required_plugins:
-                required_plugin_name = str(required_plugin).strip().lower()
-                if not required_plugin_name or required_plugin_name in plugin_names:
-                    continue
-                plugin_names.add(required_plugin_name)
-                pending.append(required_plugin_name)
-
-        if plugin_name.lower() not in plugin_names:
-            enabled = False
-        else:
-            enabled_key = f"{plugin_upper}_ENABLED"
-            enabled = config.get(enabled_key)
-            if enabled is None:
-                enabled = True
-            elif isinstance(enabled, str):
-                enabled = enabled.lower() not in ("false", "0", "no", "")
-    else:
-        enabled_key = f"{plugin_upper}_ENABLED"
-        enabled = config.get(enabled_key)
-        if enabled is None:
-            enabled = True
-        elif isinstance(enabled, str):
-            enabled = enabled.lower() not in ("false", "0", "no", "")
-
-    plugin_configs = discover_plugin_configs()
-    plugin_name_lower = plugin_name.lower()
-
-    if enabled:
-        visited = _visited or set()
-        if plugin_name_lower not in visited:
-            next_visited = visited | {plugin_name_lower}
-            schema = plugin_configs.get(plugin_name_lower, {})
-            required_plugins = schema.get("required_plugins", [])
-            if isinstance(required_plugins, list):
-                for required_plugin in required_plugins:
-                    required_plugin_name = str(required_plugin).strip()
-                    if not required_plugin_name:
-                        continue
-                    required_config = get_plugin_special_config(required_plugin_name, config, _visited=next_visited)
-                    if not required_config["enabled"]:
-                        enabled = False
-                        break
+    enabled_key = f"{plugin_upper}_ENABLED"
+    enabled = config.get(enabled_key)
+    if enabled is None:
+        enabled = True
+    elif isinstance(enabled, str):
+        enabled = enabled.lower() not in ("false", "0", "no", "")
 
     timeout_key = f"{plugin_upper}_TIMEOUT"
     timeout = config.get(timeout_key) or config.get("TIMEOUT", 300)

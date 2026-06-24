@@ -778,15 +778,36 @@ class ArchiveBoxBaseConfig(
 
     @model_validator(mode="after")
     def derive_plugin_enabled_config(self):
+        self._derive_plugin_enabled_config(respect_current_enabled=False)
+        return self
+
+    def _derive_plugin_enabled_config(self, *, respect_current_enabled: bool) -> None:
         plugin_names = _normalize_plugins_config_value(self.PLUGINS)
-        selected_plugins = _plugins_with_required_plugins(plugin_names) if plugin_names else set()
+        enabled_config_keys = _plugin_enabled_config_keys()
+        if respect_current_enabled:
+            selected_plugin_roots = {
+                plugin_name for plugin_name in plugin_names if bool(getattr(self, enabled_config_keys.get(plugin_name, ""), True))
+            }
+        else:
+            selected_plugin_roots = plugin_names
+        if selected_plugin_roots:
+            from abx_dl.models import discover_plugins, filter_plugins
+
+            selected_plugins = set(
+                filter_plugins(
+                    discover_plugins(runtime="archivebox"),
+                    sorted(selected_plugin_roots),
+                    include_providers=True,
+                ),
+            )
+        else:
+            selected_plugins = set()
         search_backend = self.SEARCH_BACKEND_ENGINE.strip().lower()
-        if search_backend:
+        if search_backend and not plugin_names:
             selected_plugins.add(f"search_backend_{search_backend}")
-        for plugin_name, enabled_key in _plugin_enabled_config_keys().items():
+        for plugin_name, enabled_key in enabled_config_keys.items():
             if plugin_names or plugin_name in selected_plugins:
                 setattr(self, enabled_key, plugin_name in selected_plugins)
-        return self
 
 
 def _build_archivebox_config_model(plugin_schemas: PluginSchemaDocuments) -> type[ArchiveBoxBaseConfig]:
@@ -841,23 +862,6 @@ def _plugin_enabled_config_keys() -> dict[str, str]:
         if enabled_key in properties and ArchiveBoxConfig.scope_for_key(enabled_key) == _SCOPE_CRAWL_EXECUTION:
             enabled_keys[str(plugin_name).lower()] = enabled_key
     return enabled_keys
-
-
-def _plugins_with_required_plugins(plugin_names: set[str]) -> set[str]:
-    selected = set(plugin_names)
-    pending = list(selected)
-    while pending:
-        plugin_name = pending.pop()
-        schema = PLUGIN_CONFIG_SCHEMAS.get(plugin_name, {})
-        required_plugins = schema.get("required_plugins") if isinstance(schema, dict) else None
-        if not isinstance(required_plugins, list):
-            continue
-        for required_plugin in required_plugins:
-            required_plugin_name = str(required_plugin).strip().lower()
-            if required_plugin_name and required_plugin_name not in selected:
-                selected.add(required_plugin_name)
-                pending.append(required_plugin_name)
-    return selected
 
 
 def get_live_config_url(key: str) -> str:
@@ -1147,6 +1151,13 @@ def get_config(
         if crawl_config_base:
             config_data.update(normalize_runtime_config(dict(crawl.config or {}), exclude_crawl_execution=True, json_safe=False))
         config_data.update(archivebox_scope_overrides)
+        if crawl_selected_plugins:
+            # Crawl PLUGINS is a frozen selector. Drop ambient enable flags from
+            # env/file/defaults before model validation so the selected plugin
+            # set is derived from the crawl, not from the worker process that
+            # happens to resume it.
+            for enabled_key in _plugin_enabled_config_keys().values():
+                config_data.pop(enabled_key, None)
 
     # Decode JSON-encoded complex values (dict/list fields) that came from
     # string-only sources before validation. ``IniConfigSettingsSource`` does
@@ -1175,6 +1186,8 @@ def get_config(
     for key in explicit_plugin_enabled_keys:
         if key in config_data:
             setattr(config, key, config_data[key])
+    if config.PLUGINS:
+        config._derive_plugin_enabled_config(respect_current_enabled=True)
     if redact_sensitive:
         for key in type(config).model_fields:
             value = config[key]

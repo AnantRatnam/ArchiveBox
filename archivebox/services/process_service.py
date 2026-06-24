@@ -43,9 +43,10 @@ def normalize_process_env(env: dict) -> dict:
         if is_sensitive_config_key(key) or (key in config_input_names and key not in allowed_config_keys):
             normalized.pop(key, None)
     if selected_plugins:
-        from archivebox.config.common import _plugin_enabled_config_keys, _plugins_with_required_plugins
+        from abx_dl.models import discover_plugins, filter_plugins
+        from archivebox.config.common import _plugin_enabled_config_keys
 
-        selected_plugins = _plugins_with_required_plugins(selected_plugins)
+        selected_plugins = set(filter_plugins(discover_plugins(runtime="archivebox"), sorted(selected_plugins), include_providers=True))
         for plugin_name, enabled_key in _plugin_enabled_config_keys().items():
             normalized.setdefault(enabled_key, "True" if plugin_name in selected_plugins else "False")
     return normalized
