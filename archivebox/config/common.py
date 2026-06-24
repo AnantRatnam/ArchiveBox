@@ -507,18 +507,30 @@ def _plugin_user_config(config: Mapping[str, object]) -> dict[str, str]:
     return {key: _plugin_user_config_value(value) for key, value in config.items()}
 
 
-def _plugin_alias_config(config: Mapping[str, object]) -> dict[str, object]:
-    """Keep declared plugin alias inputs long enough for schema resolution.
-
-    The dynamic ``ArchiveBoxConfig`` model only exposes canonical plugin fields
-    (e.g. ``WGET_ENABLED``). Legacy/user-facing aliases such as ``SAVE_WGET``
-    are declared in plugin ``config.json`` files, so they must reach
-    ``resolve_plugin_configs()`` as raw user input instead of being filtered out
-    by the canonical runtime-config normalizer.
-    """
-    canonical_names = set(ArchiveBoxConfig.model_fields)
+def _plugin_input_config(config: Mapping[str, object]) -> dict[str, object]:
+    """Return raw config inputs understood by core or plugin schemas."""
     input_names = _archivebox_config_input_names()
-    return {str(key): value for key, value in config.items() if str(key) in input_names and str(key) not in canonical_names}
+    return {str(key): value for key, value in config.items() if str(key) in input_names}
+
+
+def _explicit_plugin_enabled_keys(config: Mapping[str, object]) -> set[str]:
+    """Return canonical ``*_ENABLED`` keys explicitly provided by the user.
+
+    ``PLUGINS`` is a selector, not an override for concrete plugin enable flags.
+    If a user passes ``PLUGINS=wget`` and ``SAVE_WGET=False`` together, the
+    alias-resolved ``WGET_ENABLED=False`` must survive the model validator that
+    expands ``PLUGINS`` into concrete booleans.
+    """
+    provided = {str(key) for key in config}
+    explicit: set[str] = set()
+    for key, prop in _plugin_config_properties(PLUGIN_CONFIG_SCHEMAS).items():
+        if not key.endswith("_ENABLED") or not isinstance(prop, Mapping):
+            continue
+        aliases = prop.get("x-aliases") if isinstance(prop, Mapping) else None
+        input_names = {key, *(str(alias) for alias in aliases if str(alias).strip())} if isinstance(aliases, list) else {key}
+        if provided & input_names:
+            explicit.add(key)
+    return explicit
 
 
 def _discover_plugin_config_schemas() -> PluginSchemaDocuments:
@@ -1022,7 +1034,6 @@ def get_config(
     config_data["PERSONAS_DIR"] = str(CONSTANTS.PERSONAS_DIR)
     base_config_payload: ConfigPayload = {}
     base_config_model = ArchiveBoxConfig()
-    base_config_explicit_keys = set(base_config_model.model_fields_set)
 
     if crawl_config_base:
         config_data.update(
@@ -1089,26 +1100,23 @@ def get_config(
     archivebox_scope_overrides = {key: value for key, value in scope_overrides.items() if key in _archivebox_config_input_names()}
     config_data.update(archivebox_scope_overrides)
 
+    explicit_plugin_enabled_keys: set[str] = set()
     if resolve_plugins:
         plugin_schemas = {plugin_name: schema for plugin_name, schema in PLUGIN_CONFIG_SCHEMAS.items() if isinstance(schema, dict)}
         plugin_global_config = {key: str(value) if isinstance(value, Path) else value for key, value in config_data.items()}
-        explicit_base_config = {key: value for key, value in config_data.items() if key in base_config_explicit_keys}
+        explicit_plugin_enabled_keys.update(_explicit_plugin_enabled_keys(os.environ))
+        explicit_plugin_enabled_keys.update(_explicit_plugin_enabled_keys(scope_overrides))
         plugin_user_config = _plugin_user_config(
             {
-                **_plugin_alias_config(os.environ),
-                **normalize_runtime_config(explicit_base_config, only_crawl_execution=True, json_safe=False),
+                **_plugin_input_config(os.environ),
                 **scope_overrides,
             },
         )
         if not crawl_config_base:
             file_config = BaseConfigSet.load_from_file(CONSTANTS.CONFIG_FILE)
+            explicit_plugin_enabled_keys.update(_explicit_plugin_enabled_keys(file_config))
             plugin_user_config = {
-                **_plugin_user_config(_plugin_alias_config(file_config)),
-                **normalize_runtime_config(
-                    file_config,
-                    exclude_runtime_derived=True,
-                    json_safe=False,
-                ),
+                **_plugin_user_config(_plugin_input_config(file_config)),
                 **plugin_user_config,
             }
         plugin_sections = resolve_plugin_configs(
@@ -1158,6 +1166,9 @@ def get_config(
             )
 
     config = ArchiveBoxConfig.model_validate(config_data)
+    for key in explicit_plugin_enabled_keys:
+        if key in config_data:
+            setattr(config, key, config_data[key])
     if redact_sensitive:
         for key in type(config).model_fields:
             value = config[key]

@@ -484,9 +484,13 @@ def test_add_archivewebpage_installs_required_chrome_dependency(initialized_arch
     assert "archivewebpage" in binaries
     assert binaries["archivewebpage"]["status"] == Binary.StatusChoices.INSTALLED
     assert binaries["archivewebpage"]["binprovider"] == "chromewebstore"
-    archivewebpage_manifest = Path(binaries["archivewebpage"]["abspath"])
+    archivewebpage_metadata = Path(binaries["archivewebpage"]["abspath"])
+    assert archivewebpage_metadata.exists()
+    assert archivewebpage_metadata.name == "archivewebpage.extension.json"
+    archivewebpage_extension = json.loads(archivewebpage_metadata.read_text(encoding="utf-8"))
+    archivewebpage_manifest = Path(archivewebpage_extension["unpacked_path"]) / "manifest.json"
     assert archivewebpage_manifest.exists()
-    assert archivewebpage_manifest.name == "manifest.json"
+    assert json.loads(archivewebpage_manifest.read_text(encoding="utf-8"))["version"] == binaries["archivewebpage"]["version"]
 
     plugins_seen = {plugin for plugin, _hook_name, _status, _output_str, _output_files in archive_results}
     assert {"chrome", "archivewebpage"}.issubset(plugins_seen)

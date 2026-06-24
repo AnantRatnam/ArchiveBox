@@ -147,13 +147,15 @@ def test_version_honors_legacy_save_aliases_when_disabling_extractors(tmp_path):
     """Legacy SAVE_* aliases should disable their canonical plugin flags."""
     data_dir = tmp_path / "legacy-save-disabled"
     data_dir.mkdir()
+    env = {"PLUGINS": "wget,title"}
 
-    init_result = run_archivebox_cmd(["init"], cwd=data_dir, default_cli_env=True, disable_extractors=True, timeout=120)
+    init_result = run_archivebox_cmd(["init"], cwd=data_dir, env=env, default_cli_env=True, disable_extractors=True, timeout=120)
     assert init_result.returncode == 0, init_result.stderr or init_result.stdout
 
     config_result = run_archivebox_cmd(
         ["config", "--get", "WGET_ENABLED", "TITLE_ENABLED"],
         cwd=data_dir,
+        env=env,
         default_cli_env=True,
         disable_extractors=True,
     )
@@ -162,7 +164,14 @@ def test_version_honors_legacy_save_aliases_when_disabling_extractors(tmp_path):
     assert "WGET_ENABLED = false" in config_output
     assert "TITLE_ENABLED = false" in config_output
 
-    version_result = run_archivebox_cmd(["version"], cwd=data_dir, default_cli_env=True, disable_extractors=True, timeout=60)
+    version_result = run_archivebox_cmd(
+        ["version"],
+        cwd=data_dir,
+        env=env,
+        default_cli_env=True,
+        disable_extractors=True,
+        timeout=60,
+    )
     output = version_result.stdout + version_result.stderr
 
     assert version_result.returncode == 0, output
