@@ -11,6 +11,7 @@ Each persona has its own:
 __package__ = "archivebox.personas"
 
 import shutil
+import os
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -179,7 +180,16 @@ class Persona(ModelWithConfig):
         if not profile_dir.exists():
             return False
 
-        for path in profile_dir.rglob("*"):
+        def profile_paths():
+            # Chrome profiles are user-controlled filesystem state. If a cache
+            # or generated component is unreadable, cleanup should skip it and
+            # continue pruning the rest instead of blocking the crawl runner.
+            for dirpath, dirnames, filenames in os.walk(profile_dir, onerror=lambda _err: None):
+                current_dir = Path(dirpath)
+                for name in [*dirnames, *filenames]:
+                    yield current_dir / name
+
+        for path in profile_paths():
             if path.name in VOLATILE_PROFILE_FILE_NAMES:
                 try:
                     path.unlink()
@@ -188,13 +198,21 @@ class Persona(ModelWithConfig):
                     pass
 
         for dirname in VOLATILE_PROFILE_DIR_NAMES:
-            for path in profile_dir.rglob(dirname):
-                if not path.is_dir():
+            for path in profile_paths():
+                if path.name != dirname:
+                    continue
+                try:
+                    is_dir = path.is_dir()
+                except OSError:
+                    is_dir = False
+                if not is_dir:
                     continue
                 shutil.rmtree(path, ignore_errors=True)
                 cleaned = True
 
-        for path in profile_dir.rglob("*.log"):
+        for path in profile_paths():
+            if not path.match("*.log"):
+                continue
             try:
                 path.unlink()
                 cleaned = True
@@ -252,7 +270,7 @@ class Persona(ModelWithConfig):
         return self.runtime_root_for_snapshot(snapshot) / "chrome_downloads"
 
     def copy_chrome_profile(self, source_dir: Path, destination_dir: Path) -> None:
-        from archivebox.personas.importers import VOLATILE_PROFILE_COPY_PATTERNS
+        from archivebox.personas.importers import profile_copy_ignore
 
         destination_dir.parent.mkdir(parents=True, exist_ok=True)
         shutil.rmtree(destination_dir, ignore_errors=True)
@@ -260,7 +278,7 @@ class Persona(ModelWithConfig):
             source_dir,
             destination_dir,
             symlinks=True,
-            ignore=shutil.ignore_patterns(*VOLATILE_PROFILE_COPY_PATTERNS),
+            ignore=profile_copy_ignore,
         )
 
     def prepare_runtime_for_crawl(self, crawl, chrome_binary: str = "") -> dict[str, str]:

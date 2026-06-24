@@ -68,6 +68,55 @@ PERSONA_PROFILE_DIR_CANDIDATES = (
 )
 
 
+def _path_exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def _path_is_dir(path: Path) -> bool:
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
+def _iter_children(path: Path) -> list[Path]:
+    try:
+        return list(path.iterdir())
+    except OSError:
+        return []
+
+
+def _is_copyable_profile_entry(path: Path) -> bool:
+    try:
+        if path.is_symlink():
+            return True
+        if path.is_dir():
+            return os.access(path, os.R_OK | os.X_OK)
+        return os.access(path, os.R_OK)
+    except OSError:
+        return False
+
+
+def profile_copy_ignore(src: str, names: list[str]) -> set[str]:
+    ignored = set(shutil.ignore_patterns(*VOLATILE_PROFILE_COPY_PATTERNS)(src, names))
+    src_path = Path(src)
+    for name in names:
+        if name in ignored:
+            continue
+        if not _is_copyable_profile_entry(src_path / name):
+            # Chrome can leave generated profile components unreadable when a
+            # previous run used a different runtime uid, a mounted profile came
+            # from the host, or Chrome tightened permissions on cache/model
+            # directories. Those entries are not required to launch a cloned
+            # profile, and letting copytree abort here prevents the crawl from
+            # even creating its first Snapshot.
+            ignored.add(name)
+    return ignored
+
+
 @dataclass(frozen=True)
 class PersonaImportSource:
     kind: str
@@ -394,13 +443,16 @@ def discover_persona_template_profiles(personas_dir: Path | None = None) -> list
             continue
         seen_roots.add(resolved_root)
 
-        if not resolved_root.exists() or not resolved_root.is_dir():
+        if not _path_is_dir(resolved_root):
             continue
 
-        for persona_dir in sorted((path for path in resolved_root.iterdir() if path.is_dir()), key=lambda path: path.name.lower()):
+        for persona_dir in sorted(
+            (path for path in _iter_children(resolved_root) if _path_is_dir(path)),
+            key=lambda path: path.name.lower(),
+        ):
             for candidate_dir_name in PERSONA_PROFILE_DIR_CANDIDATES:
                 user_data_dir = persona_dir / candidate_dir_name
-                if not user_data_dir.exists() or not user_data_dir.is_dir():
+                if not _path_is_dir(user_data_dir):
                     continue
 
                 for profile_dir in _list_profile_names(user_data_dir):
@@ -594,7 +646,7 @@ def copy_browser_user_data_dir(source_dir: Path, destination_dir: Path) -> None:
         source_dir,
         destination_dir,
         symlinks=True,
-        ignore=shutil.ignore_patterns(*VOLATILE_PROFILE_COPY_PATTERNS),
+        ignore=profile_copy_ignore,
     )
 
 
@@ -707,12 +759,12 @@ def export_browser_state(
 
 
 def _list_profile_names(user_data_dir: Path) -> list[str]:
-    if not user_data_dir.exists() or not user_data_dir.is_dir():
+    if not _path_is_dir(user_data_dir):
         return []
 
     profiles: list[str] = []
-    for child in sorted(user_data_dir.iterdir(), key=lambda path: path.name.lower()):
-        if not child.is_dir():
+    for child in sorted(_iter_children(user_data_dir), key=lambda path: path.name.lower()):
+        if not _path_is_dir(child):
             continue
         if child.name == "System Profile":
             continue
@@ -726,7 +778,7 @@ def _list_profile_names(user_data_dir: Path) -> list[str]:
 
 
 def _looks_like_profile_dir(path: Path) -> bool:
-    if not path.exists() or not path.is_dir():
+    if not _path_is_dir(path):
         return False
 
     marker_paths = (
@@ -738,7 +790,7 @@ def _looks_like_profile_dir(path: Path) -> bool:
         path / "Session Storage",
     )
 
-    if any(marker.exists() for marker in marker_paths):
+    if any(_path_exists(marker) for marker in marker_paths):
         return True
 
     return any(path.name == prefix or path.name.startswith(prefix) for prefix in BROWSER_PROFILE_DIR_NAMES)

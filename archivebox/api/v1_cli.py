@@ -54,6 +54,7 @@ class AddCommandSchema(Schema):
     snapshot_max_size: int = 0
     parser: str = "auto"
     plugins: str = ""
+    persona: str = "Default"
     only_new: bool | None = None
     update: bool = False
     overwrite: bool = False
@@ -145,6 +146,7 @@ def cli_add(request: HttpRequest, args: AddCommandSchema):
         snapshot_max_size=args.snapshot_max_size,
         index_only=args.index_only,
         plugins=args.plugins,
+        persona=args.persona,
         parser=args.parser,
         bg=True,  # Always run in background for API calls
         created_by_id=request.user.pk,

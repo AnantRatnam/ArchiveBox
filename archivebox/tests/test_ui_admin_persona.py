@@ -94,6 +94,28 @@ def test_discover_persona_template_profiles_finds_data_dir_personas():
     assert matching[0].user_data_dir.parent.parent == CONSTANTS.PERSONAS_DIR.resolve()
 
 
+def test_persona_admin_add_view_skips_unreadable_chrome_profile_entries(admin_client):
+    from archivebox.config.constants import CONSTANTS
+
+    chrome_profile = CONSTANTS.PERSONAS_DIR / "UnreadableTemplatePersona" / "chrome_profile"
+    default_profile = chrome_profile / "Default"
+    default_profile.mkdir(parents=True, exist_ok=True)
+    (default_profile / "Preferences").write_text('{"profile":{"name":"Default"}}')
+    unreadable_dir = chrome_profile / "ActorSafetyLists"
+    unreadable_dir.mkdir(parents=True, exist_ok=True)
+    (unreadable_dir / "Preferences").write_text("{}")
+    unreadable_dir.chmod(0)
+
+    try:
+        response = admin_client.get(reverse("admin:personas_persona_add"), HTTP_HOST=ADMIN_TEST_HOST)
+    finally:
+        unreadable_dir.chmod(0o700)
+
+    assert response.status_code == 200
+    assert b"UnreadableTemplatePersona" in response.content
+    assert b"Persona Template" in response.content
+
+
 def test_persona_admin_add_view_renders_import_ui(admin_client):
     source = _make_persona_template_source("RenderImportPersona")
 

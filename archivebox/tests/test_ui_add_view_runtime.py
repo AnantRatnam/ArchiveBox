@@ -344,6 +344,97 @@ def _wait_for_worker_state(cwd, worker_name: str, statename: str, timeout: int =
     raise AssertionError(f"Timed out waiting for {worker_name}={statename}, last state={state}")
 
 
+@pytest.mark.timeout(240)
+def test_public_add_view_depth_one_crawl_skips_unreadable_persona_profile_entries(tmp_path, recursive_test_site):
+    init_archive(tmp_path)
+
+    chrome_profile = tmp_path / "personas" / "Default" / "chrome_profile"
+    default_profile = chrome_profile / "Default"
+    default_profile.mkdir(parents=True, exist_ok=True)
+    (default_profile / "Preferences").write_text('{"profile":{"name":"Default"}}', encoding="utf-8")
+    unreadable_dir = chrome_profile / "ActorSafetyLists"
+    unreadable_dir.mkdir(parents=True, exist_ok=True)
+    (unreadable_dir / "Preferences").write_text("{}", encoding="utf-8")
+    unreadable_dir.chmod(0)
+
+    port = get_free_port()
+    env = cli_env(
+        port=port,
+        PLUGINS="wget,parse_html_urls",
+        SAVE_WGET="True",
+        PUBLIC_INDEX="True",
+        PUBLIC_ADD_VIEW="True",
+        URL_ALLOWLIST=r"127\.0\.0\.1[:/].*",
+    )
+
+    try:
+        start_archivebox_server(tmp_path, env=env, port=port)
+        add_page = wait_for_http(port, host=f"web.archivebox.localhost:{port}", path="/add/")
+        assert add_page.status_code == 200
+        assert 'name="depth"' in add_page.text
+
+        response = requests.post(
+            f"http://127.0.0.1:{port}/add/",
+            headers={"Host": f"web.archivebox.localhost:{port}", "Referer": f"http://web.archivebox.localhost:{port}/add/"},
+            data={
+                "url": recursive_test_site["root_url"],
+                "depth": "1",
+                "max_urls": "10",
+                "crawl_max_size": "0",
+                "snapshot_max_size": "0",
+                "tag": "public-depth-one-unreadable-profile",
+                "url_filters_allowlist": r"127\.0\.0\.1[:/].*",
+                "url_filters_denylist": "",
+                "schedule": "",
+                "notes": "public depth one with unreadable chrome profile entries",
+                "persona": "Default",
+                "permissions": "public",
+                "start_paused": "",
+                "config": "{}",
+            },
+            timeout=10,
+            allow_redirects=False,
+        )
+        assert response.status_code in (302, 303), response.text
+
+        deadline = time.time() + 180
+        while time.time() < deadline:
+            with use_archivebox_db(tmp_path):
+                crawl = Crawl.objects.order_by("-created_at").first()
+                depth_counts = get_depth_counts(tmp_path)
+                child_urls = set(Snapshot.objects.filter(depth=1).values_list("url", flat=True))
+                failed_results = list(
+                    ArchiveResult.objects.filter(status=ArchiveResult.StatusChoices.FAILED).values_list("plugin", "output_str"),
+                )
+            if depth_counts.get(0, 0) >= 1 and set(recursive_test_site["child_urls"]).issubset(child_urls):
+                break
+            assert not failed_results
+            time.sleep(2)
+        else:
+            raise AssertionError(f"timed out waiting for depth=1 crawl, got depth counts {get_depth_counts(tmp_path)}")
+
+        with use_archivebox_db(tmp_path):
+            crawl = Crawl.objects.order_by("-created_at").first()
+            snapshot_rows = list(Snapshot.objects.order_by("depth", "url").values_list("url", "depth", "status"))
+            result_rows = list(ArchiveResult.objects.order_by("plugin", "status").values_list("plugin", "status", "output_size"))
+    finally:
+        unreadable_dir.chmod(0o700)
+        stop_server(tmp_path)
+
+    assert crawl is not None
+    assert crawl.max_depth == 1
+    assert crawl.status in {Crawl.StatusChoices.STARTED, Crawl.StatusChoices.SEALED}
+    assert (recursive_test_site["root_url"], 0, Snapshot.StatusChoices.SEALED) in snapshot_rows
+    assert set(recursive_test_site["child_urls"]).issubset({url for url, depth, _status in snapshot_rows if depth == 1})
+    assert all(
+        status in {Snapshot.StatusChoices.QUEUED, Snapshot.StatusChoices.STARTED, Snapshot.StatusChoices.SEALED}
+        for _url, _depth, status in snapshot_rows
+    )
+    assert not [row for row in result_rows if row[1] == ArchiveResult.StatusChoices.FAILED]
+    assert any(plugin == "wget" and status == ArchiveResult.StatusChoices.SUCCEEDED and size > 0 for plugin, status, size in result_rows)
+    assert any(plugin == "parse_html_urls" and status == ArchiveResult.StatusChoices.SUCCEEDED for plugin, status, _size in result_rows)
+
+
 @pytest.mark.timeout(420)
 def test_public_add_view_import_text_formats_preserve_metadata_and_resume_without_duplicates(tmp_path):
     """Public /add/ textarea should import rich text, survive runner restart, and preserve one row per URL."""
