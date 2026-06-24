@@ -93,7 +93,6 @@ from archivebox.core.routes_util import (
 from archivebox.core.forms import AddLinkForm
 from archivebox.plugins.forms import get_plugin_config_binary_urls
 from archivebox.crawls.models import Crawl
-from archivebox.plugins.discovery import discover_plugin_configs
 from archivebox.plugins.views import get_config_definition_link
 from archivebox.progressmonitor.views import live_progress_view, progress_endpoint
 
@@ -1424,7 +1423,6 @@ class AddView(UserPassesTestMixin, FormView):
         request_config = get_request_config(self.request, resolve_plugins=True)
         required_search_plugin = f"search_backend_{request_config.SEARCH_BACKEND_ENGINE}".strip()
         can_override_crawl_config = self._can_override_crawl_config()
-        plugin_configs = discover_plugin_configs() if can_override_crawl_config else {}
         public_persona_config_keys = {
             "CRAWL_MAX_CONCURRENT_SNAPSHOTS",
             "DELETE_AFTER",
@@ -1453,17 +1451,6 @@ class AddView(UserPassesTestMixin, FormView):
                 "binary_urls": binary_urls,
             }
         recent_personas = list(persona_queryset.order_by("-created_at", "name")[:5])
-        plugin_dependency_map = {}
-        if can_override_crawl_config:
-            plugin_dependency_map = {
-                plugin_name: [
-                    str(required_plugin).strip()
-                    for required_plugin in (schema.get("required_plugins") or [])
-                    if str(required_plugin).strip()
-                ]
-                for plugin_name, schema in plugin_configs.items()
-                if isinstance(schema.get("required_plugins"), list) and schema.get("required_plugins")
-            }
         return {
             **context,
             "title": "Create Crawl",
@@ -1473,7 +1460,6 @@ class AddView(UserPassesTestMixin, FormView):
             "VERSION": VERSION,
             "FOOTER_INFO": request_config.FOOTER_INFO,
             "required_search_plugin": required_search_plugin,
-            "plugin_dependency_map_json": json.dumps(plugin_dependency_map, sort_keys=True),
             "persona_config_map_json": json.dumps(persona_config_map, sort_keys=True, default=str),
             "recent_personas": recent_personas,
             "can_override_crawl_config": can_override_crawl_config,

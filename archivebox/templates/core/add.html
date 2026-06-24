@@ -374,7 +374,6 @@
                 if (sameDomainToggleSlot && shortcutToggles.length) {
                     shortcutToggles.forEach((toggle) => sameDomainToggleSlot.appendChild(toggle));
                 }
-                const pluginDependencyMap = JSON.parse('{{ plugin_dependency_map_json|default:"{}"|escapejs }}');
                 const personaConfigMap = JSON.parse('{{ persona_config_map_json|default:"{}"|escapejs }}');
                 const personaSelect = document.querySelector('select[name="persona"]');
 
@@ -404,22 +403,6 @@
                 function getRequiredSearchCheckbox() {
                     if (!requiredSearchPlugin) return null;
                     return document.querySelector(`.plugin-section-toggle[value="${requiredSearchPlugin}"]`);
-                }
-
-                function getPluginCheckbox(pluginName) {
-                    if (!pluginName) return null;
-                    return document.querySelector(`.plugin-section-toggle[value="${pluginName}"]`);
-                }
-
-                function getRequiredPlugins(pluginName) {
-                    const requiredPlugins = pluginDependencyMap[pluginName];
-                    return Array.isArray(requiredPlugins) ? requiredPlugins : [];
-                }
-
-                function getDependentPlugins(pluginName) {
-                    return Object.entries(pluginDependencyMap)
-                        .filter(([, requiredPlugins]) => Array.isArray(requiredPlugins) && requiredPlugins.includes(pluginName))
-                        .map(([dependentPlugin]) => dependentPlugin);
                 }
 
                 function getConfigEditorRows() {
@@ -555,47 +538,6 @@
                     syncEnabledPluginsConfig();
                     updateChromeToggleButton();
                     updateURLPreview();
-                }
-
-                function ensureRequiredPluginsChecked(pluginName, visited = new Set()) {
-                    if (!pluginName || visited.has(pluginName)) {
-                        return;
-                    }
-                    visited.add(pluginName);
-
-                    getRequiredPlugins(pluginName).forEach(requiredPlugin => {
-                        const requiredCheckbox = getPluginCheckbox(requiredPlugin);
-                        if (!requiredCheckbox) {
-                            return;
-                        }
-                        requiredCheckbox.checked = true;
-                        dispatchChange(requiredCheckbox);
-                        ensureRequiredPluginsChecked(requiredPlugin, visited);
-                    });
-                }
-
-                function uncheckDependentPlugins(pluginName, visited = new Set()) {
-                    if (!pluginName || visited.has(pluginName)) {
-                        return;
-                    }
-                    visited.add(pluginName);
-
-                    getDependentPlugins(pluginName).forEach(dependentPlugin => {
-                        const dependentCheckbox = getPluginCheckbox(dependentPlugin);
-                        if (!dependentCheckbox) {
-                            return;
-                        }
-                        dependentCheckbox.checked = false;
-                        dispatchChange(dependentCheckbox);
-                        uncheckDependentPlugins(dependentPlugin, visited);
-                    });
-                }
-
-                function normalizePluginSelections() {
-                    const checkedPlugins = Array.from(document.querySelectorAll('.plugin-section-toggle:checked'))
-                        .map(cb => cb.value)
-                        .filter(Boolean);
-                    checkedPlugins.forEach(pluginName => ensureRequiredPluginsChecked(pluginName));
                 }
 
                 function applyRequiredSearchPlugin(preferredValue = undefined) {
@@ -1247,7 +1189,6 @@
                             });
                         }
 
-                        normalizePluginSelections();
                         applyRequiredSearchPlugin(requiredSearchPreference);
                         syncEnabledPluginsConfig();
                         updateChromeToggleButton();
@@ -1281,7 +1222,6 @@
                             dispatchChange(cb);
                         });
 
-                        normalizePluginSelections();
                         applyRequiredSearchPlugin(requiredSearchPreference);
                         syncEnabledPluginsConfig();
                         updateChromeToggleButton();
@@ -1291,11 +1231,6 @@
 
                 document.querySelectorAll('.plugin-section-toggle').forEach(checkbox => {
                     checkbox.addEventListener('change', function() {
-                        if (this.checked) {
-                            ensureRequiredPluginsChecked(this.value);
-                        } else {
-                            uncheckDependentPlugins(this.value);
-                        }
                         syncEnabledPluginsConfig();
                         updateChromeToggleButton();
                         saveFormState();
@@ -1350,7 +1285,6 @@
                         if (personaSelect) {
                             applyPersonaConfig(personaSelect.value);
                         }
-                        normalizePluginSelections();
                         applyRequiredSearchPlugin();
                         syncEnabledPluginsConfig();
                         updateChromeToggleButton();
