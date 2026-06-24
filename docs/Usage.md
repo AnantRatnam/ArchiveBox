@@ -26,7 +26,7 @@
 All three of these ways of running ArchiveBox are equivalent and interchangeable:
 
 - `archivebox [subcommand] [...args]`  
-  *Using the PyPI package via `pip install archivebox`*
+  *Using the Python package via `uv tool install archivebox`*
 - `docker run ... archivebox/archivebox [subcommand] [...args]`  
   *Using the official Docker image*
 - `docker-compose run archivebox [subcommand] [...args]`  

@@ -4,9 +4,9 @@
 # cd /path/to/your/archivebox/data
 cd ~/archivebox/data
 
-pip install --upgrade --ignore-installed archivebox
+uv tool install --python 3.13 --upgrade 'git+https://github.com/ArchiveBox/ArchiveBox.git@dev'
 # or
-docker pull archivebox/archivebox:latest
+docker pull archivebox/archivebox:dev
 
 # upgrade the collection to a new version
 archivebox init
@@ -27,7 +27,7 @@ archivebox init
 ---
 
 *Note: It's recommended to only upgrade one major version at a time. e.g. if you're on `v0.4.14`, upgrade to `v0.5.6` next, then `v0.6.3`, and finally `v0.7.1` (as 3 separate steps).
-You can specify exact versions with pip like so: `pip install archivebox==0.6.3` or with docker `docker pull archivebox/archivebox:0.6.3`. Upgrading directly across multiple major versions may work in some cases, but is not recommended for maximum data safety.*
+You can specify exact versions with uv like so: `uv tool install --python 3.13 --upgrade archivebox==0.6.3` or with docker `docker pull archivebox/archivebox:0.6.3`. Upgrading directly across multiple major versions may work in some cases, but is not recommended for maximum data safety.*
 
 
 ---
@@ -99,7 +99,7 @@ cd ~/archivebox/data   # or wherever your data folder is
 killall archivebox     # stop the currently running archivebox version
 
 # upgrade ArchiveBox using the package manager you originally used to install it
-pip install --upgrade --ignore-installed archivebox
+uv tool install --python 3.13 --upgrade 'git+https://github.com/ArchiveBox/ArchiveBox.git@dev'
 # or
 sudo apt update
 sudo apt install --only-upgrade archivebox
@@ -107,7 +107,7 @@ sudo apt install --only-upgrade archivebox
 curl -sSL 'https://get.archivebox.io' | sh
 
 archivebox init        # run init to upgrade the collection to the latest version
-sudo archivebox install # refresh runtime dependencies if needed
+archivebox install     # refresh runtime dependencies if needed
 
 archivebox update --index-only  # optionally force an update of the snapshot index files (normally done lazily, see issue #962 for more info)
 

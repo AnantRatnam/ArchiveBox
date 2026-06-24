@@ -496,7 +496,7 @@ You can find more organizations and initiatives on these other lists:
 - [Python PyPI](https://pypi.org/project/archivebox/)
 - [Docker Hub](https://hub.docker.com/r/archivebox/archivebox)
 - [ArchLinux AUR](https://aur.archlinux.org/packages/archivebox)
-- [Ubuntu Launchpad PPA](https://launchpad.net/~archivebox/+archive/ubuntu/archivebox)
+- [Ubuntu/Debian apt wrapper](https://github.com/ArchiveBox/debian-archivebox)
 
 ---
 

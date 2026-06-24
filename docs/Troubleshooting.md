@@ -21,11 +21,10 @@ Then make sure `archivebox` is installed available in your `$PATH`.
 ```bash
 apt show archivebox      # show info about the apt-installed version of archivebox
 brew info archivebox     # show info about the brew-installed version of archivebox
-pip show archivebox      # show info about the pip-installed version of archivebox
+uv tool list             # show info about uv-installed tools
 
 echo $PATH               # show the directories your system is searching for binaries
 type -a archivebox       # show all installed archivebox binaries available
-which archivebox         # show which archivebox binary is being called
 ```
 **⭐️ Show the full archivebox version info + info about all installed dependencies:**
 ```bash
@@ -34,7 +33,7 @@ archivebox version       # shows lots of useful info about installed dependencie
 (ensure the version shown is the most recent available from [Releases](https://github.com/ArchiveBox/ArchiveBox/releases))
 
 ### macOS
-ArchiveBox can be installed with Homebrew or `pip`/`pipx` on macOS:
+ArchiveBox can be installed with Homebrew or `uv` on macOS:
 ```bash
 brew tap archivebox/archivebox
 brew install archivebox
@@ -119,7 +118,7 @@ node --version         # make sure you have node >=19 installed
 npm --version          # make sure you have npm installed
 
 cd ~/archivebox/data   # go into your data directory
-sudo archivebox install # auto-installs runtime dependencies
+archivebox install      # auto-installs runtime dependencies
 # equivalent to:
 # curl -fsSL 'https://raw.githubusercontent.com/ArchiveBox/ArchiveBox/dev/archivebox/package.json' > package.json
 # npm install

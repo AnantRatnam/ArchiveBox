@@ -1,6 +1,6 @@
 # Install
 
-ArchiveBox is primarily distributed as a Python package via `pip`, but it also depends on some system packages that can be installed manually or automatically with Docker. It usually takes less than ~10min to get ArchiveBox set up and running.
+ArchiveBox is primarily distributed as a Python package installed with `uv`, but it also depends on some system packages that can be installed manually or automatically with Docker. It usually takes less than ~10min to get ArchiveBox set up and running.
 
 <img src="https://github.com/ArchiveBox/ArchiveBox/assets/511499/601d587d-b59f-47b9-938e-8a7fa7790176" width="20%" align="right"/>
 
@@ -99,7 +99,7 @@ After running the setup script, continue with the [Quickstart](https://github.co
 
 ## Option C. Bare Metal Setup
 
-If you'd rather not use [Docker](https://github.com/ArchiveBox/ArchiveBox#%EF%B8%8F-easy-setup) or our [auto-install script](https://github.com/ArchiveBox/ArchiveBox#%EF%B8%8F-easy-setup), you can follow these manual setup instructions to install ArchiveBox and its dependencies using `pip` & your system package manager of choice (e.g. `apt`, `brew`, `pkg`, `nix`, etc.).
+If you'd rather not use [Docker](https://github.com/ArchiveBox/ArchiveBox#%EF%B8%8F-easy-setup) or our [auto-install script](https://github.com/ArchiveBox/ArchiveBox#%EF%B8%8F-easy-setup), you can follow these manual setup instructions to install ArchiveBox and its dependencies using `uv` & your system package manager of choice (e.g. `apt`, `brew`, `pkg`, `nix`, etc.).
 
 See our [Dependencies](https://github.com/ArchiveBox/ArchiveBox#dependencies) documentation to see the full list of dependencies and how they're used. Not all the dependencies are required for all modes. If you disable some archive methods you can skip installing those dependencies — for example, if you set [`MEDIA_ENABLED=False`](https://archivebox.github.io/abx-plugins/#media) you don't need to install `yt-dlp`, and if you set [`PDF_ENABLED=False`](https://archivebox.github.io/abx-plugins/#pdf), [`SCREENSHOT_ENABLED=False`](https://archivebox.github.io/abx-plugins/#screenshot), and [`DOM_ENABLED=False`](https://archivebox.github.io/abx-plugins/#dom) you don't need `chromium`.
 
@@ -124,9 +124,9 @@ See our [Dependencies](https://github.com/ArchiveBox/ArchiveBox#dependencies) do
 Make sure you have [Homebrew](https://brew.sh/) installed first.
 
 ```bash
-# Install ArchiveBox's dependencies manually (instead of using the all-in-one brew package)
-brew install python@3.13 node git wget curl ffmpeg yt-dlp ripgrep sonic
-pip install archivebox
+# Install ArchiveBox's dependencies manually (instead of using the all-in-one brew tap)
+brew install uv node git wget curl ffmpeg yt-dlp ripgrep sonic
+uv tool install --python 3.13 --upgrade 'git+https://github.com/ArchiveBox/ArchiveBox.git@dev'
 archivebox install
 
 # Optional: get FFMPEG with the AAC addon
@@ -150,13 +150,15 @@ sudo apt install archivebox
 
 mkdir -p ~/archivebox/data && cd ~/archivebox/data
 archivebox init
-sudo archivebox install
+archivebox install
 archivebox add 'https://example.com'
 ```
 
-The apt package installs the ArchiveBox Python application. Runtime extractor
+The apt package is a thin dev-channel wrapper around the normal Python install
+flow. Runtime extractor
 dependencies such as Chromium, yt-dlp, SingleFile, and other plugin-managed
-tools are installed by `sudo archivebox install`.
+tools are installed by `archivebox install`; use `sudo archivebox install` only
+if you want it to install missing system packages via apt.
 
 <img src="https://cdn0.iconfinder.com/data/icons/flat-round-system/512/freebsd-512.png" width="30px" align="right"/>
 
@@ -211,7 +213,7 @@ mkdir -p ~/archivebox/data && cd ~/archivebox/data
 archivebox init
 
 # auto-install runtime dependencies such as Chromium, yt-dlp, SingleFile, etc.
-sudo archivebox install
+archivebox install
 
 # archive a first URL
 archivebox add 'https://example.com'
@@ -225,13 +227,12 @@ archivebox help
 
 ### Troubleshooting
 
-Make sure the `pip`-installed version of `archivebox` is available in your `$PATH`.
+Make sure the `uv`-installed version of `archivebox` is available in your `$PATH`.
 ```bash
-pip show archivebox      # show info about the pip-installed version of archivebox
+uv tool list             # show info about uv-installed tools
 
 echo $PATH               # show the directories your system is searching for binaries
 type -a archivebox       # show all installed archivebox binaries available
-which archivebox         # show which archivebox binary is being called
 
 cd ~/archivebox/data
 archivebox version       # ⭐️ show lots of useful info about installed dependencies and more
@@ -285,7 +286,7 @@ uv tool install --python 3.13 --upgrade 'git+https://github.com/ArchiveBox/Archi
 # run init inside any data directories to migrate the index to the latest version
 cd ~/archivebox/data
 archivebox init          # update collection index & apply any migrations 
-sudo archivebox install  # update runtime dependencies to latest versions
+archivebox install       # update runtime dependencies to latest versions
 ```
 
 Check our more detailed [Upgrading](https://github.com/ArchiveBox/ArchiveBox/wiki/Upgrading-or-Merging-Archives) documentation and [Release Notes](https://github.com/ArchiveBox/ArchiveBox/releases) if you run into any problems. ➡️

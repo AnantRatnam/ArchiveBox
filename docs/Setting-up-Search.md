@@ -144,7 +144,7 @@ Internally it functions as an index store, storing only the original IDs of the 
 
 *ArchiveBox has supported Sonic for years, and it is the most thoroughly tested and recommended backend for ArchiveBox users that need to scale beyond `ripgrep`.*
 
-Using [sonic with ArchiveBox in Docker Compose](https://github.com/ArchiveBox/ArchiveBox/blob/dev/docker-compose.yml) is the easiest way to get started, though you can also use it without Docker by [installing it manually](https://github.com/valeriansaliou/sonic#installation) and then running `pip install archivebox[sonic]`.
+Using [sonic with ArchiveBox in Docker Compose](https://github.com/ArchiveBox/ArchiveBox/blob/dev/docker-compose.yml) is the easiest way to get started, though you can also use it without Docker by [installing it manually](https://github.com/valeriansaliou/sonic#installation) and then running `uv tool install --python 3.13 --upgrade 'archivebox[sonic] @ git+https://github.com/ArchiveBox/ArchiveBox.git@dev'`.
 
 ```bash
 # edit docker-compose.yml to uncomment the lines that enable sonic
