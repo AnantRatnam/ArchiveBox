@@ -24,17 +24,15 @@ Running ArchiveBox with Docker allows you to manage it in a container without ex
 
 **Official Docker Hub image: [`hub.docker.com/r/archivebox/archivebox`](https://hub.docker.com/r/archivebox/archivebox)**
 ```bash
-docker pull archivebox/archivebox:latest
+docker pull archivebox/archivebox:dev
 ```
 
 - [`Dockerfile`](https://github.com/ArchiveBox/ArchiveBox/blob/dev/Dockerfile)
 - [`docker-compose.yml`](https://github.com/ArchiveBox/ArchiveBox/blob/dev/docker-compose.yml)
-- [`archivebox-kubernetes.yml`](https://github.com/ArchiveBox/docker-archivebox/blob/master/archivebox.yml)
 
 Published [Docker tags](https://hub.docker.com/r/archivebox/archivebox/tags):
-- `:latest`, `:stable` (latest stable release, the default)
-- `:x.x` and `:x.x.x` for specific versions (e.g. `:0.7` or `:0.7.2`)
 - `:dev` for unstable alpha builds (breaks often, only for developers and willing beta testers)
+- `:x.xrcN` and `:x.x.xrcN` for specific RC versions
 - `:sha-xxxxxxx` for builds of specific git commits (to test or pin specific PRs or commits)
 
 <br/>
@@ -63,7 +61,7 @@ mkdir -p ~/archivebox/data && cd ~/archivebox
 
 # download the compose file into the directory
 curl -fsSL 'https://docker-compose.archivebox.io' > docker-compose.yml
-# (shortcut for getting https://raw.githubusercontent.com/ArchiveBox/ArchiveBox/stable/docker-compose.yml)
+# (shortcut for getting https://raw.githubusercontent.com/ArchiveBox/ArchiveBox/dev/docker-compose.yml)
 
 # initialize your collection and create an admin user for the Web UI (or set ADMIN_USERNAME/ADMIN_PASSWORD env vars)
 docker compose run archivebox init
@@ -201,10 +199,11 @@ Set `BASE_URL=https://archive.example.com` in the `.env` file next to `docker-co
 Fetch and run the ArchiveBox Docker image to create your initial archive.
 
 ```bash
-docker pull archivebox/archivebox
+docker pull archivebox/archivebox:dev
 
-mkdkir -p ~/archivebox/data && cd ~/archivebox/data
-docker run -it -v $PWD:/data archivebox/archivebox init --setup
+mkdir -p ~/archivebox/data && cd ~/archivebox/data
+docker run -it -v $PWD:/data archivebox/archivebox:dev init
+docker run -it -v $PWD:/data archivebox/archivebox:dev install
 ```
 
 *(You can create a collection in any directory you want, `~/archivebox/data` is just used as an example here)*
@@ -221,31 +220,31 @@ See the wiki page on [Upgrading or Merging Archives: Upgrading with plain Docker
 
 ### Usage
 
-The Docker CLI `docker run ... archivebox/archivebox [subcommand]` works just like the non-Docker `archivebox [subcommand]` CLI.
+The Docker CLI `docker run ... archivebox/archivebox:dev [subcommand]` works just like the non-Docker `archivebox [subcommand]` CLI.
 
 First, make sure you're `cd`'ed into your collection data folder (e.g. `~/archivebox/data`).
 
 ```bash
-docker run -it -v $PWD:/data archivebox/archivebox help
+docker run -it -v $PWD:/data archivebox/archivebox:dev help
 ```
 
 To add a single URL, pass it as an arg or pipe it in via stdin:
 ```bash
-docker run -it -v $PWD:/data archivebox/archivebox add 'https://example.com'
+docker run -it -v $PWD:/data archivebox/archivebox:dev add 'https://example.com'
 # OR
-echo 'https://example.com' | docker run -i -v $PWD:/data archivebox/archivebox add
+echo 'https://example.com' | docker run -i -v $PWD:/data archivebox/archivebox:dev add
 ```
 
 To archive multiple URLs at once, pass text containing URLs in via stdin:
 ```bash
-docker run -i -v $PWD:/data archivebox/archivebox add < urls.txt
+docker run -i -v $PWD:/data archivebox/archivebox:dev add < urls.txt
 # OR
-curl 'https://example.com/some/rss/feed.xml' | docker run -i -v $PWD:/data archivebox/archivebox add
+curl 'https://example.com/some/rss/feed.xml' | docker run -i -v $PWD:/data archivebox/archivebox:dev add
 ```
 
 You can also use the `--depth=1` flag to tell ArchiveBox to recursively archive the URLs within a provided source.
 ```bash
-docker run -it -v $PWD:/data archivebox/archivebox add --depth=1 'https://example.com/some/rss/feed.xml'
+docker run -it -v $PWD:/data archivebox/archivebox:dev add --depth=1 'https://example.com/some/rss/feed.xml'
 ```
 
 <br/>
@@ -256,12 +255,12 @@ The `docker run` `-v /path/on/host:/path/inside/container` flag specifies where 
 
 For example to use a folder on an external USB drive (instead of the current directory `$PWD` or `~/archivebox/data`):
 ```bash
-docker run -it -v /media/USB-DRIVE/archivebox/data:/data archivebox/archivebox ...
+docker run -it -v /media/USB-DRIVE/archivebox/data:/data archivebox/archivebox:dev ...
 ```
 
 Then to view your data, you can look in the folder on the host `/media/USB-DRIVE/archivebox/data`, or use the Web UI:
 ```bash
-docker run -it -v /media/USB_DRIVE/archivebox/data:/data -p 8000:8000 archivebox/archivebox
+docker run -it -v /media/USB_DRIVE/archivebox/data:/data -p 8000:8000 archivebox/archivebox:dev
 # then open https://127.0.0.1:8000
 ```
 
@@ -273,7 +272,7 @@ The easiest way is to use `archivebox config --set KEY=value` or edit `./Archive
 
 For example, this sets `TIMEOUT=120` as a persistent setting for the collection:
 ```bash
-docker run -it -v $PWD:/data archivebox/archivebox config --set TIMEOUT=120
+docker run -it -v $PWD:/data archivebox/archivebox:dev config --set TIMEOUT=120
 # OR
 echo 'TIMEOUT=120' >> ./ArchiveBox.conf
 ```
@@ -282,8 +281,8 @@ ArchiveBox in Docker also accepts config as environment variables, see more on t
 
 For example, this disables the screenshot extractor for a single run (without persisting for other runs):
 ```bash
-docker run -it -v $PWD:/data -e SCREENSHOT_ENABLED=False archivebox/archivebox add 'https://example.com'
+docker run -it -v $PWD:/data -e SCREENSHOT_ENABLED=False archivebox/archivebox:dev add 'https://example.com'
 # OR
 echo 'SCREENSHOT_ENABLED=False' >> ./.env
-docker run ... --env-file=./.env archivebox/archivebox ...
+docker run ... --env-file=./.env archivebox/archivebox:dev ...
 ```

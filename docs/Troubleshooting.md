@@ -24,7 +24,7 @@ brew info archivebox     # show info about the brew-installed version of archive
 pip show archivebox      # show info about the pip-installed version of archivebox
 
 echo $PATH               # show the directories your system is searching for binaries
-which -a archivebox      # show all installed archivebox binaries available
+type -a archivebox       # show all installed archivebox binaries available
 which archivebox         # show which archivebox binary is being called
 ```
 **⭐️ Show the full archivebox version info + info about all installed dependencies:**
@@ -49,7 +49,7 @@ More info: https://github.com/ArchiveBox/homebrew-archivebox
 
 ### Python
 
-Make sure you have at least Python 3.9 installed on your system.
+Make sure you have at least Python 3.13 installed on your system.
 
 ```bash
 python3 --version
@@ -121,7 +121,7 @@ npm --version          # make sure you have npm installed
 cd ~/archivebox/data   # go into your data directory
 sudo archivebox install # auto-installs runtime dependencies
 # equivalent to:
-# curl -fsSL 'https://raw.githubusercontent.com/ArchiveBox/ArchiveBox/stable/archivebox/package.json' > package.json
+# curl -fsSL 'https://raw.githubusercontent.com/ArchiveBox/ArchiveBox/dev/archivebox/package.json' > package.json
 # npm install
 
 # install npm dependencies should then be present in ~/archivebox/data/node_modules/.bin
@@ -201,7 +201,7 @@ Database and filesystem issues are uncommon but do come up from time to time (es
 *ℹ️ Generally, these commands can help you resolve most issues:*
 ```bash
 archivebox init                 # upgrade the archivebox collection
-archivebox init --setup         # upgrade the archivebox collection and all dependencies
+archivebox install              # upgrade the archivebox runtime dependencies
 archivebox update --index-only  # force an upgrade of some of the archivebox index/collection files
 archivebox server --debug       # run the server with more verbose debug log output
 archivebox shell                # access the Python API / Django management shell

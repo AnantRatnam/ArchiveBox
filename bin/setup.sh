@@ -49,12 +49,20 @@ docker_pull_archivebox() {
     fi
 }
 
-docker_run_archivebox_init() {
+docker_run_archivebox() {
     if [ -n "$ARCHIVEBOX_PLATFORM" ]; then
-        docker run --platform "$ARCHIVEBOX_PLATFORM" "$DOCKER_RUN_TTY_ARG" -v "$PWD":/data --rm "$ARCHIVEBOX_IMAGE" init --install
+        docker run --platform "$ARCHIVEBOX_PLATFORM" "$DOCKER_RUN_TTY_ARG" -v "$PWD":/data --rm "$ARCHIVEBOX_IMAGE" "$@"
     else
-        docker run "$DOCKER_RUN_TTY_ARG" -v "$PWD":/data --rm "$ARCHIVEBOX_IMAGE" init --install
+        docker run "$DOCKER_RUN_TTY_ARG" -v "$PWD":/data --rm "$ARCHIVEBOX_IMAGE" "$@"
     fi
+}
+
+docker_run_archivebox_init() {
+    docker_run_archivebox init
+}
+
+docker_run_archivebox_install() {
+    docker_run_archivebox install
 }
 
 docker_run_archivebox_server() {
@@ -128,11 +136,7 @@ install_archivebox_with_uv() {
 
     echo
     echo "[+] Installing ArchiveBox python tool using uv from $ARCHIVEBOX_PACKAGE..."
-    if uv --no-config tool add --help > /dev/null 2>&1; then
-        uv --no-config tool add --python "$ARCHIVEBOX_PYTHON" --upgrade "$ARCHIVEBOX_PACKAGE"
-    else
-        uv --no-config tool install --python "$ARCHIVEBOX_PYTHON" --upgrade "$ARCHIVEBOX_PACKAGE"
-    fi
+    uv --no-config tool install --python "$ARCHIVEBOX_PYTHON" --upgrade "$ARCHIVEBOX_PACKAGE"
 
     uv_tool_bin_dir="$(uv --no-config tool dir --bin)"
     export PATH="$uv_tool_bin_dir:$PATH"
@@ -160,7 +164,8 @@ if (command -v docker > /dev/null && docker compose version > /dev/null && docke
     fi
     curl -fsSL "$ARCHIVEBOX_COMPOSE_URL" > docker-compose.yml
     export ARCHIVEBOX_IMAGE ARCHIVEBOX_PLATFORM
-    docker_compose_run_archivebox init --install
+    docker_compose_run_archivebox init
+    docker_compose_run_archivebox install
     echo
     echo "[+] Starting ArchiveBox server using: docker compose up -d..."
     docker compose up -d
@@ -187,8 +192,9 @@ elif (command -v docker > /dev/null && docker_pull_archivebox); then
     fi
     cd ./data
     docker_run_archivebox_init
+    docker_run_archivebox_install
     echo
-    echo "[+] Starting ArchiveBox server using: docker run -d archivebox/archivebox..."
+    echo "[+] Starting ArchiveBox server using: docker run -d $ARCHIVEBOX_IMAGE..."
     docker_run_archivebox_server
     wait_for_archivebox
     open_archivebox
@@ -213,21 +219,20 @@ echo "    ⚠️ If you want to use Docker, press [Ctrl-C] to cancel now. ⚠️
 echo "        Get Docker: https://docs.docker.com/get-docker/"
 echo "        After you've installed Docker, run this script again."
 echo
-echo "Otherwise, install will continue with apt/brew/pkg + uv in 12s... (press [Ctrl+C] to cancel)"
+echo "Otherwise, install will continue with uv in 12s... (press [Ctrl+C] to cancel)"
 echo
 sleep 12 || exit 1
-echo "Proceeding with system package manager..."
+echo "Proceeding with uv..."
 echo
 
 echo "[i] ArchiveBox Setup Script 📦"
 echo
-echo "    This is a helper script which installs ArchiveBox and bootstraps its Python/Node runtimes."
+echo "    This is a helper script which installs ArchiveBox and bootstraps its runtime dependencies."
 echo "    You may be prompted for a sudo password in order to install the following:"
 echo
-echo "        - archivebox"
-echo "        - python3, uv, nodejs, npm             (languages used by ArchiveBox and plugin installers)"
-echo "        - curl, wget                           (used to bootstrap package installation)"
-echo "        - extractor/plugin dependencies        (installed/discovered by archivebox init --install)"
+echo "        - uv / curl / ca-certificates          (as needed to bootstrap ArchiveBox)"
+echo "        - archivebox                           (installed by uv with Python $ARCHIVEBOX_PYTHON)"
+echo "        - extractor/plugin dependencies        (installed/discovered by archivebox install)"
 echo
 echo "    If you'd rather install these manually as-needed, you can find detailed documentation here:"
 echo "        https://github.com/ArchiveBox/ArchiveBox/wiki/Install"
@@ -235,43 +240,32 @@ echo
 echo "Continuing in 12s... (press [Ctrl+C] to cancel)"
 echo
 sleep 12 || exit 1
-echo "Proceeding to install dependencies..."
+echo "Proceeding to install ArchiveBox..."
 echo
 
-# On Linux:
-if which apt-get > /dev/null; then
-    echo "[+] Installing ArchiveBox system dependencies using apt..."
-    sudo apt-get update -qq
-    sudo apt-get install -y python3 python3-venv wget curl nodejs npm
-    install_archivebox_with_uv
-# On Mac:
-elif which brew > /dev/null; then
-    echo "[+] Installing ArchiveBox using Homebrew..."
-    brew tap archivebox/archivebox
-    brew update
-    brew install archivebox
-elif which pkg > /dev/null; then
-    echo "[+] Installing ArchiveBox system dependencies using pkg and uv..."
-    sudo pkg install -y python3 py39-sqlite3 npm wget curl
-    install_archivebox_with_uv
-else
-    echo "[!] Warning: Could not find aptitude/homebrew/pkg! May not be able to install all dependencies automatically."
-    echo
-    echo "    If you're on macOS, make sure you have homebrew installed:     https://brew.sh/"
-    echo "    If you're on Linux, only Ubuntu/Debian/BSD systems are officially supported with this script."
-    echo "    If you're on Windows, this script is not officially supported (Docker is recommended instead)."
-    echo
-    echo "See the README.md for Manual Setup & Troubleshooting instructions if you you're unable to run ArchiveBox after this script completes."
+if ! command -v uv > /dev/null 2>&1 && ! command -v curl > /dev/null 2>&1 && ! command -v wget > /dev/null 2>&1; then
+    if command -v apt-get > /dev/null 2>&1; then
+        echo "[+] Installing curl and CA certificates to bootstrap uv using apt..."
+        sudo apt-get update -qq
+        sudo apt-get install -y curl ca-certificates
+    elif command -v brew > /dev/null 2>&1; then
+        echo "[+] Installing uv using Homebrew..."
+        brew install uv
+    elif command -v pkg > /dev/null 2>&1; then
+        echo "[+] Installing curl and CA certificates to bootstrap uv using pkg..."
+        sudo pkg install -y curl ca_root_nss
+    else
+        echo "[!] Warning: Could not find uv, curl, wget, apt, brew, or pkg."
+        echo
+        echo "See the README.md for Manual Setup & Troubleshooting instructions if you you're unable to run ArchiveBox after this script completes."
+    fi
 fi
 
 echo
 
-if ! which archivebox > /dev/null 2>&1; then
-    ensure_uv
-    export PATH="$(uv --no-config tool dir --bin):$PATH"
-fi
+install_archivebox_with_uv
 
-if ! which archivebox > /dev/null 2>&1; then
+if ! command -v archivebox > /dev/null 2>&1; then
     echo "[X] archivebox command was not found in PATH after installing!"
     echo "    Check to see if a previous step failed."
     exit 1
@@ -285,7 +279,8 @@ if [ -f "./index.sqlite3" ]; then
     mv -i ~/archivebox/* ~/archivebox/data/
 fi
 cd ./data
-: | archivebox init --install   # pipe in empty command to make sure stdin is closed
+: | archivebox init   # pipe in empty command to make sure stdin is closed
+archivebox install
 # init shows version output at the end too
 echo
 echo "[+] Starting ArchiveBox server using: nohup archivebox server &..."
@@ -299,7 +294,7 @@ echo "    archivebox server --quick-init 0.0.0.0:8000        # start server proc
 echo "    archivebox manage createsuperuser                  # add an admin user+pass"
 echo "    ps aux | grep archivebox                           # see server process pid"
 echo "    pkill -f archivebox                                # stop the server"
-echo "    uv tool install --python $ARCHIVEBOX_PYTHON --upgrade '$ARCHIVEBOX_PACKAGE'; archivebox init  # update versions"
+echo "    uv tool install --python $ARCHIVEBOX_PYTHON --upgrade '$ARCHIVEBOX_PACKAGE'; archivebox init; archivebox install  # update versions"
 echo "    archivebox add 'https://example.com'"              # archive a new URL
 echo "    archivebox list                                    # see URLs archived"
 echo "    archivebox help                                    # see more help & examples"

@@ -59,12 +59,11 @@ It's also recommended to use a filesystem with compression and/or [deduplication
 
 2. Then follow the [Quickstart](https://github.com/ArchiveBox/ArchiveBox#quickstart) guide and read the [[Docker]] wiki page for next steps. ➡️
 
-> You can also run Dockerized ArchiveBox using [UNRAID/TrueNAS/Proxmox/etc.](https://github.com/ArchiveBox/ArchiveBox#-other-options) or [Kubernetes](https://github.com/ArchiveBox/docker-archivebox/blob/master/archivebox.yml). 
+> You can also run Dockerized ArchiveBox using [UNRAID/TrueNAS/Proxmox/etc.](https://github.com/ArchiveBox/ArchiveBox#-other-options) or Kubernetes.
 
 **More info:**
 - [`Dockerfile`](https://github.com/ArchiveBox/ArchiveBox/blob/dev/Dockerfile)
 - [`docker-compose.yml`](https://github.com/ArchiveBox/ArchiveBox/blob/dev/docker-compose.yml)
-- [`archivebox-kubernetes.yml`](https://github.com/ArchiveBox/docker-archivebox/blob/master/archivebox.yml)
 - [ArchiveBox Docker Quickstart](https://github.com/ArchiveBox/ArchiveBox#quickstart) + [Usage](https://github.com/ArchiveBox/ArchiveBox/wiki/Docker) + [Configuration](https://github.com/ArchiveBox/ArchiveBox/wiki/Docker#configuration) + [Upgrading](https://github.com/ArchiveBox/ArchiveBox/wiki/Upgrading-or-Merging-Archives) documentation
 
 <br/>
@@ -82,9 +81,9 @@ If you're on Linux with `apt` or FreeBSD with `pkg` there is an optional auto-se
 
 ```bash
 curl -fsSL 'https://get.archivebox.io' | bash
-# shortcut to run https://raw.githubusercontent.com/ArchiveBox/ArchiveBox/stable/bin/setup.sh
+# shortcut to run https://raw.githubusercontent.com/ArchiveBox/ArchiveBox/dev/bin/setup.sh
 ``` 
-The script explains what it installs beforehand, and will prompt for user confirmation before making any changes to your system. The script uses Docker if already installed, but you can decline and it will attempt to auto-install everything using `apt`/`brew`/`pkg` + `pip` instead.
+The script explains what it installs beforehand, and will prompt for user confirmation before making any changes to your system. The script uses Docker if already installed, but you can decline and it will install ArchiveBox using `uv` instead.
 
 <img src="https://imgur.zervice.io/VMTzm0G.png" width="99%"/>
 
@@ -126,7 +125,7 @@ Make sure you have [Homebrew](https://brew.sh/) installed first.
 
 ```bash
 # Install ArchiveBox's dependencies manually (instead of using the all-in-one brew package)
-brew install python3 node git wget curl ffmpeg yt-dlp ripgrep sonic
+brew install python@3.13 node git wget curl ffmpeg yt-dlp ripgrep sonic
 pip install archivebox
 archivebox install
 
@@ -175,7 +174,7 @@ sudo pkg install chromium
 #### OpenBSD
 
 ```bash
-sudo pkg_add python3 node wget git curl yt-dlp ffmpeg ripgrep chromium
+sudo pkg_add python313 node wget git curl yt-dlp ffmpeg ripgrep chromium
 ```
 
 #### Arch Linux / Nix / Guix / etc. Other OSs
@@ -187,13 +186,13 @@ See the [Quickstart](https://github.com/ArchiveBox/ArchiveBox#-package-manager-s
 
 <img src="https://github.com/ArchiveBox/ArchiveBox/assets/511499/65315723-adae-42e4-b8c6-e44b79165ae5" width="55px" align="right"/>
 
-### 2. Install the Python dependencies using `pip`
+### 2. Install ArchiveBox using `uv`
 
-If you are not using the apt package above, install ArchiveBox with `pip`.
+If you are not using the apt package above, install ArchiveBox with `uv`.
 
 ```bash
-# get the latest version of archivebox from PyPI
-pip install --upgrade --ignore-installed archivebox[ldap,sonic]
+# get the dev version of ArchiveBox
+uv tool install --python 3.13 --upgrade 'git+https://github.com/ArchiveBox/ArchiveBox.git@dev'
 
 # if you see errors about ldap, install the C++ build tools + ldap headers and retry (only needed on some OSs + if you want ldap)
 # apt install build-essensial python3-ldap
@@ -231,7 +230,7 @@ Make sure the `pip`-installed version of `archivebox` is available in your `$PAT
 pip show archivebox      # show info about the pip-installed version of archivebox
 
 echo $PATH               # show the directories your system is searching for binaries
-which -a archivebox      # show all installed archivebox binaries available
+type -a archivebox       # show all installed archivebox binaries available
 which archivebox         # show which archivebox binary is being called
 
 cd ~/archivebox/data
@@ -280,8 +279,8 @@ See our [[Usage]] Wiki documentation page for more examples.
 Make sure all apt/brew/pkg/etc. dependencies from above are installed & up-to-date first.
 
 ```bash
-# get the latest archivebox version from PyPI
-pip install --upgrade --ignore-installed archivebox
+# get the dev version of ArchiveBox
+uv tool install --python 3.13 --upgrade 'git+https://github.com/ArchiveBox/ArchiveBox.git@dev'
 
 # run init inside any data directories to migrate the index to the latest version
 cd ~/archivebox/data
