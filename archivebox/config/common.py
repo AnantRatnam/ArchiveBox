@@ -1104,7 +1104,13 @@ def get_config(
     if resolve_plugins:
         plugin_schemas = {plugin_name: schema for plugin_name, schema in PLUGIN_CONFIG_SCHEMAS.items() if isinstance(schema, dict)}
         plugin_global_config = {key: str(value) if isinstance(value, Path) else value for key, value in config_data.items()}
-        explicit_plugin_enabled_keys.update(_explicit_plugin_enabled_keys(os.environ))
+        crawl_selected_plugins = crawl_config_base and bool(_normalize_plugins_config_value(dict(crawl.config or {}).get("PLUGINS")))
+        # A frozen crawl-level PLUGINS selector is the exact extractor set for
+        # this crawl. Env/file *_ENABLED values are ambient defaults and must
+        # not be re-applied after validation, or a later process env can change
+        # which hooks an already-queued crawl runs.
+        if not crawl_selected_plugins:
+            explicit_plugin_enabled_keys.update(_explicit_plugin_enabled_keys(os.environ))
         explicit_plugin_enabled_keys.update(_explicit_plugin_enabled_keys(scope_overrides))
         plugin_user_config = _plugin_user_config(
             {
